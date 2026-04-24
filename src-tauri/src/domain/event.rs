@@ -27,6 +27,39 @@ pub enum EventType {
     LlmSuggestionRejected,
 }
 
+impl EventType {
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            EventType::ItemCreated => "ITEM_CREATED",
+            EventType::ItemEdited => "ITEM_EDITED",
+            EventType::ItemMoved => "ITEM_MOVED",
+            EventType::ItemStateChanged => "ITEM_STATE_CHANGED",
+            EventType::ItemDateSet => "ITEM_DATE_SET",
+            EventType::ItemDeleted => "ITEM_DELETED",
+            EventType::ItemRestored => "ITEM_RESTORED",
+            EventType::LlmSuggestionGenerated => "LLM_SUGGESTION_GENERATED",
+            EventType::LlmSuggestionAccepted => "LLM_SUGGESTION_ACCEPTED",
+            EventType::LlmSuggestionRejected => "LLM_SUGGESTION_REJECTED",
+        }
+    }
+
+    pub fn from_sql(s: &str) -> Option<Self> {
+        match s {
+            "ITEM_CREATED" => Some(EventType::ItemCreated),
+            "ITEM_EDITED" => Some(EventType::ItemEdited),
+            "ITEM_MOVED" => Some(EventType::ItemMoved),
+            "ITEM_STATE_CHANGED" => Some(EventType::ItemStateChanged),
+            "ITEM_DATE_SET" => Some(EventType::ItemDateSet),
+            "ITEM_DELETED" => Some(EventType::ItemDeleted),
+            "ITEM_RESTORED" => Some(EventType::ItemRestored),
+            "LLM_SUGGESTION_GENERATED" => Some(EventType::LlmSuggestionGenerated),
+            "LLM_SUGGESTION_ACCEPTED" => Some(EventType::LlmSuggestionAccepted),
+            "LLM_SUGGESTION_REJECTED" => Some(EventType::LlmSuggestionRejected),
+            _ => None,
+        }
+    }
+}
+
 /// One row of the append-only `events` table. Payload is kept as untyped
 /// JSON here; typed-payload variants arrive in I-03+ when event writers
 /// need them. SPEC §4.3.

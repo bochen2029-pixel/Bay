@@ -140,3 +140,11 @@ button:hover {
 .bay-body {
   min-height: 48px;
 }
+
+/* Dev-only + button on bay headers. I-05 removes this. */
+.bay-dev-add {
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 14px;
+  line-height: 1;
+}

@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 
+mod commands;
 mod db;
 
 // Domain types are scaffolded ahead of incremental consumers (rank_between
@@ -23,13 +24,11 @@ fn resolve_db_path(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-fn bootstrap(_pool: State<SqlitePool>) -> Result<Value, String> {
-    // Migrations already ran at setup; we pull the pool in purely to confirm
-    // it's present as managed state. Projection is empty until I-03 wires up
-    // the create_item path, so we return an empty items vec and the §5.3
-    // default Settings verbatim.
+fn bootstrap(pool: State<'_, SqlitePool>) -> Result<Value, String> {
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
     Ok(json!({
-        "items": [],
+        "items": items,
         "settings": {
             "hotkey": "Ctrl+Alt+N",
             "staleness_inbox_days": 3,
@@ -61,7 +60,10 @@ pub fn run() {
             app.manage(pool);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![bootstrap])
+        .invoke_handler(tauri::generate_handler![
+            bootstrap,
+            commands::items::create_item,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");
 }

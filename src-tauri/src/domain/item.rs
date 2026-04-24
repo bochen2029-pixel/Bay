@@ -21,6 +21,16 @@ impl Tier {
             Tier::C => "C",
         }
     }
+
+    pub fn from_sql(s: &str) -> Option<Self> {
+        match s {
+            "inbox" => Some(Tier::Inbox),
+            "A" => Some(Tier::A),
+            "B" => Some(Tier::B),
+            "C" => Some(Tier::C),
+            _ => None,
+        }
+    }
 }
 
 /// Lifecycle state for a single item. Orthogonal to `Tier`.
@@ -39,6 +49,15 @@ impl ItemState {
             ItemState::Active => "active",
             ItemState::Blocked => "blocked",
             ItemState::Done => "done",
+        }
+    }
+
+    pub fn from_sql(s: &str) -> Option<Self> {
+        match s {
+            "active" => Some(ItemState::Active),
+            "blocked" => Some(ItemState::Blocked),
+            "done" => Some(ItemState::Done),
+            _ => None,
         }
     }
 }

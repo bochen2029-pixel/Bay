@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { A_CAP, B_CAP, BootstrapResult, Tier } from "./domain";
+import { A_CAP, B_CAP, BootstrapResult, Item, Tier } from "./domain";
 
 type View = "board" | "calendar" | "timetravel";
 
@@ -34,10 +34,27 @@ export default function App() {
     console.log(`${VIEW_LABELS[v]}: not yet implemented`);
   }
 
+  // Dev-only handler for the "+" button on each bay. I-05 replaces this
+  // with a proper capacity-aware inline-input flow.
+  async function handleDevAdd(tier: Tier) {
+    try {
+      const item = await invoke<unknown>("create_item", {
+        tier,
+        content: "new item",
+      });
+      const parsed = Item.parse(item);
+      console.log("create_item:", parsed);
+    } catch (err) {
+      console.error("create_item failed:", err);
+    }
+  }
+
   return (
     <div className="app">
       <TopBar view={view} onView={handleView} />
-      <main className="main">{view === "board" ? <Board /> : null}</main>
+      <main className="main">
+        {view === "board" ? <Board onDevAdd={handleDevAdd} /> : null}
+      </main>
     </div>
   );
 }
@@ -63,13 +80,13 @@ function TopBar({ view, onView }: { view: View; onView: (v: View) => void }) {
   );
 }
 
-function Board() {
+function Board({ onDevAdd }: { onDevAdd: (tier: Tier) => void }) {
   return (
     <div className="board">
-      <BayColumn tier="inbox" label="Inbox" count={0} />
-      <BayColumn tier="A" label="A" count={0} cap={A_CAP} />
-      <BayColumn tier="B" label="B" count={0} cap={B_CAP} />
-      <BayColumn tier="C" label="C" count={0} />
+      <BayColumn tier="inbox" label="Inbox" count={0} onDevAdd={onDevAdd} />
+      <BayColumn tier="A" label="A" count={0} cap={A_CAP} onDevAdd={onDevAdd} />
+      <BayColumn tier="B" label="B" count={0} cap={B_CAP} onDevAdd={onDevAdd} />
+      <BayColumn tier="C" label="C" count={0} onDevAdd={onDevAdd} />
     </div>
   );
 }
@@ -79,11 +96,13 @@ function BayColumn({
   label,
   count,
   cap,
+  onDevAdd,
 }: {
   tier: Tier;
   label: string;
   count: number;
   cap?: number;
+  onDevAdd: (tier: Tier) => void;
 }) {
   const counter = cap !== undefined ? `${count} / ${cap}` : `${count} items`;
   return (
@@ -93,6 +112,15 @@ function BayColumn({
         <span className="bay-counter" aria-label={`${counter} in ${label}`}>
           {counter}
         </span>
+        {/* Dev-only scaffolding; I-05 replaces this with real capacity-aware UI. */}
+        <button
+          type="button"
+          className="bay-dev-add"
+          onClick={() => onDevAdd(tier)}
+          aria-label={`Dev add item to ${label}`}
+        >
+          +
+        </button>
       </header>
       <div className="bay-body" />
     </section>
