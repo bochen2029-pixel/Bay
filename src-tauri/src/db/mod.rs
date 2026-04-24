@@ -333,9 +333,13 @@ mod tests {
                     }),
                 },
                 EventDraft {
-                    event_type: EventType::ItemDeleted,
+                    event_type: EventType::ItemDateSet,
                     item_id: Some("seed-id".into()),
-                    payload: json!({ "soft": true }),
+                    payload: json!({
+                        "field": "due",
+                        "value_before": null,
+                        "value_after": 1_700_000_000_000i64,
+                    }),
                 },
             ])
         });

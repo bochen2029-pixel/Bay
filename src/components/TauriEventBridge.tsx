@@ -16,9 +16,12 @@ const BackendWarningSchema: z.ZodType<BackendWarning> = z.object({
   message: z.string(),
 });
 
+const DeletedIdSchema = z.object({ id: z.string() });
+
 export function TauriEventBridge() {
   const onItemCreated = useStore((s) => s.onItemCreated);
   const onItemUpdated = useStore((s) => s.onItemUpdated);
+  const onItemDeleted = useStore((s) => s.onItemDeleted);
   const openQuickCapture = useStore((s) => s.openQuickCapture);
   const setBackendWarning = useStore((s) => s.setBackendWarning);
 
@@ -58,6 +61,17 @@ export function TauriEventBridge() {
     );
 
     track(
+      listen<unknown>("item_deleted", (event) => {
+        try {
+          const { id } = DeletedIdSchema.parse(event.payload);
+          onItemDeleted(id);
+        } catch (err) {
+          console.error("item_deleted: payload failed Zod parse", err);
+        }
+      }),
+    );
+
+    track(
       listen<unknown>("quick_capture_requested", () => {
         openQuickCapture();
       }),
@@ -78,7 +92,13 @@ export function TauriEventBridge() {
       cancelled = true;
       for (const fn of unlisteners) fn();
     };
-  }, [onItemCreated, onItemUpdated, openQuickCapture, setBackendWarning]);
+  }, [
+    onItemCreated,
+    onItemUpdated,
+    onItemDeleted,
+    openQuickCapture,
+    setBackendWarning,
+  ]);
 
   return null;
 }

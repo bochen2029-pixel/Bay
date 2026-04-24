@@ -86,6 +86,10 @@ pub fn run() {
             commands::items::create_item,
             commands::items::move_item,
             commands::items::swap_move,
+            commands::items::edit_item,
+            commands::items::set_item_state,
+            commands::items::delete_item,
+            commands::items::restore_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

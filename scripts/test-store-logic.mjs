@@ -316,6 +316,46 @@ function state1() {
   assertEq(next.itemsByTier.A, ["y", "x"], "rank to front moves to index 0");
 }
 
+// ─── onItemUpdated with sessionDoneIds tracking (I-08) ───────────────────────
+
+function reduceItemUpdatedWithDone(state, item) {
+  const existing = state.items[item.id];
+  if (!existing) return state;
+  if (existing.updated_at === item.updated_at) return state;
+  const newItems = { ...state.items, [item.id]: item };
+  const newByTier = { ...state.itemsByTier };
+  newByTier[existing.tier] = state.itemsByTier[existing.tier].filter(
+    (id) => id !== item.id,
+  );
+  newByTier[item.tier] = insertByRank(newByTier[item.tier], item.id, newItems);
+  let newSessionDone = state.sessionDoneIds;
+  if (
+    item.state === "done" &&
+    existing.state !== "done" &&
+    !state.sessionDoneIds.has(item.id)
+  ) {
+    newSessionDone = new Set(state.sessionDoneIds);
+    newSessionDone.add(item.id);
+  }
+  return {
+    items: newItems,
+    itemsByTier: newByTier,
+    sessionDoneIds: newSessionDone,
+  };
+}
+
+function reduceItemDeleted(state, id) {
+  const existing = state.items[id];
+  if (!existing) return state;
+  const newItems = { ...state.items };
+  delete newItems[id];
+  const newByTier = { ...state.itemsByTier };
+  newByTier[existing.tier] = state.itemsByTier[existing.tier].filter(
+    (x) => x !== id,
+  );
+  return { items: newItems, itemsByTier: newByTier };
+}
+
 // ─── needsSwap ───────────────────────────────────────────────────────────────
 
 const activeItem = { id: "x", state: "active" };
@@ -341,6 +381,89 @@ assertEq(needsSwap(activeItem, "C", 999), false, "needsSwap: C never");
 // Edge: active count above cap (defensive) still triggers swap — the
 // UX presumption is "user is trying to add more than allowed".
 assertEq(needsSwap(activeItem, "A", 6), true, "needsSwap: A over-cap still swaps");
+
+// ─── onItemUpdated sessionDoneIds tracking (I-08) ────────────────────────────
+
+function state2() {
+  return {
+    items: {
+      x: { id: "x", tier: "A", rank: "m", state: "active", updated_at: 100 },
+      y: { id: "y", tier: "A", rank: "p", state: "active", updated_at: 100 },
+    },
+    itemsByTier: { inbox: [], A: ["x", "y"], B: [], C: [] },
+    sessionDoneIds: new Set(),
+  };
+}
+
+{
+  const s = state2();
+  const next = reduceItemUpdatedWithDone(s, {
+    id: "x",
+    tier: "A",
+    rank: "m",
+    state: "done",
+    updated_at: 200,
+  });
+  assert(next.sessionDoneIds.has("x"), "session-done: X tracked when state→done");
+  assert(next.items.x.state === "done", "session-done: projection updated");
+}
+{
+  // Non-done→done-but-already-tracked: no duplicate-add churn on Set
+  const s = state2();
+  s.sessionDoneIds = new Set(["x"]);
+  const next = reduceItemUpdatedWithDone(s, {
+    id: "x",
+    tier: "A",
+    rank: "m",
+    state: "done",
+    updated_at: 200,
+  });
+  assert(
+    next.sessionDoneIds === s.sessionDoneIds,
+    "session-done: already-tracked skips Set allocation",
+  );
+}
+{
+  // Active→blocked: not done, no tracking
+  const s = state2();
+  const next = reduceItemUpdatedWithDone(s, {
+    id: "x",
+    tier: "A",
+    rank: "m",
+    state: "blocked",
+    blocked_reason: "waiting",
+    updated_at: 200,
+  });
+  assertEq(
+    [...next.sessionDoneIds],
+    [],
+    "session-done: active→blocked doesn't track",
+  );
+}
+
+// ─── onItemDeleted ───────────────────────────────────────────────────────────
+
+{
+  const s = {
+    items: {
+      x: { id: "x", tier: "A", rank: "m", state: "active", updated_at: 100 },
+      y: { id: "y", tier: "A", rank: "p", state: "active", updated_at: 100 },
+    },
+    itemsByTier: { inbox: [], A: ["x", "y"], B: [], C: [] },
+  };
+  const next = reduceItemDeleted(s, "x");
+  assert(!("x" in next.items), "onItemDeleted: id removed from items map");
+  assertEq(next.itemsByTier.A, ["y"], "onItemDeleted: id removed from tier bucket");
+}
+{
+  // Unknown id → identity
+  const s = {
+    items: {},
+    itemsByTier: { inbox: [], A: [], B: [], C: [] },
+  };
+  const next = reduceItemDeleted(s, "nope");
+  assert(next === s, "onItemDeleted: unknown id is identity");
+}
 
 if (failures > 0) {
   console.error(`\n${failures} failure(s)`);

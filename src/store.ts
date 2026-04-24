@@ -36,6 +36,19 @@ export type SwapPending = {
   enteringRank: string;
 };
 
+/** Pending delete whose undo toast is still visible. The snapshot is
+ *  kept locally so restore can fire even if the backend projection has
+ *  rolled forward. */
+export type DeletedPending = {
+  snapshot: Item;
+  deletedAt: number; // unix ms; drives the 10s toast window
+};
+
+/** Per-bay session toggle: whether "earlier done items" (items whose
+ *  state was 'done' at bootstrap time) are currently revealed. Default
+ *  false. Resets on app launch. */
+export type DoneRevealed = Record<Tier, boolean>;
+
 type State = {
   items: Record<string, Item>;
   itemsByTier: Record<Tier, string[]>;
@@ -48,20 +61,23 @@ type State = {
   backendWarning: BackendWarning | null;
   moveReasonPending: MoveReasonPending | null;
   swapPending: SwapPending | null;
+  editingItemId: string | null;
+  blockPending: { itemId: string } | null;
+  deletedPending: DeletedPending | null;
+
+  /** Items marked done during this session. Rendered inline alongside
+   *  active items per SPEC §10.2 resolution; on next app launch they
+   *  become "earlier done items" and hide until the per-bay link
+   *  reveals them. */
+  sessionDoneIds: Set<string>;
+  doneRevealed: DoneRevealed;
 };
 
 type Actions = {
-  /** Replace the world from a bootstrap payload (initial load). */
   bootstrap: (items: Item[], settings: Settings) => void;
-  /** Idempotent add-to-store. Called both by the create_item invoke
-   *  resolution and by the TauriEventBridge's `item_created` listener;
-   *  whichever arrives first wins, the other is a no-op. */
   onItemCreated: (item: Item) => void;
-  /** Update an existing item. Handles both intra-tier reorders and
-   *  cross-tier moves by removing the id from its old tier bucket and
-   *  re-inserting into the new one at the correct rank position.
-   *  No-op if the id is unknown. */
   onItemUpdated: (item: Item) => void;
+  onItemDeleted: (id: string) => void;
 
   setSelectedItemId: (id: string | null) => void;
   openQuickCapture: () => void;
@@ -73,6 +89,13 @@ type Actions = {
   closeMoveReason: () => void;
   openSwap: (p: SwapPending) => void;
   closeSwap: () => void;
+
+  setEditingItemId: (id: string | null) => void;
+  openBlockModal: (itemId: string) => void;
+  closeBlockModal: () => void;
+
+  clearDeletedPending: () => void;
+  toggleDoneRevealed: (tier: Tier) => void;
 };
 
 type Store = State & Actions;
@@ -82,6 +105,13 @@ const EMPTY_BY_TIER: Record<Tier, string[]> = {
   A: [],
   B: [],
   C: [],
+};
+
+const EMPTY_DONE_REVEALED: DoneRevealed = {
+  inbox: false,
+  A: false,
+  B: false,
+  C: false,
 };
 
 export const useStore = create<Store>((set, get) => ({
@@ -94,6 +124,11 @@ export const useStore = create<Store>((set, get) => ({
   backendWarning: null,
   moveReasonPending: null,
   swapPending: null,
+  editingItemId: null,
+  blockPending: null,
+  deletedPending: null,
+  sessionDoneIds: new Set<string>(),
+  doneRevealed: EMPTY_DONE_REVEALED,
 
   bootstrap: (items, settings) => {
     const itemsMap: Record<string, Item> = {};
@@ -110,12 +145,22 @@ export const useStore = create<Store>((set, get) => ({
     for (const t of Object.keys(byTier) as Tier[]) {
       byTier[t].sort((a, b) => compareRank(itemsMap[a].rank, itemsMap[b].rank));
     }
-    set({ items: itemsMap, itemsByTier: byTier, settings, bootstrapped: true });
+    // Bootstrap establishes the "prior session" baseline: any items
+    // already in 'done' state are "earlier done items" and hide by
+    // default. sessionDoneIds starts empty.
+    set({
+      items: itemsMap,
+      itemsByTier: byTier,
+      settings,
+      bootstrapped: true,
+      sessionDoneIds: new Set<string>(),
+      doneRevealed: EMPTY_DONE_REVEALED,
+    });
   },
 
   onItemCreated: (item) => {
     const { items, itemsByTier } = get();
-    if (items[item.id]) return; // already present (promise and event both arrived)
+    if (items[item.id]) return; // already present
 
     const newItems = { ...items, [item.id]: item };
     const newByTier = { ...itemsByTier };
@@ -128,22 +173,16 @@ export const useStore = create<Store>((set, get) => ({
   },
 
   onItemUpdated: (item) => {
-    const { items, itemsByTier } = get();
+    const { items, itemsByTier, sessionDoneIds } = get();
     const existing = items[item.id];
-    if (!existing) return; // unknown id — likely an update for an item
-    // we haven't bootstrapped yet
+    if (!existing) return; // unknown id
 
-    // Idempotent: if we've already absorbed this snapshot (same
-    // updated_at), skip the mutation so repeated deliveries (invoke
-    // resolution + event) don't churn object identity and trigger
-    // spurious re-renders in BayColumn's shallow subscription.
+    // Idempotent: repeated deliveries (invoke-resolve + event) match on
+    // updated_at and bail.
     if (existing.updated_at === item.updated_at) return;
 
     const newItems = { ...items, [item.id]: item };
     const newByTier = { ...itemsByTier };
-    // Always pull from old tier (may equal new tier for intra-tier
-    // reorders) and re-insert by rank. Handles both intra- and
-    // cross-tier transitions uniformly.
     newByTier[existing.tier] = itemsByTier[existing.tier].filter(
       (id) => id !== item.id,
     );
@@ -152,7 +191,50 @@ export const useStore = create<Store>((set, get) => ({
       item.id,
       newItems,
     );
-    set({ items: newItems, itemsByTier: newByTier });
+
+    // Track session-done: if this update is the first time we see this
+    // item in `done`, remember it so it stays visible for the rest of
+    // the session.
+    let newSessionDone = sessionDoneIds;
+    if (
+      item.state === "done" &&
+      existing.state !== "done" &&
+      !sessionDoneIds.has(item.id)
+    ) {
+      newSessionDone = new Set(sessionDoneIds);
+      newSessionDone.add(item.id);
+    }
+
+    set({
+      items: newItems,
+      itemsByTier: newByTier,
+      sessionDoneIds: newSessionDone,
+    });
+  },
+
+  onItemDeleted: (id) => {
+    const { items, itemsByTier, sessionDoneIds } = get();
+    const existing = items[id];
+    if (!existing) return;
+
+    const newItems = { ...items };
+    delete newItems[id];
+    const newByTier = { ...itemsByTier };
+    newByTier[existing.tier] = itemsByTier[existing.tier].filter(
+      (x) => x !== id,
+    );
+    let newSessionDone = sessionDoneIds;
+    if (sessionDoneIds.has(id)) {
+      newSessionDone = new Set(sessionDoneIds);
+      newSessionDone.delete(id);
+    }
+
+    set({
+      items: newItems,
+      itemsByTier: newByTier,
+      sessionDoneIds: newSessionDone,
+      deletedPending: { snapshot: existing, deletedAt: Date.now() },
+    });
   },
 
   setSelectedItemId: (id) => set({ selectedItemId: id }),
@@ -165,6 +247,16 @@ export const useStore = create<Store>((set, get) => ({
   closeMoveReason: () => set({ moveReasonPending: null }),
   openSwap: (p) => set({ swapPending: p }),
   closeSwap: () => set({ swapPending: null }),
+
+  setEditingItemId: (id) => set({ editingItemId: id }),
+  openBlockModal: (itemId) => set({ blockPending: { itemId } }),
+  closeBlockModal: () => set({ blockPending: null }),
+
+  clearDeletedPending: () => set({ deletedPending: null }),
+  toggleDoneRevealed: (tier) =>
+    set((s) => ({
+      doneRevealed: { ...s.doneRevealed, [tier]: !s.doneRevealed[tier] },
+    })),
 }));
 
 function compareRank(a: string, b: string): number {

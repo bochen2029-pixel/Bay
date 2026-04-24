@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   DndContext,
@@ -25,6 +25,8 @@ import { TauriEventBridge } from "./components/TauriEventBridge";
 import { QuickCaptureModal } from "./components/QuickCaptureModal";
 import { MoveReasonModal } from "./components/MoveReasonModal";
 import { SwapModal } from "./components/SwapModal";
+import { BlockModal } from "./components/BlockModal";
+import { UndoToast } from "./components/UndoToast";
 
 type View = "board" | "calendar" | "timetravel";
 
@@ -75,6 +77,8 @@ export default function App() {
       <QuickCaptureModal />
       <MoveReasonModal />
       <SwapModal />
+      <BlockModal />
+      <UndoToast />
     </div>
   );
 }
@@ -161,10 +165,14 @@ function Board() {
       const prevRank = prevId ? state.items[prevId].rank : null;
       const newRank = rankBetween(prevRank, overItem.rank);
 
-      // For I-07, active count equals items-count-by-tier because
-      // state transitions (blocked/done) don't land until I-08. When
-      // they do, swap this for an explicit activeCountByTier.
-      const targetActiveCount = targetIds.length;
+      // Active count excludes blocked + done per CLAUDE.md §Design
+      // philosophy #1. This must be computed from store state, not
+      // proxied by itemsByTier.length, because blocked/done items
+      // still occupy the id list.
+      const targetActiveCount = targetIds.reduce((n, id) => {
+        const it = state.items[id];
+        return n + (it && it.state === "active" ? 1 : 0);
+      }, 0);
 
       if (needsSwap(activeItem, targetTier, targetActiveCount)) {
         openSwap({
@@ -234,10 +242,36 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
   // `itemsByTier[tier]` is stored as derived state; `shallow` makes this
   // subscription re-render only when the id-array contents change.
   const itemIds = useStore((s) => s.itemsByTier[tier], shallow);
+  const items = useStore((s) => s.items);
+  const sessionDoneIds = useStore((s) => s.sessionDoneIds);
+  const revealed = useStore((s) => s.doneRevealed[tier]);
+  const toggleDoneRevealed = useStore((s) => s.toggleDoneRevealed);
   const cap = TIER_CAP[tier];
-  // For I-06 every item is active (state transitions land in I-08), so
-  // the full count equals the active count. Diverges in I-08.
-  const activeCount = itemIds.length;
+
+  // Visible ids: active + blocked always; done only if (a) marked done
+  // this session, or (b) the per-bay reveal is on. Hidden-done count
+  // drives the "Show N earlier done items" link.
+  const { visibleIds, activeCount, hiddenDoneCount } = useMemo(() => {
+    let active = 0;
+    let hiddenDone = 0;
+    const visible: string[] = [];
+    for (const id of itemIds) {
+      const it = items[id];
+      if (!it) continue;
+      if (it.state === "active") {
+        active++;
+        visible.push(id);
+      } else if (it.state === "blocked") {
+        visible.push(id);
+      } else {
+        // done
+        if (sessionDoneIds.has(id) || revealed) visible.push(id);
+        else hiddenDone++;
+      }
+    }
+    return { visibleIds: visible, activeCount: active, hiddenDoneCount: hiddenDone };
+  }, [itemIds, items, sessionDoneIds, revealed]);
+
   const counter =
     cap !== undefined ? `${activeCount} / ${cap}` : `${activeCount} items`;
   const atCap = cap !== undefined && activeCount >= cap;
@@ -265,11 +299,22 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
       {adding ? (
         <BayAddInput tier={tier} onClose={() => setAdding(false)} />
       ) : null}
-      <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+      <SortableContext items={visibleIds} strategy={verticalListSortingStrategy}>
         <div className="bay-body">
-          {itemIds.map((id) => (
+          {visibleIds.map((id) => (
             <Strip key={id} itemId={id} />
           ))}
+          {hiddenDoneCount > 0 ? (
+            <button
+              type="button"
+              className="bay-show-done"
+              onClick={() => toggleDoneRevealed(tier)}
+            >
+              Show {hiddenDoneCount} earlier done item
+              {hiddenDoneCount === 1 ? "" : "s"}
+            </button>
+          ) : null}
+          {revealed && hiddenDoneCount === 0 ? null : null}
         </div>
       </SortableContext>
     </section>

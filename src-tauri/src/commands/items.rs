@@ -23,6 +23,15 @@ const ITEM_CREATED_EVENT: &str = "item_created";
 /// existing item. SPEC §5.2.
 const ITEM_UPDATED_EVENT: &str = "item_updated";
 
+/// Tauri event name broadcast when an item is soft-deleted. SPEC §5.2.
+/// Payload shape: { id: String } (Item itself is gone from projection).
+const ITEM_DELETED_EVENT: &str = "item_deleted";
+
+#[derive(Debug, Clone, Serialize)]
+struct DeletedIdPayload {
+    id: String,
+}
+
 #[tauri::command]
 pub fn create_item(
     app: AppHandle,
@@ -218,6 +227,211 @@ pub fn move_item_inner(
         .into_iter()
         .find(|i| Some(&i.id) == event.item_id.as_ref())
         .ok_or_else(|| "moved item not found in projection".to_string())
+}
+
+// ── edit_item ─────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn edit_item(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+    content: String,
+) -> Result<Item, String> {
+    let item = edit_item_inner(&pool, id, content)?;
+    app.emit(ITEM_UPDATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_UPDATED_EVENT}: {e}"))?;
+    Ok(item)
+}
+
+pub fn edit_item_inner(
+    pool: &SqlitePool,
+    id: String,
+    content: String,
+) -> Result<Item, String> {
+    let content = content.trim().to_string();
+    if content.is_empty() {
+        return Err("CONTENT_EMPTY".into());
+    }
+    if content.chars().count() > MAX_CONTENT_LEN {
+        return Err("CONTENT_TOO_LONG".into());
+    }
+
+    let _event = db::write_event(pool, |tx, _ts| {
+        let current = db::items::read_item_by_id_tx(tx, &id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+        if current.content == content {
+            return Err("NO_OP".into());
+        }
+        let payload = json!({
+            "content_before": current.content,
+            "content_after": content,
+        });
+        Ok(EventDraft {
+            event_type: EventType::ItemEdited,
+            item_id: Some(id.clone()),
+            payload,
+        })
+    })?;
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
+    items
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or_else(|| "edited item not found in projection".to_string())
+}
+
+// ── set_item_state ────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn set_item_state(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+    state: ItemState,
+    blocked_reason: Option<String>,
+) -> Result<Item, String> {
+    let item = set_item_state_inner(&pool, id, state, blocked_reason)?;
+    app.emit(ITEM_UPDATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_UPDATED_EVENT}: {e}"))?;
+    Ok(item)
+}
+
+pub fn set_item_state_inner(
+    pool: &SqlitePool,
+    id: String,
+    target_state: ItemState,
+    blocked_reason: Option<String>,
+) -> Result<Item, String> {
+    // Trim + validate blocked_reason up front — a blocked transition
+    // with a whitespace-only reason is indistinguishable from an empty
+    // one.
+    let blocked_reason = blocked_reason.map(|s| s.trim().to_string());
+    if target_state == ItemState::Blocked {
+        let reason = blocked_reason.as_deref().unwrap_or("");
+        if reason.is_empty() {
+            return Err("REASON_REQUIRED".into());
+        }
+    }
+
+    let _event = db::write_event(pool, |tx, _ts| {
+        let current = db::items::read_item_by_id_tx(tx, &id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+
+        if current.state == target_state {
+            return Err("NO_OP".into());
+        }
+
+        // Cap enforcement: transitions TO active in A/B must respect
+        // cap. Transitions FROM active free a slot (no cap concern).
+        // Blocked↔Done within the same tier don't change active count.
+        if target_state == ItemState::Active && current.state != ItemState::Active {
+            match current.tier {
+                Tier::A => {
+                    if db::items::count_active_in_tier(tx, Tier::A)? >= A_CAP as i64 {
+                        return Err("CAP_EXCEEDED".into());
+                    }
+                }
+                Tier::B => {
+                    if db::items::count_active_in_tier(tx, Tier::B)? >= B_CAP as i64 {
+                        return Err("CAP_EXCEEDED".into());
+                    }
+                }
+                Tier::Inbox | Tier::C => {}
+            }
+        }
+
+        let payload = json!({
+            "state_before": current.state,
+            "state_after": target_state,
+            "blocked_reason": if target_state == ItemState::Blocked {
+                blocked_reason.clone()
+            } else {
+                None
+            },
+        });
+        Ok(EventDraft {
+            event_type: EventType::ItemStateChanged,
+            item_id: Some(id.clone()),
+            payload,
+        })
+    })?;
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
+    items
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or_else(|| "state-changed item not found in projection".to_string())
+}
+
+// ── delete_item ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn delete_item(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<(), String> {
+    delete_item_inner(&pool, &id)?;
+    app.emit(ITEM_DELETED_EVENT, DeletedIdPayload { id })
+        .map_err(|e| format!("emit {ITEM_DELETED_EVENT}: {e}"))?;
+    Ok(())
+}
+
+pub fn delete_item_inner(pool: &SqlitePool, id: &str) -> Result<(), String> {
+    let _ = db::write_event(pool, |tx, _ts| {
+        let _current = db::items::read_item_by_id_tx(tx, id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+        Ok(EventDraft {
+            event_type: EventType::ItemDeleted,
+            item_id: Some(id.to_string()),
+            payload: json!({ "soft": true }),
+        })
+    })?;
+    Ok(())
+}
+
+// ── restore_item ──────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn restore_item(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+) -> Result<Item, String> {
+    let item = restore_item_inner(&pool, &id)?;
+    // Emit item_created so the frontend's idempotent
+    // onItemCreated adds it back to the store — same shape as a fresh
+    // creation from the frontend's point of view. SPEC §4.3
+    // ITEM_RESTORED lives on the backend; the Tauri event channel
+    // reuses item_created for the "now-alive-again" wire signal.
+    app.emit(ITEM_CREATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_CREATED_EVENT}: {e}"))?;
+    Ok(item)
+}
+
+pub fn restore_item_inner(pool: &SqlitePool, id: &str) -> Result<Item, String> {
+    let _ = db::write_event(pool, |tx, _ts| {
+        let current = db::items::read_item_by_id_any_tx(tx, id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+        if !current.deleted {
+            return Err("NOT_DELETED".into());
+        }
+        Ok(EventDraft {
+            event_type: EventType::ItemRestored,
+            item_id: Some(id.to_string()),
+            payload: json!({}),
+        })
+    })?;
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
+    items
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or_else(|| "restored item not found in projection".to_string())
 }
 
 /// Result of a successful swap — both items in their post-swap state.
@@ -903,6 +1117,287 @@ mod tests {
             .unwrap();
         // alphabetical by tier value: A, B, inbox (no C, no entries when empty)
         assert_eq!(counts, vec![("A".into(), 5), ("B".into(), 1)]);
+    }
+
+    // ── edit_item ────────────────────────────────────────────────
+
+    #[test]
+    fn edit_item_happy_path_updates_content_and_emits() {
+        let pool = fresh_pool();
+        let created = create_item_inner(&pool, Tier::Inbox, "before".into(), None, None).unwrap();
+        let edited = edit_item_inner(&pool, created.id.clone(), "after".into()).unwrap();
+        assert_eq!(edited.content, "after");
+
+        let conn = pool.get().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'ITEM_EDITED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn edit_item_rejects_no_op_and_empty_and_oversize() {
+        let pool = fresh_pool();
+        let created = create_item_inner(&pool, Tier::Inbox, "same".into(), None, None).unwrap();
+
+        assert_eq!(
+            edit_item_inner(&pool, created.id.clone(), "same".into()).unwrap_err(),
+            "NO_OP"
+        );
+        assert_eq!(
+            edit_item_inner(&pool, created.id.clone(), "   ".into()).unwrap_err(),
+            "CONTENT_EMPTY"
+        );
+        let oversize = "x".repeat(MAX_CONTENT_LEN + 1);
+        assert_eq!(
+            edit_item_inner(&pool, created.id.clone(), oversize).unwrap_err(),
+            "CONTENT_TOO_LONG"
+        );
+    }
+
+    #[test]
+    fn edit_item_rejects_unknown_id() {
+        let pool = fresh_pool();
+        let err = edit_item_inner(&pool, "nope".into(), "x".into()).unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
+    }
+
+    // ── set_item_state ───────────────────────────────────────────
+
+    #[test]
+    fn set_item_state_active_to_blocked_requires_reason() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let err = set_item_state_inner(&pool, item.id.clone(), ItemState::Blocked, None)
+            .unwrap_err();
+        assert_eq!(err, "REASON_REQUIRED");
+
+        let err2 = set_item_state_inner(
+            &pool,
+            item.id.clone(),
+            ItemState::Blocked,
+            Some("   ".into()),
+        )
+        .unwrap_err();
+        assert_eq!(err2, "REASON_REQUIRED");
+    }
+
+    #[test]
+    fn set_item_state_active_to_blocked_happy() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let updated = set_item_state_inner(
+            &pool,
+            item.id.clone(),
+            ItemState::Blocked,
+            Some("waiting on Y".into()),
+        )
+        .unwrap();
+        assert_eq!(updated.state, ItemState::Blocked);
+        assert_eq!(updated.blocked_reason.as_deref(), Some("waiting on Y"));
+    }
+
+    #[test]
+    fn set_item_state_active_to_done_then_back_to_active() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+
+        let done = set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        assert_eq!(done.state, ItemState::Done);
+        assert!(done.blocked_reason.is_none());
+
+        let back = set_item_state_inner(&pool, item.id.clone(), ItemState::Active, None).unwrap();
+        assert_eq!(back.state, ItemState::Active);
+    }
+
+    #[test]
+    fn set_item_state_no_op_rejected() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "x".into(), None, None).unwrap();
+        let err = set_item_state_inner(&pool, item.id.clone(), ItemState::Active, None)
+            .unwrap_err();
+        assert_eq!(err, "NO_OP");
+    }
+
+    #[test]
+    fn set_item_state_unblock_in_full_a_hits_cap() {
+        // Fill A with 5 active. Block one. Try to unblock → CAP_EXCEEDED
+        // because unblocking would push active count to 6.
+        let pool = fresh_pool();
+        let mut ids = Vec::new();
+        for i in 0..A_CAP {
+            let it = create_item_inner(&pool, Tier::A, format!("a{i}"), None, None).unwrap();
+            ids.push(it.id);
+        }
+        // Block the first one → A goes to 4 active.
+        set_item_state_inner(
+            &pool,
+            ids[0].clone(),
+            ItemState::Blocked,
+            Some("paused".into()),
+        )
+        .unwrap();
+        // Now add a 5th active so A is back at cap with 1 blocked on the side.
+        create_item_inner(&pool, Tier::A, "fresh-5th".into(), None, None).unwrap();
+        // Try to unblock the original: active count would go 5 → 6.
+        let err = set_item_state_inner(&pool, ids[0].clone(), ItemState::Active, None)
+            .unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED");
+    }
+
+    #[test]
+    fn set_item_state_block_then_done_clears_reason() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "x".into(), None, None).unwrap();
+        let blocked = set_item_state_inner(
+            &pool,
+            item.id.clone(),
+            ItemState::Blocked,
+            Some("reason-1".into()),
+        )
+        .unwrap();
+        assert_eq!(blocked.blocked_reason.as_deref(), Some("reason-1"));
+        // Transition blocked → done should null out blocked_reason.
+        let done = set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        assert_eq!(done.state, ItemState::Done);
+        assert!(done.blocked_reason.is_none());
+    }
+
+    // ── delete_item / restore_item ───────────────────────────────
+
+    #[test]
+    fn delete_then_restore_roundtrip() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "x".into(), None, None).unwrap();
+        delete_item_inner(&pool, &item.id).unwrap();
+
+        // Projection excludes deleted items.
+        {
+            let conn = pool.get().unwrap();
+            let items = db::items::list_active_items(&conn).unwrap();
+            assert!(items.iter().all(|i| i.id != item.id));
+        }
+
+        let restored = restore_item_inner(&pool, &item.id).unwrap();
+        assert_eq!(restored.id, item.id);
+        assert_eq!(restored.content, "x");
+        assert!(!restored.deleted);
+    }
+
+    #[test]
+    fn delete_item_event_logged() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "x".into(), None, None).unwrap();
+        delete_item_inner(&pool, &item.id).unwrap();
+        let conn = pool.get().unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'ITEM_DELETED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn restore_item_rejects_not_deleted() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "x".into(), None, None).unwrap();
+        let err = restore_item_inner(&pool, &item.id).unwrap_err();
+        assert_eq!(err, "NOT_DELETED");
+    }
+
+    #[test]
+    fn restore_item_rejects_unknown_id() {
+        let pool = fresh_pool();
+        let err = restore_item_inner(&pool, "nope").unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
+    }
+
+    #[test]
+    fn delete_item_rejects_unknown_id() {
+        let pool = fresh_pool();
+        let err = delete_item_inner(&pool, "nope").unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
+    }
+
+    // ── projection replay covers all new handlers ────────────────
+
+    #[test]
+    fn projection_replay_covers_state_edit_delete_restore() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "orig".into(), None, None).unwrap();
+        edit_item_inner(&pool, item.id.clone(), "edited".into()).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        delete_item_inner(&pool, &item.id).unwrap();
+        restore_item_inner(&pool, &item.id).unwrap();
+
+        let before: (String, String, bool) = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT content, state, deleted FROM items WHERE id = ?1",
+                [&item.id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)? != 0,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+
+        // Wipe projection; replay every event.
+        {
+            let mut conn = pool.get().unwrap();
+            conn.execute("DELETE FROM items", []).unwrap();
+            let tx = conn.transaction().unwrap();
+            let rows: Vec<(i64, i64, String, Option<String>, String)> = tx
+                .prepare("SELECT id, ts, type, item_id, payload FROM events ORDER BY id")
+                .unwrap()
+                .query_map([], |r| {
+                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+                })
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            for (eid, ts, ts_type, item_id_opt, payload_str) in rows {
+                let event_type = crate::domain::EventType::from_sql(&ts_type).unwrap();
+                let payload: serde_json::Value = serde_json::from_str(&payload_str).unwrap();
+                let event = crate::domain::Event {
+                    id: eid,
+                    ts,
+                    event_type,
+                    item_id: item_id_opt,
+                    payload,
+                };
+                db::items::apply_event_to_projection(&tx, &event).unwrap();
+            }
+            tx.commit().unwrap();
+        }
+
+        let after: (String, String, bool) = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT content, state, deleted FROM items WHERE id = ?1",
+                [&item.id],
+                |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)? != 0,
+                    ))
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(before, after, "replay must reproduce post-chain state");
     }
 
     #[test]

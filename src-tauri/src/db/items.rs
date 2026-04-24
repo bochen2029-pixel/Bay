@@ -17,6 +17,10 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
     match event.event_type {
         EventType::ItemCreated => apply_item_created(tx, event),
         EventType::ItemMoved => apply_item_moved(tx, event),
+        EventType::ItemEdited => apply_item_edited(tx, event),
+        EventType::ItemStateChanged => apply_item_state_changed(tx, event),
+        EventType::ItemDeleted => apply_item_deleted(tx, event),
+        EventType::ItemRestored => apply_item_restored(tx, event),
 
         // LLM suggestion events are advisory-only per CLAUDE.md §LLM
         // scope v1 and SPEC §4.3. They affect the event log but never
@@ -26,15 +30,8 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         | EventType::LlmSuggestionAccepted
         | EventType::LlmSuggestionRejected => Ok(()),
 
-        // Handlers land progressively with the increments that introduce
-        // their writers. An explicit `Err` here means: if such an event
-        // somehow gets built in the wrong increment, the transaction
-        // rolls back and the root cause surfaces immediately.
-        EventType::ItemEdited => Err("ITEM_EDITED handler lands in I-08".into()),
-        EventType::ItemStateChanged => Err("ITEM_STATE_CHANGED handler lands in I-08".into()),
+        // Remaining arms land with their increments.
         EventType::ItemDateSet => Err("ITEM_DATE_SET handler lands in I-09".into()),
-        EventType::ItemDeleted => Err("ITEM_DELETED handler lands in I-08".into()),
-        EventType::ItemRestored => Err("ITEM_RESTORED handler lands in I-08".into()),
     }
 }
 
@@ -111,6 +108,117 @@ fn apply_item_moved(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct ItemEditedPayload {
+    #[allow(dead_code)]
+    content_before: String,
+    content_after: String,
+}
+
+fn apply_item_edited(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_EDITED event missing item_id".to_string())?;
+    let p: ItemEditedPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode ITEM_EDITED payload: {e}"))?;
+    let updated = tx
+        .execute(
+            "UPDATE items SET content = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted = 0",
+            params![p.content_after, event.ts, id],
+        )
+        .map_err(|e| format!("update item row (edit): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_EDITED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemStateChangedPayload {
+    #[allow(dead_code)]
+    state_before: ItemState,
+    state_after: ItemState,
+    /// Only populated when `state_after == Blocked`. SPEC §4.3.
+    blocked_reason: Option<String>,
+}
+
+fn apply_item_state_changed(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_STATE_CHANGED event missing item_id".to_string())?;
+    let p: ItemStateChangedPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode ITEM_STATE_CHANGED payload: {e}"))?;
+
+    // blocked_reason is meaningful only while state is Blocked; clear
+    // it on any other transition so the field doesn't leak across
+    // state changes (active→done shouldn't carry a prior blocked reason).
+    let reason_cell: Option<String> = if p.state_after == ItemState::Blocked {
+        p.blocked_reason
+    } else {
+        None
+    };
+
+    let updated = tx
+        .execute(
+            "UPDATE items SET state = ?1, blocked_reason = ?2, updated_at = ?3 \
+             WHERE id = ?4 AND deleted = 0",
+            params![p.state_after.as_sql(), reason_cell, event.ts, id],
+        )
+        .map_err(|e| format!("update item row (state): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_STATE_CHANGED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
+fn apply_item_deleted(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_DELETED event missing item_id".to_string())?;
+    // Soft delete: flip the `deleted` flag. Do NOT constrain on
+    // `deleted = 0` — replaying a DELETE event after a RESTORE/re-DELETE
+    // chain needs to re-mark the row regardless of current state.
+    let updated = tx
+        .execute(
+            "UPDATE items SET deleted = 1, updated_at = ?1 WHERE id = ?2",
+            params![event.ts, id],
+        )
+        .map_err(|e| format!("update item row (delete): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_DELETED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
+fn apply_item_restored(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_RESTORED event missing item_id".to_string())?;
+    let updated = tx
+        .execute(
+            "UPDATE items SET deleted = 0, updated_at = ?1 WHERE id = ?2",
+            params![event.ts, id],
+        )
+        .map_err(|e| format!("update item row (restore): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_RESTORED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
 /// Read all non-deleted items, sorted by tier then rank, for the
 /// bootstrap payload. Takes a plain `Connection` because the caller is
 /// outside any in-flight transaction; a transactional variant lands in
@@ -145,6 +253,24 @@ pub fn read_item_by_id_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Item>
     )
     .optional()
     .map_err(|e| format!("read item by id: {e}"))
+}
+
+/// Read any item by id, including soft-deleted ones. Used by
+/// `restore_item` to verify the item exists-and-is-deleted before
+/// emitting ITEM_RESTORED.
+pub fn read_item_by_id_any_tx(
+    tx: &Transaction<'_>,
+    id: &str,
+) -> Result<Option<Item>, String> {
+    tx.query_row(
+        "SELECT id, content, tier, rank, state, blocked_reason, \
+                start_at, due_at, created_at, updated_at, deleted \
+         FROM items WHERE id = ?1",
+        params![id],
+        row_to_item,
+    )
+    .optional()
+    .map_err(|e| format!("read any item by id: {e}"))
 }
 
 fn row_to_item(row: &Row<'_>) -> rusqlite::Result<Item> {
