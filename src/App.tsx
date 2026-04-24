@@ -18,10 +18,13 @@ import { shallow } from "zustand/shallow";
 
 import { A_CAP, B_CAP, BootstrapResult, Item, Tier } from "./domain";
 import { rankBetween } from "./rank";
+import { needsSwap } from "./swap";
 import { useStore } from "./store";
 import { Strip } from "./components/Strip";
 import { TauriEventBridge } from "./components/TauriEventBridge";
 import { QuickCaptureModal } from "./components/QuickCaptureModal";
+import { MoveReasonModal } from "./components/MoveReasonModal";
+import { SwapModal } from "./components/SwapModal";
 
 type View = "board" | "calendar" | "timetravel";
 
@@ -70,6 +73,8 @@ export default function App() {
       <TopBar view={view} onView={handleView} />
       <main className="main">{view === "board" ? <Board /> : null}</main>
       <QuickCaptureModal />
+      <MoveReasonModal />
+      <SwapModal />
     </div>
   );
 }
@@ -125,6 +130,8 @@ function Board() {
   );
 
   const onItemUpdated = useStore((s) => s.onItemUpdated);
+  const openMoveReason = useStore((s) => s.openMoveReason);
+  const openSwap = useStore((s) => s.openSwap);
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
@@ -139,20 +146,51 @@ function Board() {
     const overItem = state.items[String(over.id)];
     if (!activeItem || !overItem) return;
 
-    // Cross-tier rejection (I-06 scope). SwapModal + cross-tier
-    // ITEM_MOVED land in I-07. @dnd-kit's default visual revert handles
-    // the user-visible snap-back.
-    if (activeItem.tier !== overItem.tier) return;
+    // ── cross-tier ────────────────────────────────────────────────
+    if (activeItem.tier !== overItem.tier) {
+      const targetTier = overItem.tier;
+      const targetIds = state.itemsByTier[targetTier];
+      const overIdx = targetIds.indexOf(String(over.id));
+      if (overIdx < 0) return;
 
+      // Drop-above semantics: active lands at overIdx in target,
+      // pushing over and everything below down one slot. Rank
+      // neighbors: targetIds[overIdx - 1] (or none) above,
+      // overItem below.
+      const prevId = overIdx > 0 ? targetIds[overIdx - 1] : null;
+      const prevRank = prevId ? state.items[prevId].rank : null;
+      const newRank = rankBetween(prevRank, overItem.rank);
+
+      // For I-07, active count equals items-count-by-tier because
+      // state transitions (blocked/done) don't land until I-08. When
+      // they do, swap this for an explicit activeCountByTier.
+      const targetActiveCount = targetIds.length;
+
+      if (needsSwap(activeItem, targetTier, targetActiveCount)) {
+        openSwap({
+          kind: "swap",
+          enteringId: String(active.id),
+          enteringTier: targetTier,
+          enteringRank: newRank,
+        });
+      } else {
+        openMoveReason({
+          kind: "reason",
+          activeId: String(active.id),
+          toTier: targetTier,
+          toRank: newRank,
+        });
+      }
+      return;
+    }
+
+    // ── intra-tier reorder (I-06 behavior) ─────────────────────────
     const tier = activeItem.tier;
     const ids = state.itemsByTier[tier];
     const oldIndex = ids.indexOf(String(active.id));
     const newIndex = ids.indexOf(String(over.id));
     if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
 
-    // Apply the reorder locally so we can look up the moved item's
-    // neighbors at its new position — the three drop cases
-    // (start / middle / end) fall out of prev/next null-ness below.
     const reordered = arrayMove(ids, oldIndex, newIndex);
     const movedIdx = reordered.indexOf(String(active.id));
     const prevId = movedIdx > 0 ? reordered[movedIdx - 1] : null;
@@ -162,10 +200,6 @@ function Board() {
     const nextRank = nextId ? state.items[nextId].rank : null;
 
     const newRank = rankBetween(prevRank, nextRank);
-
-    // Frontend no-op pre-check. Backend also rejects NO_OP defensively;
-    // catching it here avoids an unnecessary round-trip + invoke error
-    // surface.
     if (newRank === activeItem.rank) return;
 
     invoke<unknown>("move_item", {
@@ -174,16 +208,12 @@ function Board() {
       toRank: newRank,
     })
       .then((raw) => {
-        // Best-effort immediate store update; the backend's
-        // item_updated event also calls onItemUpdated, and the
-        // idempotency check on `updated_at` makes double-delivery a
-        // no-op.
         const item = Item.parse(raw);
         onItemUpdated(item);
       })
       .catch((err) => {
         const msg = typeof err === "string" ? err : String(err);
-        if (msg === "NO_OP") return; // race against concurrent updates
+        if (msg === "NO_OP") return;
         console.error("move_item failed:", err);
       });
   }

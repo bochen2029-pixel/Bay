@@ -85,6 +85,7 @@ pub fn run() {
             bootstrap,
             commands::items::create_item,
             commands::items::move_item,
+            commands::items::swap_move,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

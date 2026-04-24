@@ -90,27 +90,53 @@ pub fn write_event<F>(pool: &SqlitePool, build: F) -> Result<Event, String>
 where
     F: FnOnce(&Transaction<'_>, i64) -> Result<EventDraft, String>,
 {
+    let events = write_events(pool, |tx, ts| build(tx, ts).map(|d| vec![d]))?;
+    events
+        .into_iter()
+        .next()
+        .ok_or_else(|| "write_event: builder produced no events".to_string())
+}
+
+/// Compound variant: the builder returns a vector of drafts to be
+/// appended and applied in order, all inside a single transaction.
+/// Every draft shares the same timestamp (one logical moment). If any
+/// append or apply fails mid-sequence, the whole transaction rolls
+/// back — the load-bearing correctness property for I-07's swap_move.
+///
+/// `swap_move` is the first caller; future cascading reorgs (v2+)
+/// will build on this same primitive. Opening a raw transaction
+/// outside of here is a bug: the wrapper is the only place that
+/// guarantees append+apply stays coupled on every event.
+pub fn write_events<F>(pool: &SqlitePool, build: F) -> Result<Vec<Event>, String>
+where
+    F: FnOnce(&Transaction<'_>, i64) -> Result<Vec<EventDraft>, String>,
+{
     let mut conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
     let tx = conn
         .transaction()
         .map_err(|e| format!("begin tx: {e}"))?;
     let ts = unix_ms_now();
-    let EventDraft {
+    let drafts = build(&tx, ts)?;
+    let mut out = Vec::with_capacity(drafts.len());
+    for EventDraft {
         event_type,
         item_id,
         payload,
-    } = build(&tx, ts)?;
-    let id = events::append_event(&tx, ts, event_type, item_id.as_deref(), &payload)?;
-    let event = Event {
-        id,
-        ts,
-        event_type,
-        item_id,
-        payload,
-    };
-    items::apply_event_to_projection(&tx, &event)?;
+    } in drafts
+    {
+        let id = events::append_event(&tx, ts, event_type, item_id.as_deref(), &payload)?;
+        let event = Event {
+            id,
+            ts,
+            event_type,
+            item_id,
+            payload,
+        };
+        items::apply_event_to_projection(&tx, &event)?;
+        out.push(event);
+    }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
-    Ok(event)
+    Ok(out)
 }
 
 pub fn unix_ms_now() -> i64 {
@@ -258,6 +284,79 @@ mod tests {
         assert_eq!(rank, "m");
         assert_eq!(state, "active");
         assert_eq!(deleted, 0);
+    }
+
+    #[test]
+    fn write_events_rolls_back_when_any_apply_fails() {
+        // The load-bearing correctness property behind swap_move: a
+        // partial compound write must leave zero state on disk. Drive
+        // the failure by staging a second event whose handler is not
+        // yet implemented (ITEM_DELETED lands in I-08 and returns Err).
+        use serde_json::json;
+
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+
+        // Seed a real item via a clean write_event so the projection has
+        // something to "roll back to" after the failed compound.
+        let created = write_event(&pool, |_tx, _ts| {
+            Ok(EventDraft {
+                event_type: EventType::ItemCreated,
+                item_id: Some("seed-id".into()),
+                payload: json!({
+                    "content": "seed",
+                    "tier": "inbox",
+                    "rank": "m",
+                    "start_at": null,
+                    "due_at": null,
+                }),
+            })
+        })
+        .unwrap();
+        assert_eq!(created.event_type, EventType::ItemCreated);
+
+        // Two-draft compound: first draft is a valid ITEM_MOVED for our
+        // seed; second draft routes through an unimplemented handler
+        // and fails at apply time. Everything from both drafts must be
+        // discarded.
+        let result = write_events(&pool, |_tx, _ts| {
+            Ok(vec![
+                EventDraft {
+                    event_type: EventType::ItemMoved,
+                    item_id: Some("seed-id".into()),
+                    payload: json!({
+                        "tier_before": "inbox",
+                        "rank_before": "m",
+                        "tier_after": "A",
+                        "rank_after": "z",
+                        "reason": null,
+                    }),
+                },
+                EventDraft {
+                    event_type: EventType::ItemDeleted,
+                    item_id: Some("seed-id".into()),
+                    payload: json!({ "soft": true }),
+                },
+            ])
+        });
+        assert!(result.is_err(), "second draft's unimplemented handler must Err");
+
+        let conn = pool.get().unwrap();
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            event_count, 1,
+            "only the pre-existing ITEM_CREATED must remain; the compound must roll back"
+        );
+        let tier: String = conn
+            .query_row(
+                "SELECT tier FROM items WHERE id = 'seed-id'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tier, "inbox", "projection must be untouched by the failed compound");
     }
 
     #[test]

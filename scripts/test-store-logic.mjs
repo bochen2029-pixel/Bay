@@ -85,6 +85,20 @@ function rankBetween(a, b) {
   return midpoint(a ?? "", b);
 }
 
+// ─── needsSwap (I-07; mirrors src/swap.ts) ───────────────────────────────────
+// The three-way conjunction that distinguishes SwapModal from
+// MoveReasonModal at cross-tier drop time.
+
+const A_CAP_JS = 5;
+const B_CAP_JS = 12;
+
+function needsSwap(item, targetTier, targetActiveCount) {
+  if (targetTier !== "A" && targetTier !== "B") return false;
+  if (item.state !== "active") return false;
+  const cap = targetTier === "A" ? A_CAP_JS : B_CAP_JS;
+  return targetActiveCount >= cap;
+}
+
 // ─── onItemUpdated reducer (I-06; mirrors src/store.ts) ──────────────────────
 
 function reduceItemUpdated(state, item) {
@@ -301,6 +315,32 @@ function state1() {
   });
   assertEq(next.itemsByTier.A, ["y", "x"], "rank to front moves to index 0");
 }
+
+// ─── needsSwap ───────────────────────────────────────────────────────────────
+
+const activeItem = { id: "x", state: "active" };
+const blockedItem = { id: "x", state: "blocked" };
+const doneItem = { id: "x", state: "done" };
+
+// Target tier + at-cap + active → swap.
+assertEq(needsSwap(activeItem, "A", 5), true, "needsSwap: A active at cap");
+assertEq(needsSwap(activeItem, "B", 12), true, "needsSwap: B active at cap");
+
+// Target tier + at-cap + NOT active → MoveReasonModal, not swap.
+assertEq(needsSwap(blockedItem, "A", 5), false, "needsSwap: A blocked → no swap");
+assertEq(needsSwap(doneItem, "A", 5), false, "needsSwap: A done → no swap");
+
+// Active + target tier but under cap → no swap (regular move).
+assertEq(needsSwap(activeItem, "A", 4), false, "needsSwap: A active under cap");
+assertEq(needsSwap(activeItem, "B", 11), false, "needsSwap: B active under cap");
+
+// Target is uncapped (Inbox / C) — never a swap.
+assertEq(needsSwap(activeItem, "inbox", 999), false, "needsSwap: Inbox never");
+assertEq(needsSwap(activeItem, "C", 999), false, "needsSwap: C never");
+
+// Edge: active count above cap (defensive) still triggers swap — the
+// UX presumption is "user is trying to add more than allowed".
+assertEq(needsSwap(activeItem, "A", 6), true, "needsSwap: A over-cap still swaps");
 
 if (failures > 0) {
   console.error(`\n${failures} failure(s)`);

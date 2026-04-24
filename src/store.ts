@@ -17,6 +17,25 @@ export type BackendWarning = {
   message: string;
 };
 
+/** Pending cross-tier drag whose confirmation modal is currently open.
+ *  Captured at onDragEnd time so cancelling is a single reducer call
+ *  with zero side effects. */
+export type MoveReasonPending = {
+  kind: "reason";
+  activeId: string;
+  toTier: Tier;
+  toRank: string;
+};
+
+/** Pending swap: the user dragged an active item into a full A or B
+ *  and the SwapModal is collecting which item to demote + where. */
+export type SwapPending = {
+  kind: "swap";
+  enteringId: string;
+  enteringTier: Tier; // A or B (where entering goes)
+  enteringRank: string;
+};
+
 type State = {
   items: Record<string, Item>;
   itemsByTier: Record<Tier, string[]>;
@@ -27,6 +46,8 @@ type State = {
   selectedItemId: string | null;
   quickCaptureOpen: boolean;
   backendWarning: BackendWarning | null;
+  moveReasonPending: MoveReasonPending | null;
+  swapPending: SwapPending | null;
 };
 
 type Actions = {
@@ -47,6 +68,11 @@ type Actions = {
   closeQuickCapture: () => void;
 
   setBackendWarning: (w: BackendWarning | null) => void;
+
+  openMoveReason: (p: MoveReasonPending) => void;
+  closeMoveReason: () => void;
+  openSwap: (p: SwapPending) => void;
+  closeSwap: () => void;
 };
 
 type Store = State & Actions;
@@ -66,6 +92,8 @@ export const useStore = create<Store>((set, get) => ({
   selectedItemId: null,
   quickCaptureOpen: false,
   backendWarning: null,
+  moveReasonPending: null,
+  swapPending: null,
 
   bootstrap: (items, settings) => {
     const itemsMap: Record<string, Item> = {};
@@ -132,6 +160,11 @@ export const useStore = create<Store>((set, get) => ({
   closeQuickCapture: () => set({ quickCaptureOpen: false }),
 
   setBackendWarning: (w) => set({ backendWarning: w }),
+
+  openMoveReason: (p) => set({ moveReasonPending: p }),
+  closeMoveReason: () => set({ moveReasonPending: null }),
+  openSwap: (p) => set({ swapPending: p }),
+  closeSwap: () => set({ swapPending: null }),
 }));
 
 function compareRank(a: string, b: string): number {

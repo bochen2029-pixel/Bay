@@ -297,3 +297,143 @@ button:hover {
   line-height: 1;
   padding: 0 4px;
 }
+
+/* ── Cross-tier modals (MoveReasonModal, SwapModal) ───────────── */
+
+.modal-card {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  width: min(420px, 90vw);
+}
+
+.modal-card-wide {
+  width: min(560px, 90vw);
+}
+
+.modal-card::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.modal-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.modal-body {
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-item-preview {
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.modal-lead {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.modal-textarea {
+  padding: 6px 8px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  resize: vertical;
+}
+
+.modal-textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.modal-error {
+  padding: 6px 8px;
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.modal-actions button.is-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.modal-actions button.is-primary:disabled {
+  background: transparent;
+  color: var(--fg-muted);
+  border-color: var(--border);
+}
+
+.swap-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.swap-choice-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 4px;
+  font-size: 13px;
+}
+
+.swap-choice-label {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}
+
+.swap-choice-dests {
+  display: flex;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.swap-choice-dest {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  cursor: pointer;
+}

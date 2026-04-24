@@ -2,6 +2,7 @@
 //! `db::write_event`, never touching the events or items tables
 //! outside that wrapper.
 
+use serde::Serialize;
 use serde_json::json;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
@@ -217,6 +218,173 @@ pub fn move_item_inner(
         .into_iter()
         .find(|i| Some(&i.id) == event.item_id.as_ref())
         .ok_or_else(|| "moved item not found in projection".to_string())
+}
+
+/// Result of a successful swap — both items in their post-swap state.
+#[derive(Debug, Serialize)]
+pub struct SwapResult {
+    pub leaving: Item,
+    pub entering: Item,
+}
+
+#[tauri::command]
+pub fn swap_move(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    leaving_id: String,
+    leaving_dest: Tier,
+    entering_id: String,
+    entering_tier: Tier,
+    entering_rank: String,
+    reason: Option<String>,
+) -> Result<SwapResult, String> {
+    let result = swap_move_inner(
+        &pool,
+        leaving_id,
+        leaving_dest,
+        entering_id,
+        entering_tier,
+        entering_rank,
+        reason,
+    )?;
+    // Both items changed — emit `item_updated` for each so subscribers
+    // that only listen to the event stream stay consistent even if the
+    // invoke caller doesn't forward SwapResult. The store handler is
+    // idempotent on updated_at, so the invoke-resolve path + these two
+    // events never double-process.
+    app.emit(ITEM_UPDATED_EVENT, &result.leaving)
+        .map_err(|e| format!("emit leaving: {e}"))?;
+    app.emit(ITEM_UPDATED_EVENT, &result.entering)
+        .map_err(|e| format!("emit entering: {e}"))?;
+    Ok(result)
+}
+
+/// Pure inner function behind `swap_move`. Emits two `ITEM_MOVED`
+/// events in a single SQLite transaction via `db::write_events`; if
+/// either append or apply fails, both roll back.
+///
+/// I-07 covers the drag-into-full-tier path: `entering_id` is always
+/// an existing item (the one being dragged in). The SPEC §5.1 shape
+/// also allows creating a new item via swap, but that's out of scope
+/// for v1 (the frontend "+ Add" button is disabled at cap rather than
+/// opening the swap modal).
+///
+/// Errors:
+///   - `ITEM_NOT_FOUND: {leaving|entering}` — the id doesn't match
+///   - `BAD_ARGS: ...` — degenerate arg combinations
+///   - `NO_SWAP_NEEDED` — target tier is not actually at cap
+///   - `CAP_EXCEEDED: leaving_dest` — leaving target is also full
+pub fn swap_move_inner(
+    pool: &SqlitePool,
+    leaving_id: String,
+    leaving_dest: Tier,
+    entering_id: String,
+    entering_tier: Tier,
+    entering_rank: String,
+    reason: Option<String>,
+) -> Result<SwapResult, String> {
+    if leaving_id == entering_id {
+        return Err("BAD_ARGS: leaving and entering must differ".into());
+    }
+    if !matches!(entering_tier, Tier::A | Tier::B) {
+        return Err("BAD_ARGS: swap entering_tier must be A or B".into());
+    }
+
+    let events = db::write_events(pool, |tx, _ts| {
+        let leaving = db::items::read_item_by_id_tx(tx, &leaving_id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND: leaving".to_string())?;
+        let entering = db::items::read_item_by_id_tx(tx, &entering_id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND: entering".to_string())?;
+
+        // `leaving` must currently sit in the tier being swapped into
+        // (that's the whole point of swap: pick one of the existing
+        // cap-filling items to demote).
+        if leaving.tier != entering_tier {
+            return Err("BAD_ARGS: leaving not in entering_tier".into());
+        }
+
+        // Defensive: swap_move is only meaningful when the target tier
+        // is actually at cap. Frontend needsSwap() already checks, but
+        // belt-and-suspenders keeps the event log clean of bogus swaps.
+        let cap = match entering_tier {
+            Tier::A => A_CAP as i64,
+            Tier::B => B_CAP as i64,
+            _ => unreachable!(),
+        };
+        if db::items::count_active_in_tier(tx, entering_tier)? < cap {
+            return Err("NO_SWAP_NEEDED".into());
+        }
+
+        // leaving_dest cap check for active items. v1 doesn't cascade;
+        // if the user picked B-as-destination but B is also full, the
+        // swap fails cleanly rather than triggering a second swap modal.
+        if leaving.state == ItemState::Active {
+            match leaving_dest {
+                Tier::A => {
+                    if db::items::count_active_in_tier(tx, Tier::A)? >= A_CAP as i64 {
+                        return Err("CAP_EXCEEDED: leaving_dest".into());
+                    }
+                }
+                Tier::B => {
+                    if db::items::count_active_in_tier(tx, Tier::B)? >= B_CAP as i64 {
+                        return Err("CAP_EXCEEDED: leaving_dest".into());
+                    }
+                }
+                Tier::Inbox | Tier::C => {}
+            }
+        }
+
+        // Demoted item lands at the end of leaving_dest. The user chose
+        // the tier in the modal; choosing the position within that tier
+        // is intra-tier drag work (I-06), orthogonal to the swap.
+        let leaving_new_rank =
+            rank_between(db::items::max_rank_in_tier(tx, leaving_dest)?.as_deref(), None);
+
+        let leaving_payload = json!({
+            "tier_before": leaving.tier,
+            "rank_before": leaving.rank,
+            "tier_after": leaving_dest,
+            "rank_after": leaving_new_rank,
+            "reason": reason,
+        });
+        let entering_payload = json!({
+            "tier_before": entering.tier,
+            "rank_before": entering.rank,
+            "tier_after": entering_tier,
+            "rank_after": entering_rank,
+            "reason": reason,
+        });
+
+        Ok(vec![
+            EventDraft {
+                event_type: EventType::ItemMoved,
+                item_id: Some(leaving_id.clone()),
+                payload: leaving_payload,
+            },
+            EventDraft {
+                event_type: EventType::ItemMoved,
+                item_id: Some(entering_id.clone()),
+                payload: entering_payload,
+            },
+        ])
+    })?;
+    debug_assert_eq!(events.len(), 2, "swap must emit exactly two events");
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let all = db::items::list_active_items(&conn)?;
+    let leaving_out = all
+        .iter()
+        .find(|i| i.id == leaving_id)
+        .cloned()
+        .ok_or_else(|| "leaving item missing post-swap".to_string())?;
+    let entering_out = all
+        .into_iter()
+        .find(|i| i.id == entering_id)
+        .ok_or_else(|| "entering item missing post-swap".to_string())?;
+    Ok(SwapResult {
+        leaving: leaving_out,
+        entering: entering_out,
+    })
 }
 
 #[cfg(test)]
@@ -493,6 +661,248 @@ mod tests {
             )
             .unwrap();
         assert_eq!(current_tier, "inbox");
+    }
+
+    // ── swap_move ────────────────────────────────────────────────
+
+    fn fill_a_and_seed_inbox_item(pool: &SqlitePool) -> (Vec<Item>, Item) {
+        // Return (a_items_ordered_by_rank_ascending, inbox_item).
+        let mut a_items = Vec::new();
+        for i in 0..A_CAP {
+            // Insert in reverse so TOP placement stacks them in the order
+            // we can reason about; the exact order isn't important for the
+            // tests below, only that A is at cap.
+            let item = create_item_inner(pool, Tier::A, format!("a{i}"), None, None).unwrap();
+            a_items.push(item);
+        }
+        // Re-fetch sorted by rank asc to match frontend presentation.
+        a_items.sort_by(|x, y| x.rank.cmp(&y.rank));
+        let inbox_item =
+            create_item_inner(pool, Tier::Inbox, "incoming".into(), None, None).unwrap();
+        (a_items, inbox_item)
+    }
+
+    #[test]
+    fn swap_move_happy_path_emits_two_events_atomically() {
+        let pool = fresh_pool();
+        let (a_items, inbox_item) = fill_a_and_seed_inbox_item(&pool);
+        let demoted = a_items.last().unwrap().clone(); // any A item works
+
+        // Entering rank: above A's current top (TOP-placement idiom).
+        let entering_rank =
+            crate::domain::rank_between(None, Some(a_items[0].rank.as_str()));
+
+        let result = swap_move_inner(
+            &pool,
+            demoted.id.clone(),
+            Tier::B,
+            inbox_item.id.clone(),
+            Tier::A,
+            entering_rank.clone(),
+            Some("reason-x".into()),
+        )
+        .expect("swap should succeed");
+
+        assert_eq!(result.leaving.tier, Tier::B);
+        assert_eq!(result.entering.tier, Tier::A);
+        assert_eq!(result.entering.rank, entering_rank);
+
+        let conn = pool.get().unwrap();
+        // Exactly two ITEM_MOVED rows, adjacent ids, same ts.
+        let rows: Vec<(i64, i64, String, Option<String>)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT id, ts, type, item_id FROM events \
+                     WHERE type='ITEM_MOVED' ORDER BY id",
+                )
+                .unwrap();
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
+        };
+        assert_eq!(rows.len(), 2, "swap emits exactly two ITEM_MOVED events");
+        assert_eq!(
+            rows[1].0 - rows[0].0,
+            1,
+            "event ids must be adjacent (single transaction)"
+        );
+        assert_eq!(rows[0].1, rows[1].1, "events share the same timestamp");
+        assert_eq!(rows[0].3.as_deref(), Some(demoted.id.as_str()));
+        assert_eq!(rows[1].3.as_deref(), Some(inbox_item.id.as_str()));
+
+        // A stays at cap after the swap (the demoted one left, a new
+        // one arrived).
+        let a_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE tier='A' AND state='active' AND deleted=0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_count, A_CAP as i64);
+    }
+
+    #[test]
+    fn swap_move_rejects_when_target_not_at_cap() {
+        let pool = fresh_pool();
+        // Only 3 items in A — not at cap.
+        for i in 0..3 {
+            create_item_inner(&pool, Tier::A, format!("a{i}"), None, None).unwrap();
+        }
+        let inbox_item =
+            create_item_inner(&pool, Tier::Inbox, "incoming".into(), None, None).unwrap();
+        let some_a = create_item_inner(&pool, Tier::A, "pseudo-demoted".into(), None, None)
+            .unwrap(); // now A=4
+        assert!(some_a.tier == Tier::A);
+
+        let err = swap_move_inner(
+            &pool,
+            some_a.id.clone(),
+            Tier::B,
+            inbox_item.id.clone(),
+            Tier::A,
+            "m".into(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err, "NO_SWAP_NEEDED");
+    }
+
+    #[test]
+    fn swap_move_rejects_unknown_ids() {
+        let pool = fresh_pool();
+        let (_a, inbox_item) = fill_a_and_seed_inbox_item(&pool);
+
+        let missing_leaving = swap_move_inner(
+            &pool,
+            "not-a-real-id".into(),
+            Tier::B,
+            inbox_item.id.clone(),
+            Tier::A,
+            "m".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(missing_leaving.starts_with("ITEM_NOT_FOUND: leaving"));
+
+        // Valid leaving id in A, but entering id is bogus. Reads run in
+        // order (leaving first), so the bogus entering surfaces
+        // `ITEM_NOT_FOUND: entering`.
+        let a_item = {
+            let conn = pool.get().unwrap();
+            let items = db::items::list_active_items(&conn).unwrap();
+            items.into_iter().find(|i| i.tier == Tier::A).unwrap()
+        };
+        let missing_entering = swap_move_inner(
+            &pool,
+            a_item.id.clone(),
+            Tier::B,
+            "also-not-real".into(),
+            Tier::A,
+            "m".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(missing_entering.starts_with("ITEM_NOT_FOUND: entering"));
+    }
+
+    #[test]
+    fn swap_move_rejects_when_leaving_dest_at_cap() {
+        // A is at cap; B is also at cap. Demoting from A into B must
+        // fail rather than silently cascading.
+        let pool = fresh_pool();
+        for i in 0..A_CAP {
+            create_item_inner(&pool, Tier::A, format!("a{i}"), None, None).unwrap();
+        }
+        for i in 0..B_CAP {
+            create_item_inner(&pool, Tier::B, format!("b{i}"), None, None).unwrap();
+        }
+        let inbox_item =
+            create_item_inner(&pool, Tier::Inbox, "incoming".into(), None, None).unwrap();
+        let some_a = {
+            let conn = pool.get().unwrap();
+            let items = db::items::list_active_items(&conn).unwrap();
+            items.into_iter().find(|i| i.tier == Tier::A).unwrap()
+        };
+
+        let err = swap_move_inner(
+            &pool,
+            some_a.id.clone(),
+            Tier::B,
+            inbox_item.id.clone(),
+            Tier::A,
+            "z".into(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED: leaving_dest");
+
+        // Nothing changed: two_a events didn't land.
+        let conn = pool.get().unwrap();
+        let moved_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type='ITEM_MOVED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(moved_count, 0);
+    }
+
+    #[test]
+    fn swap_move_rejects_self_swap() {
+        let pool = fresh_pool();
+        let (_a, inbox_item) = fill_a_and_seed_inbox_item(&pool);
+        let err = swap_move_inner(
+            &pool,
+            inbox_item.id.clone(),
+            Tier::C,
+            inbox_item.id.clone(),
+            Tier::A,
+            "m".into(),
+            None,
+        )
+        .unwrap_err();
+        assert!(err.starts_with("BAD_ARGS"));
+    }
+
+    #[test]
+    fn swap_move_preserves_active_counts() {
+        // Pre-swap: A=5, Inbox=1 incoming.
+        // Post-swap (demote to B): A=5, B=1, Inbox=0.
+        let pool = fresh_pool();
+        let (a_items, inbox_item) = fill_a_and_seed_inbox_item(&pool);
+        let demoted = a_items.last().unwrap().clone();
+
+        let entering_rank =
+            crate::domain::rank_between(None, Some(a_items[0].rank.as_str()));
+        swap_move_inner(
+            &pool,
+            demoted.id.clone(),
+            Tier::B,
+            inbox_item.id.clone(),
+            Tier::A,
+            entering_rank,
+            None,
+        )
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let counts: Vec<(String, i64)> = conn
+            .prepare(
+                "SELECT tier, COUNT(*) FROM items \
+                 WHERE state='active' AND deleted=0 GROUP BY tier ORDER BY tier",
+            )
+            .unwrap()
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        // alphabetical by tier value: A, B, inbox (no C, no entries when empty)
+        assert_eq!(counts, vec![("A".into(), 5), ("B".into(), 1)]);
     }
 
     #[test]
