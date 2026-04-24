@@ -123,6 +123,9 @@ pub fn run() {
             commands::capture::toggle_lan_capture,
             commands::capture::get_lan_capture_status,
             commands::settings::test_llm_connection,
+            commands::llm::analyze,
+            commands::llm::accept_suggestion,
+            commands::llm::reject_suggestion,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

@@ -1111,3 +1111,175 @@ button:hover {
   color: #c0392b;
   font-size: 12px;
 }
+
+/* ── Analyze panel (I-14) ──────────────────────────────────────── */
+
+.analyze-panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(400px, 95vw);
+  background: var(--bg-elevated);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  z-index: 26;
+  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.08);
+}
+
+.analyze-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.analyze-header h3 {
+  margin: 0;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--fg-muted);
+}
+
+.analyze-body {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.analyze-intro p {
+  margin: 0 0 8px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.analyze-running {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.analyze-spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.analyze-stage {
+  font-size: 13px;
+}
+
+.analyze-scope {
+  font-size: 11px;
+  color: var(--fg-muted);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.analyze-empty {
+  padding: 16px 8px;
+  text-align: center;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.analyze-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.analyze-obs {
+  display: flex;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+}
+
+.analyze-obs.is-warn {
+  border-color: rgba(220, 160, 40, 0.4);
+  background: rgba(220, 160, 40, 0.08);
+}
+
+.analyze-obs-icon {
+  font-size: 14px;
+  line-height: 1.4;
+  flex: 0 0 auto;
+}
+
+.analyze-obs-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.analyze-obs-text {
+  font-size: 13px;
+}
+
+.analyze-obs-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.analyze-obs-link {
+  font-size: 11px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.analyze-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.analyze-actions button.is-primary,
+.analyze-intro button.is-primary {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+.analyze-error {
+  padding: 10px;
+  border: 1px solid rgba(192, 57, 43, 0.4);
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 4px;
+  color: #c0392b;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.analyze-error button {
+  align-self: flex-start;
+}

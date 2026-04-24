@@ -7,7 +7,10 @@
 //! settings from Tauri state on demand — cloning the fields it needs
 //! so it doesn't hold the Mutex guard across the await boundary.
 
+pub mod compression;
 pub mod openai_compat;
+pub mod parse;
+pub mod prompt;
 
 use std::time::Duration;
 

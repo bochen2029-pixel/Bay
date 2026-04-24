@@ -5,4 +5,5 @@
 pub mod capture;
 pub mod events;
 pub mod items;
+pub mod llm;
 pub mod settings;

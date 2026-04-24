@@ -31,6 +31,7 @@ import { CalendarView } from "./components/CalendarView";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { TimeTravelView } from "./components/TimeTravelView";
 import { SettingsView } from "./components/SettingsView";
+import { AnalyzePanel } from "./components/AnalyzePanel";
 
 type View = "board" | "calendar" | "timetravel" | "settings";
 
@@ -56,6 +57,7 @@ const CAP_FULL_TOOLTIP = "Full — drag an item in (swap will be offered)";
 
 export default function App() {
   const [view, setView] = useState<View>("board");
+  const [analyzeOpen, setAnalyzeOpen] = useState(false);
   const bootstrap = useStore((s) => s.bootstrap);
 
   useEffect(() => {
@@ -77,7 +79,11 @@ export default function App() {
     <div className="app">
       <TauriEventBridge />
       <BackendWarningBanner />
-      <TopBar view={view} onView={handleView} />
+      <TopBar
+        view={view}
+        onView={handleView}
+        onAnalyze={() => setAnalyzeOpen(true)}
+      />
       <main className="main">
         {view === "board" ? <Board /> : null}
         {view === "calendar" ? (
@@ -89,6 +95,7 @@ export default function App() {
         {view === "settings" ? <SettingsView /> : null}
       </main>
       <InspectorPanel />
+      <AnalyzePanel open={analyzeOpen} onClose={() => setAnalyzeOpen(false)} />
       <QuickCaptureModal />
       <MoveReasonModal />
       <SwapModal />
@@ -98,7 +105,15 @@ export default function App() {
   );
 }
 
-function TopBar({ view, onView }: { view: View; onView: (v: View) => void }) {
+function TopBar({
+  view,
+  onView,
+  onAnalyze,
+}: {
+  view: View;
+  onView: (v: View) => void;
+  onAnalyze: () => void;
+}) {
   return (
     <header className="topbar">
       <div className="topbar-brand">Bay</div>
@@ -114,6 +129,9 @@ function TopBar({ view, onView }: { view: View; onView: (v: View) => void }) {
             {VIEW_LABELS[v]}
           </button>
         ))}
+        <button type="button" className="view-button" onClick={onAnalyze}>
+          Analyze
+        </button>
         <button
           type="button"
           className={
