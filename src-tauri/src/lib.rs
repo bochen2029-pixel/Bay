@@ -91,6 +91,9 @@ pub fn run() {
             commands::items::set_item_date,
             commands::items::delete_item,
             commands::items::restore_item,
+            commands::events::get_events,
+            commands::events::get_items_at,
+            commands::events::rebuild_projection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

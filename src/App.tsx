@@ -28,6 +28,8 @@ import { SwapModal } from "./components/SwapModal";
 import { BlockModal } from "./components/BlockModal";
 import { UndoToast } from "./components/UndoToast";
 import { CalendarView } from "./components/CalendarView";
+import { InspectorPanel } from "./components/InspectorPanel";
+import { TimeTravelView } from "./components/TimeTravelView";
 
 type View = "board" | "calendar" | "timetravel";
 
@@ -62,11 +64,6 @@ export default function App() {
   }, [bootstrap]);
 
   function handleView(v: View) {
-    if (v === "timetravel") {
-      // Time-travel view lands in I-10.
-      console.log(`${VIEW_LABELS[v]}: not yet implemented`);
-      return;
-    }
     setView(v);
   }
 
@@ -80,7 +77,11 @@ export default function App() {
         {view === "calendar" ? (
           <CalendarView onFocusItem={() => setView("board")} />
         ) : null}
+        {view === "timetravel" ? (
+          <TimeTravelView onExit={() => setView("board")} />
+        ) : null}
       </main>
+      <InspectorPanel />
       <QuickCaptureModal />
       <MoveReasonModal />
       <SwapModal />

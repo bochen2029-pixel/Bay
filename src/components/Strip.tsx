@@ -27,6 +27,7 @@ export function Strip({ itemId }: { itemId: string }) {
   const [dateField, setDateField] = useState<"start" | "due" | null>(null);
   const setEditingItemId = useStore((s) => s.setEditingItemId);
   const openBlockModal = useStore((s) => s.openBlockModal);
+  const setSelectedItemId = useStore((s) => s.setSelectedItemId);
   const onItemUpdated = useStore((s) => s.onItemUpdated);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -73,7 +74,10 @@ export function Strip({ itemId }: { itemId: string }) {
           onDone={() => setEditingItemId(null)}
         />
       ) : (
-        <span className="strip-content">
+        <span
+          className="strip-content"
+          onClick={() => setSelectedItemId(item.id)}
+        >
           {item.content}
           {item.state === "blocked" && item.blocked_reason ? (
             <span className="strip-blocked-reason">
