@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bay · Capture</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --fg: #1a1a1a;
+      --bg: #fafaf9;
+      --bg-card: #ffffff;
+      --border: #e4e4e1;
+      --accent: #2a6df4;
+      --accent-fg: #ffffff;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --fg: #e9e9e8;
+        --bg: #17171a;
+        --bg-card: #1f1f23;
+        --border: #2e2e33;
+        --accent: #5a8dff;
+        --accent-fg: #0e0e10;
+      }
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font: 16px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: var(--fg); background: var(--bg);
+      min-height: 100vh;
+      display: flex; justify-content: center;
+    }
+    main {
+      width: min(560px, 100%);
+      padding: 20px 16px;
+    }
+    h1 { font-size: 18px; margin: 0 0 12px; }
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    textarea {
+      width: 100%; min-height: 140px;
+      font: inherit; color: inherit;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 12px;
+      resize: vertical;
+    }
+    button {
+      display: block; width: 100%;
+      margin-top: 10px;
+      padding: 10px 14px;
+      font: inherit; font-weight: 600;
+      color: var(--accent-fg); background: var(--accent);
+      border: none; border-radius: 6px;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.5; }
+    .status { margin-top: 10px; font-size: 13px; min-height: 1em; }
+    .status.err { color: #c0392b; }
+    .recent {
+      margin-top: 24px;
+    }
+    .recent h2 { font-size: 13px; color: #888; text-transform: uppercase; letter-spacing: 0.08em; margin: 0 0 8px; }
+    .recent ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+    .recent li {
+      padding: 8px 10px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      font-size: 13px;
+    }
+    .recent time { color: #888; font-variant-numeric: tabular-nums; margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Capture → Inbox</h1>
+    <section class="card">
+      <textarea id="c" autofocus placeholder="What came to mind?"></textarea>
+      <button id="b" type="button">Capture</button>
+      <div class="status" id="status" aria-live="polite"></div>
+    </section>
+    <section class="recent">
+      <h2>Recent (this session)</h2>
+      <ul id="recent"></ul>
+    </section>
+  </main>
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const secret = params.get("s");
+      const $ = (id) => document.getElementById(id);
+      const recentList = $("recent");
+      const status = $("status");
+
+      function hhmm() {
+        const d = new Date();
+        return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0");
+      }
+
+      function prependRecent(text) {
+        const li = document.createElement("li");
+        const t = document.createElement("time");
+        t.textContent = hhmm();
+        li.append(t);
+        li.append(document.createTextNode(text));
+        recentList.prepend(li);
+      }
+
+      async function submit() {
+        const text = $("c").value.trim();
+        if (!text) return;
+        $("b").disabled = true;
+        status.textContent = "Sending…";
+        status.className = "status";
+        try {
+          const res = await fetch("/capture" + (secret ? "?s=" + encodeURIComponent(secret) : ""), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ content: text }),
+          });
+          if (!res.ok) throw new Error("HTTP " + res.status);
+          status.textContent = "Captured.";
+          prependRecent(text);
+          $("c").value = "";
+          $("c").focus();
+        } catch (err) {
+          status.textContent = "Failed: " + (err && err.message ? err.message : err);
+          status.className = "status err";
+        } finally {
+          $("b").disabled = false;
+        }
+      }
+
+      $("b").addEventListener("click", submit);
+      $("c").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          submit();
+        }
+      });
+    })();
+  </script>
+</body>
+</html>

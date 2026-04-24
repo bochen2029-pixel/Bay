@@ -61,23 +61,57 @@ function GeneralSection({ settings }: { settings: Settings }) {
   );
 }
 
+type LanStatus = {
+  enabled: boolean;
+  url: string | null;
+  qr_svg: string | null;
+  port: number | null;
+};
+
 function CaptureSection({ settings }: { settings: Settings }) {
+  const [status, setStatus] = useState<LanStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    invoke<LanStatus>("get_lan_capture_status")
+      .then(setStatus)
+      .catch((err) => setError(String(err)));
+  }, []);
+
+  async function toggle(enabled: boolean) {
+    setBusy(true);
+    setError(null);
+    try {
+      // Persist the preference first so the server reads the current
+      // port / secret when enabled.
+      await persistPatch({ lan_capture_enabled: enabled });
+      const next = await invoke<LanStatus>("toggle_lan_capture", { enabled });
+      setStatus(next);
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      setError(msg);
+      // Roll back the preference on failure.
+      await persistPatch({ lan_capture_enabled: !enabled });
+    }
+    setBusy(false);
+  }
+
   return (
     <section className="settings-section">
       <h3>Capture (LAN)</h3>
       <p className="settings-section-note">
-        The LAN capture server is scaffolded but not yet wired. I-12
-        activates the toggle below; until then, changes are persisted
-        for forward compatibility.
+        When enabled, a tiny HTTP server binds on the LAN so you can
+        submit captures from another device. LAN-trust by default;
+        enable the shared secret for a belt-and-suspenders check.
       </p>
 
       <FieldRow label="Enabled">
         <input
           type="checkbox"
           checked={settings.lan_capture_enabled}
-          onChange={(e) =>
-            void persistPatch({ lan_capture_enabled: e.target.checked })
-          }
+          disabled={busy}
+          onChange={(e) => void toggle(e.target.checked)}
         />
       </FieldRow>
 
@@ -87,11 +121,34 @@ function CaptureSection({ settings }: { settings: Settings }) {
           min={1024}
           max={65535}
           value={settings.lan_capture_port}
+          disabled={busy || settings.lan_capture_enabled}
           onChange={(e) =>
             void persistPatch({ lan_capture_port: Number(e.target.value) })
           }
         />
+        {settings.lan_capture_enabled ? (
+          <span className="is-dim">disable to change</span>
+        ) : null}
       </FieldRow>
+
+      {status?.enabled && status.url ? (
+        <FieldRow label="Capture URL">
+          <span className="settings-capture-url">
+            <code>{status.url}</code>
+          </span>
+        </FieldRow>
+      ) : null}
+
+      {status?.enabled && status.qr_svg ? (
+        <FieldRow label="Scan">
+          <div
+            className="settings-qr"
+            dangerouslySetInnerHTML={{ __html: status.qr_svg }}
+          />
+        </FieldRow>
+      ) : null}
+
+      {error ? <div className="modal-error">{error}</div> : null}
 
       <details className="settings-advanced">
         <summary>Advanced: shared secret</summary>
@@ -100,6 +157,7 @@ function CaptureSection({ settings }: { settings: Settings }) {
             type="text"
             value={settings.lan_capture_shared_secret ?? ""}
             placeholder="(none)"
+            disabled={settings.lan_capture_enabled}
             onChange={(e) =>
               void persistPatch({
                 lan_capture_shared_secret: e.target.value || null,

@@ -6,6 +6,7 @@ use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
+mod capture;
 mod commands;
 mod db;
 mod hotkey;
@@ -18,6 +19,7 @@ mod settings;
 #[allow(dead_code)]
 mod domain;
 
+use capture::CaptureState;
 use commands::settings::{DataDir, SettingsState};
 use db::SqlitePool;
 
@@ -68,6 +70,7 @@ pub fn run() {
             let hotkey_at_start = loaded.hotkey.clone();
             app.manage(Mutex::new(loaded));
             app.manage(DataDir(data_dir));
+            app.manage(CaptureState::new());
 
             // Hotkey registration: failure becomes a toast, not a crash.
             if let Err(e) = hotkey::register(&handle, &hotkey_at_start) {
@@ -116,6 +119,8 @@ pub fn run() {
             commands::settings::update_settings,
             commands::settings::set_llm_api_key,
             commands::settings::export_events,
+            commands::capture::toggle_lan_capture,
+            commands::capture::get_lan_capture_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

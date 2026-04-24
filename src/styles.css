@@ -1079,3 +1079,25 @@ button:hover {
   padding-left: 8px;
   padding-right: 8px;
 }
+
+.settings-capture-url code {
+  padding: 3px 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 12px;
+  user-select: all;
+}
+
+.settings-qr {
+  display: inline-block;
+  padding: 8px;
+  background: #ffffff;
+  border-radius: 6px;
+}
+
+.settings-qr svg {
+  display: block;
+  width: 180px;
+  height: 180px;
+}
