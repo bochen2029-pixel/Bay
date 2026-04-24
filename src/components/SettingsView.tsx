@@ -170,9 +170,19 @@ function CaptureSection({ settings }: { settings: Settings }) {
   );
 }
 
+type TestResult = {
+  ok: boolean;
+  latency_ms: number;
+  model_echoed: string;
+};
+
 function LlmSection({ settings }: { settings: Settings }) {
   const [pendingKey, setPendingKey] = useState("");
   const [busy, setBusy] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<
+    { ok: true; res: TestResult } | { ok: false; err: string } | null
+  >(null);
 
   async function saveApiKey(clear: boolean) {
     setBusy(true);
@@ -273,8 +283,56 @@ function LlmSection({ settings }: { settings: Settings }) {
           </button>
         ) : null}
       </FieldRow>
+
+      <FieldRow label="Connection">
+        <button
+          type="button"
+          disabled={testing}
+          onClick={async () => {
+            setTesting(true);
+            setTestResult(null);
+            try {
+              const res = await invoke<TestResult>("test_llm_connection");
+              setTestResult({ ok: true, res });
+            } catch (err) {
+              setTestResult({
+                ok: false,
+                err: typeof err === "string" ? err : String(err),
+              });
+            }
+            setTesting(false);
+          }}
+        >
+          {testing ? "Testing…" : "Test connection"}
+        </button>
+        {testResult ? (
+          testResult.ok ? (
+            <span className="settings-test-ok">
+              ✓ {testResult.res.model_echoed} · {testResult.res.latency_ms} ms
+            </span>
+          ) : (
+            <span className="settings-test-err">
+              ✗ {llmErrorMessage(testResult.err)}
+            </span>
+          )
+        ) : null}
+      </FieldRow>
     </section>
   );
+}
+
+function llmErrorMessage(code: string): string {
+  // SPEC §8.5 error-code → user copy.
+  if (code.startsWith("LLM_UNREACHABLE"))
+    return "can't reach endpoint (check Ollama / base URL)";
+  if (code === "LLM_AUTH_FAILED")
+    return "API key rejected — re-enter it in Settings";
+  if (code === "LLM_TIMEOUT")
+    return "timed out — try a smaller model or raise the timeout";
+  if (code.startsWith("LLM_PARSE_ERROR"))
+    return "unparseable response from model";
+  if (code === "LLM_RATE_LIMITED") return "rate limited — try again shortly";
+  return code;
 }
 
 function AdvancedSection() {

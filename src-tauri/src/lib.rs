@@ -11,6 +11,7 @@ mod commands;
 mod db;
 mod hotkey;
 mod keychain;
+mod llm;
 mod settings;
 
 // Domain types are scaffolded ahead of incremental consumers (rank_between
@@ -121,6 +122,7 @@ pub fn run() {
             commands::settings::export_events,
             commands::capture::toggle_lan_capture,
             commands::capture::get_lan_capture_status,
+            commands::settings::test_llm_connection,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

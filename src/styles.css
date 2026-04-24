@@ -1101,3 +1101,13 @@ button:hover {
   width: 180px;
   height: 180px;
 }
+
+.settings-test-ok {
+  color: #2d8a3e;
+  font-size: 12px;
+}
+
+.settings-test-err {
+  color: #c0392b;
+  font-size: 12px;
+}

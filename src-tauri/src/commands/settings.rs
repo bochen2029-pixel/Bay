@@ -11,6 +11,7 @@ use tauri::{AppHandle, Runtime, State};
 use crate::db::SqlitePool;
 use crate::hotkey;
 use crate::keychain;
+use crate::llm::{openai_compat::OpenAiCompatClient, LlmConfig, TestResult};
 use crate::settings::{self, Settings};
 
 pub type SettingsState = Mutex<Settings>;
@@ -229,3 +230,23 @@ pub fn export_events(
 /// App data directory held in state so commands that write to disk
 /// can locate settings.json without re-resolving the handle every call.
 pub struct DataDir(pub PathBuf);
+
+// ── test_llm_connection ───────────────────────────────────────────
+
+#[tauri::command]
+pub async fn test_llm_connection(
+    settings: State<'_, SettingsState>,
+) -> Result<TestResult, String> {
+    // Snapshot the config synchronously so the mutex guard is dropped
+    // before the async HTTP work starts.
+    let config = {
+        let guard = settings.lock().map_err(|e| format!("lock: {e}"))?;
+        LlmConfig::from_settings(&guard)
+    };
+    let client =
+        OpenAiCompatClient::new(config).map_err(|e| e.into_string())?;
+    client
+        .test_connection()
+        .await
+        .map_err(|e| e.into_string())
+}
