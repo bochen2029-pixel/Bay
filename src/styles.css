@@ -112,7 +112,9 @@ button:hover {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: 6px;
-  overflow: hidden;
+  /* overflow stays visible so the strip overflow menu can extend past
+     the bay's bottom edge without being clipped by the next bay. */
+  overflow: visible;
 }
 
 .bay-header {
@@ -469,7 +471,7 @@ button:hover {
   position: absolute;
   top: calc(100% + 2px);
   right: 0;
-  z-index: 20;
+  z-index: 50;
   display: flex;
   flex-direction: column;
   min-width: 160px;
