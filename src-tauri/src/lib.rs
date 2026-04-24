@@ -1,10 +1,11 @@
 use std::path::PathBuf;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 mod commands;
 mod db;
+mod hotkey;
 
 // Domain types are scaffolded ahead of incremental consumers (rank_between
 // and state/event types are used from I-03 onward). Silence dead_code while
@@ -13,6 +14,11 @@ mod db;
 mod domain;
 
 use db::SqlitePool;
+
+/// Event emitted when the backend would like the frontend to surface a
+/// user-visible warning (e.g. hotkey registration failed). Frontend
+/// renders these as transient toasts.
+const WARNING_EVENT: &str = "backend_warning";
 
 fn resolve_db_path(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
@@ -52,12 +58,27 @@ fn bootstrap(pool: State<'_, SqlitePool>) -> Result<Value, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let handle = app.handle().clone();
             let db_path = resolve_db_path(&handle)?;
             let pool = db::open_pool(&db_path)?;
             db::run_migrations(&pool)?;
             app.manage(pool);
+
+            // Hotkey registration: log-and-toast on failure rather than
+            // crashing — another app may already hold Ctrl+Alt+N.
+            // Reconfiguration UI lands in I-11.
+            if let Err(e) = hotkey::register_default(&handle) {
+                eprintln!("hotkey registration failed: {e}");
+                let _ = handle.emit(
+                    WARNING_EVENT,
+                    json!({
+                        "kind": "hotkey_registration_failed",
+                        "message": e,
+                    }),
+                );
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

@@ -12,11 +12,21 @@
 import { create } from "zustand";
 import { Item, Settings, Tier } from "./domain";
 
+export type BackendWarning = {
+  kind: string;
+  message: string;
+};
+
 type State = {
   items: Record<string, Item>;
   itemsByTier: Record<Tier, string[]>;
   settings: Settings | null;
   bootstrapped: boolean;
+
+  // UI state — additive across increments.
+  selectedItemId: string | null;
+  quickCaptureOpen: boolean;
+  backendWarning: BackendWarning | null;
 };
 
 type Actions = {
@@ -26,6 +36,12 @@ type Actions = {
    *  resolution and by the TauriEventBridge's `item_created` listener;
    *  whichever arrives first wins, the other is a no-op. */
   onItemCreated: (item: Item) => void;
+
+  setSelectedItemId: (id: string | null) => void;
+  openQuickCapture: () => void;
+  closeQuickCapture: () => void;
+
+  setBackendWarning: (w: BackendWarning | null) => void;
 };
 
 type Store = State & Actions;
@@ -42,6 +58,9 @@ export const useStore = create<Store>((set, get) => ({
   itemsByTier: EMPTY_BY_TIER,
   settings: null,
   bootstrapped: false,
+  selectedItemId: null,
+  quickCaptureOpen: false,
+  backendWarning: null,
 
   bootstrap: (items, settings) => {
     const itemsMap: Record<string, Item> = {};
@@ -74,6 +93,12 @@ export const useStore = create<Store>((set, get) => ({
     );
     set({ items: newItems, itemsByTier: newByTier });
   },
+
+  setSelectedItemId: (id) => set({ selectedItemId: id }),
+  openQuickCapture: () => set({ quickCaptureOpen: true }),
+  closeQuickCapture: () => set({ quickCaptureOpen: false }),
+
+  setBackendWarning: (w) => set({ backendWarning: w }),
 }));
 
 function compareRank(a: string, b: string): number {

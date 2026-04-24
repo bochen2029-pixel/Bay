@@ -126,8 +126,24 @@ fn row_to_item(row: &Row<'_>) -> rusqlite::Result<Item> {
     })
 }
 
-/// Read the lexicographically-greatest non-deleted rank in a tier. Used
-/// by `create_item` to append at end-of-tier.
+/// Read the lexicographically-smallest non-deleted rank in a tier. Used
+/// by `create_item` to place new items at top-of-tier so fresh
+/// captures land visible (Inbox is triage; surfaces what just arrived).
+pub fn min_rank_in_tier(tx: &Transaction<'_>, tier: Tier) -> Result<Option<String>, String> {
+    tx.query_row(
+        "SELECT rank FROM items WHERE tier = ?1 AND deleted = 0 ORDER BY rank ASC LIMIT 1",
+        params![tier.as_sql()],
+        |r| r.get(0),
+    )
+    .optional()
+    .map_err(|e| format!("query min rank: {e}"))
+}
+
+/// Read the lexicographically-greatest non-deleted rank in a tier.
+/// Kept for future uses (end-of-tier insertion via drag-to-end); not
+/// currently called, but parallel to min_rank_in_tier and cheap to
+/// carry.
+#[allow(dead_code)]
 pub fn max_rank_in_tier(tx: &Transaction<'_>, tier: Tier) -> Result<Option<String>, String> {
     tx.query_row(
         "SELECT rank FROM items WHERE tier = ?1 AND deleted = 0 ORDER BY rank DESC LIMIT 1",
@@ -136,4 +152,16 @@ pub fn max_rank_in_tier(tx: &Transaction<'_>, tier: Tier) -> Result<Option<Strin
     )
     .optional()
     .map_err(|e| format!("query max rank: {e}"))
+}
+
+/// Count items with `state = 'active'` in a tier. Caps apply to active
+/// items only (CLAUDE.md §Design philosophy #1); blocked and done
+/// items never count.
+pub fn count_active_in_tier(tx: &Transaction<'_>, tier: Tier) -> Result<i64, String> {
+    tx.query_row(
+        "SELECT COUNT(*) FROM items WHERE tier = ?1 AND state = 'active' AND deleted = 0",
+        params![tier.as_sql()],
+        |r| r.get(0),
+    )
+    .map_err(|e| format!("count active in tier: {e}"))
 }

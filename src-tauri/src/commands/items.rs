@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::db::{self, EventDraft, SqlitePool};
-use crate::domain::{rank_between, EventType, Item, Tier};
+use crate::domain::{rank_between, A_CAP, B_CAP, EventType, Item, Tier};
 
 /// 1 ≤ content length ≤ MAX_CONTENT_LEN characters (SPEC §4.3
 /// ITEM_CREATED payload shape). Counted as Unicode scalar values to
@@ -40,6 +40,16 @@ pub fn create_item(
 /// Pure function behind the `create_item` Tauri command. Extracted so
 /// unit tests can drive the full write path without constructing a
 /// Tauri `State<T>`.
+///
+/// Cap enforcement: backend is authoritative. Frontend pre-checks
+/// (disabled +Add at cap) are UX, not enforcement. CAP_EXCEEDED is
+/// returned for A/B when `count_active >= cap`. Inbox and C are
+/// unbounded. SPEC §5.1, CLAUDE.md §Interaction rules.
+///
+/// Placement: new items land at TOP of tier (lex-smallest rank).
+/// Inbox is triage — fresh captures must be visible on arrival.
+/// Drag reorder in I-06 computes ranks from explicit neighbors and
+/// is unaffected.
 pub fn create_item_inner(
     pool: &SqlitePool,
     tier: Tier,
@@ -61,12 +71,25 @@ pub fn create_item_inner(
     let item_id = Uuid::now_v7().to_string();
 
     let event = db::write_event(pool, |tx, _ts| {
-        // Compute end-of-tier rank inside the same transaction so the
-        // max-rank read and the event append share isolation. Blocked
-        // and done items still occupy rank space; rank is orthogonal to
-        // state.
-        let max_rank = db::items::max_rank_in_tier(tx, tier)?;
-        let rank = rank_between(max_rank.as_deref(), None);
+        // Cap check FIRST, inside the tx: same isolation as the insert.
+        match tier {
+            Tier::A => {
+                if db::items::count_active_in_tier(tx, Tier::A)? >= A_CAP as i64 {
+                    return Err("CAP_EXCEEDED".into());
+                }
+            }
+            Tier::B => {
+                if db::items::count_active_in_tier(tx, Tier::B)? >= B_CAP as i64 {
+                    return Err("CAP_EXCEEDED".into());
+                }
+            }
+            Tier::Inbox | Tier::C => {}
+        }
+
+        // Top-of-tier placement: new ranks land strictly less than the
+        // current smallest. Empty tier falls through to (None, None).
+        let min_rank = db::items::min_rank_in_tier(tx, tier)?;
+        let rank = rank_between(None, min_rank.as_deref());
 
         let payload = json!({
             "content": content,
@@ -171,11 +194,12 @@ mod tests {
     }
 
     #[test]
-    fn repeated_creates_in_same_tier_yield_ordered_ranks() {
-        // End-of-tier appends must produce a strictly-increasing rank
-        // sequence — that's what keeps subsequent drag-reorder math sane.
+    fn repeated_creates_in_same_tier_place_at_top() {
+        // Top-of-tier placement: each new item's rank is lex-less than
+        // every previous rank in that tier. I-05 pointer: new captures
+        // must be visible on arrival.
         let pool = fresh_pool();
-        let mut prev_rank = String::new();
+        let mut prev_rank: Option<String> = None;
         for i in 0..5 {
             let item = create_item_inner(
                 &pool,
@@ -185,14 +209,14 @@ mod tests {
                 None,
             )
             .unwrap();
-            if !prev_rank.is_empty() {
+            if let Some(prev) = &prev_rank {
                 assert!(
-                    item.rank.as_str() > prev_rank.as_str(),
-                    "rank must grow: prev={prev_rank:?} new={:?}",
+                    item.rank.as_str() < prev.as_str(),
+                    "rank must shrink (top placement): prev={prev:?} new={:?}",
                     item.rank
                 );
             }
-            prev_rank = item.rank;
+            prev_rank = Some(item.rank);
         }
     }
 
@@ -222,5 +246,48 @@ mod tests {
                 ("inbox".into(), "i".into()),
             ]
         );
+    }
+
+    #[test]
+    fn create_item_rejects_sixth_a_with_cap_exceeded() {
+        let pool = fresh_pool();
+        for i in 0..A_CAP {
+            create_item_inner(&pool, Tier::A, format!("A item {i}"), None, None)
+                .expect("A should accept up to cap");
+        }
+        let err = create_item_inner(&pool, Tier::A, "overflow".into(), None, None).unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED");
+
+        // Event + item counts didn't grow: the rejected call rolled back.
+        let conn = pool.get().unwrap();
+        let event_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(event_count, A_CAP as i64);
+    }
+
+    #[test]
+    fn create_item_rejects_thirteenth_b_with_cap_exceeded() {
+        let pool = fresh_pool();
+        for i in 0..B_CAP {
+            create_item_inner(&pool, Tier::B, format!("B item {i}"), None, None)
+                .expect("B should accept up to cap");
+        }
+        let err = create_item_inner(&pool, Tier::B, "overflow".into(), None, None).unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED");
+    }
+
+    #[test]
+    fn inbox_and_c_are_unbounded() {
+        let pool = fresh_pool();
+        // Go well past A's cap of 5 to confirm Inbox has no cap.
+        for i in 0..20 {
+            create_item_inner(&pool, Tier::Inbox, format!("i{i}"), None, None)
+                .expect("Inbox must accept arbitrary count");
+        }
+        for i in 0..20 {
+            create_item_inner(&pool, Tier::C, format!("c{i}"), None, None)
+                .expect("C must accept arbitrary count");
+        }
     }
 }

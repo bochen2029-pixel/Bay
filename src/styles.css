@@ -190,10 +190,110 @@ button:hover {
   opacity: 1;
 }
 
-/* Dev-only + button on bay headers. I-05 removes this. */
-.bay-dev-add {
+.bay-add-button {
   margin-left: 8px;
-  padding: 2px 8px;
-  font-size: 14px;
+  padding: 2px 10px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.bay-add-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.bay-add-input {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.bay-add-input textarea {
+  width: 100%;
+  min-height: 28px;
+  padding: 4px 6px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  resize: vertical;
+}
+
+.bay-add-input textarea:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.bay-add-error {
+  margin-top: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: #c0392b;
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 4px;
+}
+
+/* Quick-capture modal. Native <dialog> renders centered with a
+   browser-provided backdrop; ::backdrop lets us dim it. */
+.quick-capture {
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--fg);
+  width: min(480px, 90vw);
+}
+
+.quick-capture::backdrop {
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.quick-capture-header {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.quick-capture-textarea {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  border: none;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  resize: vertical;
+}
+
+.quick-capture-textarea:focus {
+  outline: none;
+}
+
+.quick-capture-help {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  border-top: 1px solid var(--border);
+}
+
+.warning-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 16px;
+  background: rgba(220, 160, 40, 0.15);
+  border-bottom: 1px solid rgba(220, 160, 40, 0.4);
+  font-size: 13px;
+}
+
+.warning-dismiss {
+  border: none;
+  background: transparent;
+  font-size: 18px;
   line-height: 1;
+  padding: 0 4px;
 }
