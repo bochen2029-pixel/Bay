@@ -1,14 +1,8 @@
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { A_CAP, B_CAP, BootstrapResult, Tier } from "./domain";
 
 type View = "board" | "calendar" | "timetravel";
-
-type Tier = "inbox" | "A" | "B" | "C";
-
-interface BootstrapResult {
-  items: unknown[];
-  settings: unknown;
-}
 
 const VIEW_LABELS: Record<View, string> = {
   board: "Board",
@@ -20,9 +14,12 @@ export default function App() {
   const [view, setView] = useState<View>("board");
 
   useEffect(() => {
-    invoke<BootstrapResult>("bootstrap")
-      .then((b) => {
-        console.log("bootstrap:", b);
+    invoke<unknown>("bootstrap")
+      .then((raw) => {
+        // Zod-parse the response to catch any frontend/backend type drift
+        // at the single IPC boundary rather than silently downstream.
+        const parsed = BootstrapResult.parse(raw);
+        console.log("bootstrap:", parsed);
       })
       .catch((err) => {
         console.error("bootstrap failed:", err);
@@ -70,8 +67,8 @@ function Board() {
   return (
     <div className="board">
       <BayColumn tier="inbox" label="Inbox" count={0} />
-      <BayColumn tier="A" label="A" count={0} cap={5} />
-      <BayColumn tier="B" label="B" count={0} cap={12} />
+      <BayColumn tier="A" label="A" count={0} cap={A_CAP} />
+      <BayColumn tier="B" label="B" count={0} cap={B_CAP} />
       <BayColumn tier="C" label="C" count={0} />
     </div>
   );
