@@ -3,7 +3,7 @@
 //! outside that wrapper.
 
 use serde_json::json;
-use tauri::State;
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::db::{self, EventDraft, SqlitePool};
@@ -14,15 +14,27 @@ use crate::domain::{rank_between, EventType, Item, Tier};
 /// match what the user sees, not bytes.
 const MAX_CONTENT_LEN: usize = 4096;
 
+/// Tauri event name broadcast to the frontend after any item creation
+/// path (command or LAN capture). SPEC §5.2.
+const ITEM_CREATED_EVENT: &str = "item_created";
+
 #[tauri::command]
 pub fn create_item(
+    app: AppHandle,
     pool: State<'_, SqlitePool>,
     tier: Tier,
     content: String,
     start_at: Option<i64>,
     due_at: Option<i64>,
 ) -> Result<Item, String> {
-    create_item_inner(&pool, tier, content, start_at, due_at)
+    let item = create_item_inner(&pool, tier, content, start_at, due_at)?;
+    // Fire the frontend event AFTER the transaction commits so subscribers
+    // never see an item that isn't yet in the projection. Store handlers
+    // on the frontend are idempotent — the invoke() promise resolution
+    // and this event may both land; whichever arrives first wins.
+    app.emit(ITEM_CREATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_CREATED_EVENT}: {e}"))?;
+    Ok(item)
 }
 
 /// Pure function behind the `create_item` Tauri command. Extracted so
