@@ -1,31 +1,11 @@
 # CLAUDE.md — Bay
 
-> v1.5 — 2026-04-24. Added "Resumable context" section pointing at
-> the memory directory so a fresh Claude Code instance knows where
-> to rehydrate from. Prior versions at archive/CLAUDE_v1.0.md …
-> archive/CLAUDE_v1.4.md.
+> v1.4 — 2026-04-24. Revised: DDL `rank` column changed from REAL
+> to TEXT to match v1.3 lexicographic string-rank algorithm (see
+> SPEC §4.2). Prior versions at archive/CLAUDE_v1.0.md …
+> archive/CLAUDE_v1.3.md.
 
 > Working title. Rename at will. Placeholder chosen to match the ATC strip-bay metaphor the design derives from. If renamed, update this file, `package.json`, `tauri.conf.json`, and any user-facing strings.
-
-## Resumable context — read this first if you are a fresh Claude Code session
-
-Accumulated cross-session context for this project lives at:
-
-    C:\Users\user\.claude\projects\C--Bay\memory\
-
-Start by reading `MEMORY.md` in that directory — it is a one-line-per-entry index pointing at per-topic files:
-
-- `user_bo.md` — user profile + collaboration preferences
-- `project_bay.md` — project overview and six load-bearing principles
-- `project_bay_state.md` — current build state (what's shipped, known tech debt)
-- `feedback_bay_discipline.md` — 13 patterns to preserve, anti-patterns to reject
-- `feedback_bay_sessions.md` — session protocol, doctrine-pass rules, autonomous-mode rhythm
-- `reference_bay_architecture.md` — codebase map, tool commands, DB path, build deps
-- `reference_bay_doctrine.md` — role of CLAUDE.md / SPEC.md / PROMPTS.md, version history
-
-The Claude Code auto-memory harness normally loads `MEMORY.md` automatically at session start. If it hasn't (different harness, different entry path, compacted context), read those files manually before touching code. The doctrine and discipline there encode decisions that are not obvious from the current source alone.
-
-After the memory scan, continue with the three-file doctrine in this repo: CLAUDE.md (this file) → SPEC.md → PROMPTS.md. Each file's top-of-file blockquote gives its version and revision history.
 
 ## Purpose
 
