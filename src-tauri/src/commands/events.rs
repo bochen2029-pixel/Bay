@@ -8,7 +8,7 @@
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::params;
 use serde::Serialize;
 use tauri::State;
 
@@ -199,13 +199,6 @@ fn parse_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         item_id: row.get(3)?,
         payload,
     })
-}
-
-// Used in tests to suppress unused-import warnings on OptionalExtension
-// (it's imported in case future helpers need `.optional()`).
-#[allow(dead_code)]
-fn _ensure_optional_ext_in_scope() -> Option<i32> {
-    None::<i32>.as_ref().copied()
 }
 
 #[cfg(test)]

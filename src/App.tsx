@@ -30,14 +30,20 @@ import { UndoToast } from "./components/UndoToast";
 import { CalendarView } from "./components/CalendarView";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { TimeTravelView } from "./components/TimeTravelView";
+import { SettingsView } from "./components/SettingsView";
 
-type View = "board" | "calendar" | "timetravel";
+type View = "board" | "calendar" | "timetravel" | "settings";
 
 const VIEW_LABELS: Record<View, string> = {
   board: "Board",
   calendar: "Calendar",
   timetravel: "Time-travel",
+  settings: "Settings",
 };
+
+// The top-bar navigation switcher excludes Settings; Settings is
+// reached via the gear icon instead.
+const SWITCHER_VIEWS: View[] = ["board", "calendar", "timetravel"];
 
 const TIER_CAP: Record<Tier, number | undefined> = {
   inbox: undefined,
@@ -80,6 +86,7 @@ export default function App() {
         {view === "timetravel" ? (
           <TimeTravelView onExit={() => setView("board")} />
         ) : null}
+        {view === "settings" ? <SettingsView /> : null}
       </main>
       <InspectorPanel />
       <QuickCaptureModal />
@@ -96,7 +103,7 @@ function TopBar({ view, onView }: { view: View; onView: (v: View) => void }) {
     <header className="topbar">
       <div className="topbar-brand">Bay</div>
       <nav className="view-switcher" aria-label="View switcher">
-        {(Object.keys(VIEW_LABELS) as View[]).map((v) => (
+        {SWITCHER_VIEWS.map((v) => (
           <button
             key={v}
             type="button"
@@ -107,6 +114,18 @@ function TopBar({ view, onView }: { view: View; onView: (v: View) => void }) {
             {VIEW_LABELS[v]}
           </button>
         ))}
+        <button
+          type="button"
+          className={
+            "view-button view-settings" + (view === "settings" ? " is-active" : "")
+          }
+          aria-pressed={view === "settings"}
+          onClick={() => onView("settings")}
+          aria-label="Settings"
+          title="Settings"
+        >
+          ⚙
+        </button>
       </nav>
     </header>
   );

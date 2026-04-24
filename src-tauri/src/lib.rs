@@ -1,11 +1,16 @@
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use serde_json::{json, Value};
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::menu::{MenuBuilder, MenuItemBuilder};
+use tauri::tray::TrayIconBuilder;
+use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 
 mod commands;
 mod db;
 mod hotkey;
+mod keychain;
+mod settings;
 
 // Domain types are scaffolded ahead of incremental consumers (rank_between
 // and state/event types are used from I-03 onward). Silence dead_code while
@@ -13,6 +18,7 @@ mod hotkey;
 #[allow(dead_code)]
 mod domain;
 
+use commands::settings::{DataDir, SettingsState};
 use db::SqlitePool;
 
 /// Event emitted when the backend would like the frontend to surface a
@@ -20,38 +26,26 @@ use db::SqlitePool;
 /// renders these as transient toasts.
 const WARNING_EVENT: &str = "backend_warning";
 
-fn resolve_db_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn resolve_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("resolve app data dir: {e}"))?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("create app data dir {dir:?}: {e}"))?;
-    Ok(dir.join("bay.db"))
+    Ok(dir)
 }
 
 #[tauri::command]
-fn bootstrap(pool: State<'_, SqlitePool>) -> Result<Value, String> {
+fn bootstrap(
+    pool: State<'_, SqlitePool>,
+    settings: State<'_, SettingsState>,
+) -> Result<Value, String> {
     let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
     let items = db::items::list_active_items(&conn)?;
+    let s = settings.lock().map_err(|e| format!("settings lock: {e}"))?;
     Ok(json!({
         "items": items,
-        "settings": {
-            "hotkey": "Ctrl+Alt+N",
-            "staleness_inbox_days": 3,
-            "staleness_a_days": 14,
-            "staleness_b_days": 21,
-            "staleness_c_days": null,
-            "lan_capture_enabled": false,
-            "lan_capture_port": 47821,
-            "lan_capture_shared_secret": null,
-            "llm": {
-                "base_url": "http://localhost:11434/v1",
-                "model": "llama3.2",
-                "has_api_key": false,
-                "timeout_ms": 30000
-            },
-            "analyze_window_days": 30
-        }
+        "settings": *s,
     }))
 }
 
@@ -59,17 +53,24 @@ fn bootstrap(pool: State<'_, SqlitePool>) -> Result<Value, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let handle = app.handle().clone();
-            let db_path = resolve_db_path(&handle)?;
-            let pool = db::open_pool(&db_path)?;
+            let data_dir = resolve_data_dir(&handle)?;
+
+            // DB pool + migrations.
+            let pool = db::open_pool(&data_dir.join("bay.db"))?;
             db::run_migrations(&pool)?;
             app.manage(pool);
 
-            // Hotkey registration: log-and-toast on failure rather than
-            // crashing — another app may already hold Ctrl+Alt+N.
-            // Reconfiguration UI lands in I-11.
-            if let Err(e) = hotkey::register_default(&handle) {
+            // Settings (loads from JSON; checks keychain for has_api_key).
+            let loaded = settings::load(&data_dir);
+            let hotkey_at_start = loaded.hotkey.clone();
+            app.manage(Mutex::new(loaded));
+            app.manage(DataDir(data_dir));
+
+            // Hotkey registration: failure becomes a toast, not a crash.
+            if let Err(e) = hotkey::register(&handle, &hotkey_at_start) {
                 eprintln!("hotkey registration failed: {e}");
                 let _ = handle.emit(
                     WARNING_EVENT,
@@ -79,6 +80,23 @@ pub fn run() {
                     }),
                 );
             }
+
+            // Tray icon + menu: close-to-tray behavior per SPEC §10.10.
+            // The window's close_requested handler below redirects to
+            // .hide() so closing the window keeps the app and its hotkey
+            // live. Quit is reachable from the tray menu or Cmd/Ctrl+Q
+            // (handled by the frontend via a tauri event).
+            build_tray(&handle)?;
+            if let Some(win) = app.get_webview_window("main") {
+                let win_clone = win.clone();
+                win.on_window_event(move |event| {
+                    if let WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = win_clone.hide();
+                    }
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -94,7 +112,36 @@ pub fn run() {
             commands::events::get_events,
             commands::events::get_items_at,
             commands::events::rebuild_projection,
+            commands::settings::get_settings,
+            commands::settings::update_settings,
+            commands::settings::set_llm_api_key,
+            commands::settings::export_events,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");
+}
+
+fn build_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+    let open = MenuItemBuilder::with_id("tray_open", "Open Bay").build(app)?;
+    let quit = MenuItemBuilder::with_id("tray_quit", "Quit Bay").build(app)?;
+    let menu = MenuBuilder::new(app).items(&[&open, &quit]).build()?;
+
+    let _tray = TrayIconBuilder::with_id("main-tray")
+        .icon(app.default_window_icon().unwrap().clone())
+        .tooltip("Bay")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id.as_ref() {
+            "tray_open" => {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.show();
+                    let _ = win.set_focus();
+                }
+            }
+            "tray_quit" => {
+                app.exit(0);
+            }
+            _ => {}
+        })
+        .build(app)?;
+    Ok(())
 }

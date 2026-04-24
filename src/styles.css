@@ -956,3 +956,126 @@ button:hover {
   cursor: default;
   opacity: 0.9;
 }
+
+/* ── Settings view (I-11) ──────────────────────────────────────── */
+
+.settings {
+  max-width: 720px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.settings-title {
+  margin: 0 0 4px;
+  font-size: 20px;
+  font-weight: 600;
+}
+
+.settings-section {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.settings-section h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+
+.settings-section-note {
+  margin: 0 0 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.settings-row {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 12px;
+  align-items: center;
+  font-size: 13px;
+}
+
+.settings-label {
+  color: var(--fg-muted);
+}
+
+.settings-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.settings-control input[type="text"],
+.settings-control input[type="number"],
+.settings-control input[type="password"] {
+  padding: 3px 6px;
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.settings-nullable-days {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-nullable-days input[type="number"] {
+  width: 68px;
+}
+
+.settings-hotkey-btn {
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  padding: 3px 10px;
+}
+
+.settings-advanced {
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.settings-advanced summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.settings-key-stored {
+  color: var(--accent);
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+  font-size: 12px;
+}
+
+.settings-key-absent {
+  color: var(--fg-muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
+.settings-message {
+  padding: 6px 10px;
+  background: rgba(42, 109, 244, 0.08);
+  border: 1px solid rgba(42, 109, 244, 0.3);
+  border-radius: 4px;
+  font-size: 12px;
+}
+
+.view-settings {
+  padding-left: 8px;
+  padding-right: 8px;
+}
