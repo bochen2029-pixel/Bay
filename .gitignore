@@ -1,0 +1,32 @@
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Rust / Tauri
+src-tauri/target/
+src-tauri/gen/schemas/
+src-tauri/icons/android/
+src-tauri/icons/ios/
+WixTools/
+
+# TypeScript build artifacts (tsc --noEmit keeps src/ emission-free, but safeguard)
+*.tsbuildinfo
+
+# Local data (will exist once a DB is introduced in I-02)
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+*.log
