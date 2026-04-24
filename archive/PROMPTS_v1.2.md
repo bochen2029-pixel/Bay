@@ -1,8 +1,7 @@
 # PROMPTS.md — Bay
 
-> v1.3 — 2026-04-24. Minor: §1 principle count corrected from
-> "five" to "six" to match CLAUDE.md §Design philosophy. Prior
-> versions in archive/.
+> v1.2 — 2026-04-24. Minor reconciliation of I-10 and closing line.
+> v1.0 and v1.1 at archive/PROMPTS_v1.0.md and archive/PROMPTS_v1.1.md.
 
 > Operational companion to `CLAUDE.md` (doctrine) and `SPEC.md` (implementation detail). Copy-paste-ready prompts for Claude Code sessions. Stable across SPEC revisions because increment prompts reference `SPEC.md §9 I-NN` rather than restating increment content.
 
@@ -29,7 +28,7 @@ code, read these files top to bottom, in order:
 
 Acknowledge, in one sentence each:
 
-  a. The six load-bearing design principles in CLAUDE.md §Design philosophy.
+  a. The five load-bearing design principles in CLAUDE.md §Design philosophy.
   b. The capacity caps and which items they apply to.
   c. The LLM firewall rule.
   d. The event-sourcing invariant (events is append-only; items is a

@@ -1,9 +1,9 @@
 # CLAUDE.md — Bay
 
-> v1.4 — 2026-04-24. Revised: DDL `rank` column changed from REAL
-> to TEXT to match v1.3 lexicographic string-rank algorithm (see
-> SPEC §4.2). Prior versions at archive/CLAUDE_v1.0.md …
-> archive/CLAUDE_v1.3.md.
+> v1.3 — 2026-04-24. Revised: rank rebalance sentence reconciled
+> with SPEC §10.4 deferral. Prior versions at
+> archive/CLAUDE_v1.0.md, archive/CLAUDE_v1.1.md,
+> archive/CLAUDE_v1.2.md.
 
 > Working title. Rename at will. Placeholder chosen to match the ATC strip-bay metaphor the design derives from. If renamed, update this file, `package.json`, `tauri.conf.json`, and any user-facing strings.
 
@@ -103,7 +103,7 @@ CREATE TABLE items (
   id              TEXT PRIMARY KEY,
   content         TEXT NOT NULL,
   tier            TEXT NOT NULL CHECK (tier IN ('inbox','A','B','C')),
-  rank            TEXT NOT NULL,                 -- lexicographic fractional indexing
+  rank            REAL NOT NULL,                 -- fractional indexing
   state           TEXT NOT NULL CHECK (state IN ('active','blocked','done')),
   blocked_reason  TEXT,
   start_at        INTEGER,                       -- unix ms, nullable

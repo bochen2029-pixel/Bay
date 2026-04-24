@@ -1,8 +1,7 @@
 # SPEC.md — Bay
 
-> v1.4 — 2026-04-24. Minor: §5.3 hotkey-field inline default
-> reconciled with §10.1 (Ctrl+Alt+N, not Ctrl+Shift+Space).
-> Prior versions in archive/.
+> v1.3 — 2026-04-24. Minor: §10.8 parenthetical reconciled post-
+> §5.3 addition of lan_capture_port. Prior versions in archive/.
 
 > Implementation specification. Scope-locked by `CLAUDE.md`. All design decisions in `CLAUDE.md` are authoritative; this document translates them into buildable detail without introducing new scope.
 
@@ -646,7 +645,7 @@ Store handlers are the `_on*` internal actions in §1.1.
 
 ```ts
 interface Settings {
-  hotkey: string;                          // default: "Ctrl+Alt+N"; see §10.1
+  hotkey: string;                          // default: "Ctrl+Shift+Space"; see §10
   staleness_inbox_days: number | null;     // default 3
   staleness_a_days: number | null;         // default 14
   staleness_b_days: number | null;         // default 21
