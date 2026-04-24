@@ -18,6 +18,7 @@ const BackendWarningSchema: z.ZodType<BackendWarning> = z.object({
 
 export function TauriEventBridge() {
   const onItemCreated = useStore((s) => s.onItemCreated);
+  const onItemUpdated = useStore((s) => s.onItemUpdated);
   const openQuickCapture = useStore((s) => s.openQuickCapture);
   const setBackendWarning = useStore((s) => s.setBackendWarning);
 
@@ -46,6 +47,17 @@ export function TauriEventBridge() {
     );
 
     track(
+      listen<unknown>("item_updated", (event) => {
+        try {
+          const item = Item.parse(event.payload);
+          onItemUpdated(item);
+        } catch (err) {
+          console.error("item_updated: payload failed Zod parse", err);
+        }
+      }),
+    );
+
+    track(
       listen<unknown>("quick_capture_requested", () => {
         openQuickCapture();
       }),
@@ -66,7 +78,7 @@ export function TauriEventBridge() {
       cancelled = true;
       for (const fn of unlisteners) fn();
     };
-  }, [onItemCreated, openQuickCapture, setBackendWarning]);
+  }, [onItemCreated, onItemUpdated, openQuickCapture, setBackendWarning]);
 
   return null;
 }

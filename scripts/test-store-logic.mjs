@@ -1,9 +1,15 @@
-// Ad-hoc smoke test for the store's sort/insert helpers. No test framework
+// Ad-hoc smoke test for the store's pure helpers. No test-framework
 // dependency; run with `node scripts/test-store-logic.mjs`. Exits
 // non-zero on failure. Not part of the app runtime.
 //
-// A real frontend test harness (vitest or similar) lands post-I-14 when
-// the UI surface stabilizes.
+// Pure-logic functions are re-implemented here rather than imported
+// from .ts source — keeps the smoke test Node-runnable without a
+// transpiler. When either implementation changes, update both.
+//
+// A real frontend test harness (vitest or similar) lands post-I-14
+// when the UI surface stabilizes.
+
+// ─── compareRank / insertByRank / bucketByTier (I-04) ────────────────────────
 
 function compareRank(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
@@ -37,34 +43,98 @@ function bucketByTier(items) {
   return { map, byTier };
 }
 
+// ─── rankBetween (I-06; mirrors src/rank.ts) ─────────────────────────────────
+
+const DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+function digitIndex(c) {
+  const i = DIGITS.indexOf(c);
+  if (i < 0) throw new Error(`invalid rank digit: ${JSON.stringify(c)}`);
+  return i;
+}
+
+function midpoint(a, b) {
+  if (b !== null) {
+    let n = 0;
+    while (n < b.length) {
+      const ac = n < a.length ? a[n] : "0";
+      if (ac !== b[n]) break;
+      n++;
+    }
+    if (n > 0) {
+      const aTail = n >= a.length ? "" : a.substring(n);
+      const bTail = b.substring(n);
+      return b.substring(0, n) + midpoint(aTail, bTail);
+    }
+  }
+  const da = a.length === 0 ? 0 : digitIndex(a[0]);
+  const db = b === null ? DIGITS.length : digitIndex(b[0]);
+  if (db > da + 1) {
+    return DIGITS[Math.floor((da + db) / 2)];
+  }
+  if (b !== null && b.length > 1) return b.substring(0, 1);
+  const head = a.length === 0 ? DIGITS[0] : a[0];
+  const tail = a.length === 0 ? "" : a.substring(1);
+  return head + midpoint(tail, null);
+}
+
+function rankBetween(a, b) {
+  if (a !== null && b !== null && !(a < b)) {
+    throw new Error(`rankBetween: expected a < b, got a=${JSON.stringify(a)} b=${JSON.stringify(b)}`);
+  }
+  return midpoint(a ?? "", b);
+}
+
+// ─── onItemUpdated reducer (I-06; mirrors src/store.ts) ──────────────────────
+
+function reduceItemUpdated(state, item) {
+  const existing = state.items[item.id];
+  if (!existing) return state; // unknown id
+  if (existing.updated_at === item.updated_at) return state; // idempotent
+
+  const newItems = { ...state.items, [item.id]: item };
+  const newByTier = { ...state.itemsByTier };
+  newByTier[existing.tier] = state.itemsByTier[existing.tier].filter(
+    (id) => id !== item.id,
+  );
+  newByTier[item.tier] = insertByRank(newByTier[item.tier], item.id, newItems);
+  return { items: newItems, itemsByTier: newByTier };
+}
+
+// ─── test harness ────────────────────────────────────────────────────────────
+
 let failures = 0;
 function assertEq(actual, expected, label) {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
-  if (a === e) {
-    console.log(`  ok  ${label}`);
-  } else {
+  if (a === e) console.log(`  ok  ${label}`);
+  else {
     console.error(`  FAIL ${label}\n    actual:   ${a}\n    expected: ${e}`);
     failures++;
   }
 }
-
-// ── compareRank ──
-{
-  assertEq(compareRank("a", "b"), -1, "compareRank a < b");
-  assertEq(compareRank("b", "a"), 1, "compareRank b > a");
-  assertEq(compareRank("m", "m"), 0, "compareRank equal");
-  assertEq(compareRank("ab", "b"), -1, "compareRank ab < b");
-  assertEq(compareRank("a", "a0"), -1, "compareRank prefix shorter first");
+function assert(cond, label) {
+  if (cond) console.log(`  ok  ${label}`);
+  else {
+    console.error(`  FAIL ${label}`);
+    failures++;
+  }
 }
 
-// ── insertByRank: empty list ──
+// ─── compareRank ─────────────────────────────────────────────────────────────
+
+assertEq(compareRank("a", "b"), -1, "compareRank a < b");
+assertEq(compareRank("b", "a"), 1, "compareRank b > a");
+assertEq(compareRank("m", "m"), 0, "compareRank equal");
+assertEq(compareRank("ab", "b"), -1, "compareRank ab < b");
+assertEq(compareRank("a", "a0"), -1, "compareRank prefix shorter first");
+
+// ─── insertByRank ────────────────────────────────────────────────────────────
+
 {
   const map = { x: { id: "x", rank: "m" } };
   assertEq(insertByRank([], "x", map), ["x"], "insert into empty");
 }
-
-// ── insertByRank: append at end (rank > all existing) ──
 {
   const map = {
     a: { id: "a", rank: "a" },
@@ -73,8 +143,6 @@ function assertEq(actual, expected, label) {
   };
   assertEq(insertByRank(["a", "b"], "c", map), ["a", "b", "c"], "append at end");
 }
-
-// ── insertByRank: prepend at front (rank < all existing) ──
 {
   const map = {
     a: { id: "a", rank: "m" },
@@ -87,22 +155,17 @@ function assertEq(actual, expected, label) {
     "prepend at front",
   );
 }
-
-// ── insertByRank: middle ──
 {
   const map = {
     a: { id: "a", rank: "a" },
     c: { id: "c", rank: "c" },
     mid: { id: "mid", rank: "b" },
   };
-  assertEq(
-    insertByRank(["a", "c"], "mid", map),
-    ["a", "mid", "c"],
-    "insert in middle",
-  );
+  assertEq(insertByRank(["a", "c"], "mid", map), ["a", "mid", "c"], "insert in middle");
 }
 
-// ── bucketByTier: groups and sorts ──
+// ─── bucketByTier ────────────────────────────────────────────────────────────
+
 {
   const items = [
     { id: "2", tier: "A", rank: "p" },
@@ -117,7 +180,8 @@ function assertEq(actual, expected, label) {
   assertEq(byTier.inbox, ["4"], "bucket inbox singleton");
 }
 
-// ── ordering invariant under repeated inserts ──
+// ─── ordering invariant under repeated inserts ───────────────────────────────
+
 {
   const ranks = ["a", "c", "e", "g"];
   let ids = [];
@@ -128,6 +192,114 @@ function assertEq(actual, expected, label) {
     ids = insertByRank(ids, id, map);
   }
   assertEq(ids.map((i) => map[i].rank), ranks, "inserts stay ordered");
+}
+
+// ─── rankBetween ─────────────────────────────────────────────────────────────
+
+{
+  const r = rankBetween(null, null);
+  assert(r.length > 0, "rankBetween(null,null) non-empty");
+}
+{
+  const r = rankBetween(null, "m");
+  assert(r < "m" && r.length > 0, `rankBetween(null,"m") => ${r} must be < "m"`);
+}
+{
+  const r = rankBetween("a", null);
+  assert(r > "a", `rankBetween("a",null) => ${r} must be > "a"`);
+}
+{
+  const r = rankBetween("a", "c");
+  assert(r > "a" && r < "c", `rankBetween("a","c") => ${r} must be in (a,c)`);
+}
+{
+  const r = rankBetween("a", "b");
+  assert(r > "a" && r < "b", `rankBetween("a","b") => ${r} must be in (a,b)`);
+  assert(r.length >= 2, `rankBetween("a","b") extends => ${r} length ≥ 2`);
+}
+{
+  // Repeated inserts between two adjacent keys must stay strictly ordered.
+  let lo = "a";
+  let hi = "c";
+  const seen = [];
+  for (let i = 0; i < 10; i++) {
+    const r = rankBetween(lo, hi);
+    assert(r > lo && r < hi, `iter ${i}: ${r} in (${lo}, ${hi})`);
+    seen.push(r);
+    hi = r;
+  }
+}
+
+// ─── onItemUpdated reducer ───────────────────────────────────────────────────
+
+function state1() {
+  const items = {
+    x: { id: "x", tier: "A", rank: "m", updated_at: 100 },
+    y: { id: "y", tier: "A", rank: "p", updated_at: 100 },
+    z: { id: "z", tier: "B", rank: "n", updated_at: 100 },
+  };
+  const itemsByTier = { inbox: [], A: ["x", "y"], B: ["z"], C: [] };
+  return { items, itemsByTier };
+}
+
+{
+  // Unknown id → no change.
+  const s = state1();
+  const next = reduceItemUpdated(s, {
+    id: "nope",
+    tier: "A",
+    rank: "z",
+    updated_at: 200,
+  });
+  assert(next === s, "onItemUpdated unknown id is identity");
+}
+{
+  // Same updated_at → idempotent no-op.
+  const s = state1();
+  const next = reduceItemUpdated(s, {
+    id: "x",
+    tier: "A",
+    rank: "something-else",
+    updated_at: 100,
+  });
+  assert(next === s, "onItemUpdated same updated_at is identity");
+}
+{
+  // Intra-tier reorder: x was at rank "m", now "z" (after y).
+  const s = state1();
+  const next = reduceItemUpdated(s, {
+    id: "x",
+    tier: "A",
+    rank: "z",
+    updated_at: 200,
+  });
+  assertEq(next.itemsByTier.A, ["y", "x"], "intra-tier reorder resorts bucket");
+  assertEq(next.items.x.rank, "z", "intra-tier reorder updates item rank");
+  assertEq(next.itemsByTier.B, ["z"], "other tier bucket untouched reference");
+}
+{
+  // Cross-tier move: z moves from B to A, lands between x(m) and y(p) at "n".
+  const s = state1();
+  const next = reduceItemUpdated(s, {
+    id: "z",
+    tier: "A",
+    rank: "n",
+    updated_at: 200,
+  });
+  assertEq(next.itemsByTier.A, ["x", "z", "y"], "cross-tier destination sorted");
+  assertEq(next.itemsByTier.B, [], "cross-tier source drained");
+  assertEq(next.items.z.tier, "A", "cross-tier item tier updated");
+}
+{
+  // Updating rank to front of tier places at index 0.
+  const s = state1();
+  const next = reduceItemUpdated(s, {
+    id: "y",
+    tier: "A",
+    rank: "a",
+    updated_at: 200,
+  });
+  assertEq(next.itemsByTier.A, ["y", "x"], "rank to front moves to index 0");
 }
 
 if (failures > 0) {

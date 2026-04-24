@@ -36,6 +36,11 @@ type Actions = {
    *  resolution and by the TauriEventBridge's `item_created` listener;
    *  whichever arrives first wins, the other is a no-op. */
   onItemCreated: (item: Item) => void;
+  /** Update an existing item. Handles both intra-tier reorders and
+   *  cross-tier moves by removing the id from its old tier bucket and
+   *  re-inserting into the new one at the correct rank position.
+   *  No-op if the id is unknown. */
+  onItemUpdated: (item: Item) => void;
 
   setSelectedItemId: (id: string | null) => void;
   openQuickCapture: () => void;
@@ -88,6 +93,34 @@ export const useStore = create<Store>((set, get) => ({
     const newByTier = { ...itemsByTier };
     newByTier[item.tier] = insertByRank(
       itemsByTier[item.tier],
+      item.id,
+      newItems,
+    );
+    set({ items: newItems, itemsByTier: newByTier });
+  },
+
+  onItemUpdated: (item) => {
+    const { items, itemsByTier } = get();
+    const existing = items[item.id];
+    if (!existing) return; // unknown id — likely an update for an item
+    // we haven't bootstrapped yet
+
+    // Idempotent: if we've already absorbed this snapshot (same
+    // updated_at), skip the mutation so repeated deliveries (invoke
+    // resolution + event) don't churn object identity and trigger
+    // spurious re-renders in BayColumn's shallow subscription.
+    if (existing.updated_at === item.updated_at) return;
+
+    const newItems = { ...items, [item.id]: item };
+    const newByTier = { ...itemsByTier };
+    // Always pull from old tier (may equal new tier for intra-tier
+    // reorders) and re-insert by rank. Handles both intra- and
+    // cross-tier transitions uniformly.
+    newByTier[existing.tier] = itemsByTier[existing.tier].filter(
+      (id) => id !== item.id,
+    );
+    newByTier[item.tier] = insertByRank(
+      newByTier[item.tier],
       item.id,
       newItems,
     );

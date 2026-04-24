@@ -16,6 +16,7 @@ use crate::domain::{Event, EventType, Item, ItemState, Tier};
 pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
     match event.event_type {
         EventType::ItemCreated => apply_item_created(tx, event),
+        EventType::ItemMoved => apply_item_moved(tx, event),
 
         // LLM suggestion events are advisory-only per CLAUDE.md §LLM
         // scope v1 and SPEC §4.3. They affect the event log but never
@@ -30,7 +31,6 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         // somehow gets built in the wrong increment, the transaction
         // rolls back and the root cause surfaces immediately.
         EventType::ItemEdited => Err("ITEM_EDITED handler lands in I-08".into()),
-        EventType::ItemMoved => Err("ITEM_MOVED handler lands in I-06".into()),
         EventType::ItemStateChanged => Err("ITEM_STATE_CHANGED handler lands in I-08".into()),
         EventType::ItemDateSet => Err("ITEM_DATE_SET handler lands in I-09".into()),
         EventType::ItemDeleted => Err("ITEM_DELETED handler lands in I-08".into()),
@@ -73,6 +73,44 @@ fn apply_item_created(tx: &Transaction<'_>, event: &Event) -> Result<(), String>
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct ItemMovedPayload {
+    // `tier_before` + `rank_before` are captured for audit / replay;
+    // they don't affect the post-move projection row but they anchor
+    // the event to a specific preconditional state on the log.
+    #[allow(dead_code)]
+    tier_before: Tier,
+    #[allow(dead_code)]
+    rank_before: String,
+    tier_after: Tier,
+    rank_after: String,
+    #[allow(dead_code)]
+    reason: Option<String>,
+}
+
+fn apply_item_moved(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_MOVED event missing item_id".to_string())?;
+    let p: ItemMovedPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode ITEM_MOVED payload: {e}"))?;
+
+    let updated = tx
+        .execute(
+            "UPDATE items SET tier = ?1, rank = ?2, updated_at = ?3 \
+             WHERE id = ?4 AND deleted = 0",
+            params![p.tier_after.as_sql(), p.rank_after, event.ts, id],
+        )
+        .map_err(|e| format!("update item row (move): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_MOVED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
 /// Read all non-deleted items, sorted by tier then rank, for the
 /// bootstrap payload. Takes a plain `Connection` because the caller is
 /// outside any in-flight transaction; a transactional variant lands in
@@ -93,6 +131,20 @@ pub fn list_active_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Strin
         out.push(r.map_err(|e| format!("row_to_item: {e}"))?);
     }
     Ok(out)
+}
+
+/// Read a single non-deleted item by id inside a transaction. Returns
+/// `Ok(None)` when the id is unknown or already soft-deleted.
+pub fn read_item_by_id_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Item>, String> {
+    tx.query_row(
+        "SELECT id, content, tier, rank, state, blocked_reason, \
+                start_at, due_at, created_at, updated_at, deleted \
+         FROM items WHERE id = ?1 AND deleted = 0",
+        params![id],
+        row_to_item,
+    )
+    .optional()
+    .map_err(|e| format!("read item by id: {e}"))
 }
 
 fn row_to_item(row: &Row<'_>) -> rusqlite::Result<Item> {

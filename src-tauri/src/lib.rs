@@ -84,6 +84,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             bootstrap,
             commands::items::create_item,
+            commands::items::move_item,
         ])
         .run(tauri::generate_context!())
         .expect("error while running Bay");

@@ -1,7 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import {
+  DndContext,
+  DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
 import { shallow } from "zustand/shallow";
+
 import { A_CAP, B_CAP, BootstrapResult, Item, Tier } from "./domain";
+import { rankBetween } from "./rank";
 import { useStore } from "./store";
 import { Strip } from "./components/Strip";
 import { TauriEventBridge } from "./components/TauriEventBridge";
@@ -99,13 +115,88 @@ function BackendWarningBanner() {
 }
 
 function Board() {
+  // Sensors: PointerSensor covers mouse + touch with a small activation
+  // distance so clicks on the drag handle don't start spurious drags.
+  // KeyboardSensor pairs with @dnd-kit's sortable-coordinate adapter
+  // for basic accessibility.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  const onItemUpdated = useStore((s) => s.onItemUpdated);
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    if (!over) return; // dropped outside any droppable
+    if (active.id === over.id) return; // dropped on self
+
+    // Live store snapshot at drop time — do NOT use drag-start snapshot.
+    // A concurrent item_created (from LAN capture or another hotkey
+    // firing) during this drag would have shifted neighbor ranks.
+    const state = useStore.getState();
+    const activeItem = state.items[String(active.id)];
+    const overItem = state.items[String(over.id)];
+    if (!activeItem || !overItem) return;
+
+    // Cross-tier rejection (I-06 scope). SwapModal + cross-tier
+    // ITEM_MOVED land in I-07. @dnd-kit's default visual revert handles
+    // the user-visible snap-back.
+    if (activeItem.tier !== overItem.tier) return;
+
+    const tier = activeItem.tier;
+    const ids = state.itemsByTier[tier];
+    const oldIndex = ids.indexOf(String(active.id));
+    const newIndex = ids.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return;
+
+    // Apply the reorder locally so we can look up the moved item's
+    // neighbors at its new position — the three drop cases
+    // (start / middle / end) fall out of prev/next null-ness below.
+    const reordered = arrayMove(ids, oldIndex, newIndex);
+    const movedIdx = reordered.indexOf(String(active.id));
+    const prevId = movedIdx > 0 ? reordered[movedIdx - 1] : null;
+    const nextId =
+      movedIdx < reordered.length - 1 ? reordered[movedIdx + 1] : null;
+    const prevRank = prevId ? state.items[prevId].rank : null;
+    const nextRank = nextId ? state.items[nextId].rank : null;
+
+    const newRank = rankBetween(prevRank, nextRank);
+
+    // Frontend no-op pre-check. Backend also rejects NO_OP defensively;
+    // catching it here avoids an unnecessary round-trip + invoke error
+    // surface.
+    if (newRank === activeItem.rank) return;
+
+    invoke<unknown>("move_item", {
+      id: String(active.id),
+      toTier: tier,
+      toRank: newRank,
+    })
+      .then((raw) => {
+        // Best-effort immediate store update; the backend's
+        // item_updated event also calls onItemUpdated, and the
+        // idempotency check on `updated_at` makes double-delivery a
+        // no-op.
+        const item = Item.parse(raw);
+        onItemUpdated(item);
+      })
+      .catch((err) => {
+        const msg = typeof err === "string" ? err : String(err);
+        if (msg === "NO_OP") return; // race against concurrent updates
+        console.error("move_item failed:", err);
+      });
+  }
+
   return (
-    <div className="board">
-      <BayColumn tier="inbox" label="Inbox" />
-      <BayColumn tier="A" label="A" />
-      <BayColumn tier="B" label="B" />
-      <BayColumn tier="C" label="C" />
-    </div>
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <div className="board">
+        <BayColumn tier="inbox" label="Inbox" />
+        <BayColumn tier="A" label="A" />
+        <BayColumn tier="B" label="B" />
+        <BayColumn tier="C" label="C" />
+      </div>
+    </DndContext>
   );
 }
 
@@ -114,7 +205,7 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
   // subscription re-render only when the id-array contents change.
   const itemIds = useStore((s) => s.itemsByTier[tier], shallow);
   const cap = TIER_CAP[tier];
-  // For I-05 every item is active (state transitions land in I-08), so
+  // For I-06 every item is active (state transitions land in I-08), so
   // the full count equals the active count. Diverges in I-08.
   const activeCount = itemIds.length;
   const counter =
@@ -142,16 +233,15 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
         </button>
       </header>
       {adding ? (
-        <BayAddInput
-          tier={tier}
-          onClose={() => setAdding(false)}
-        />
+        <BayAddInput tier={tier} onClose={() => setAdding(false)} />
       ) : null}
-      <div className="bay-body">
-        {itemIds.map((id) => (
-          <Strip key={id} itemId={id} />
-        ))}
-      </div>
+      <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
+        <div className="bay-body">
+          {itemIds.map((id) => (
+            <Strip key={id} itemId={id} />
+          ))}
+        </div>
+      </SortableContext>
     </section>
   );
 }
