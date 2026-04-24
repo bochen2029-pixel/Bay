@@ -14,21 +14,30 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
+import { format } from "date-fns";
 
 import { Item } from "../domain";
+import { isStale } from "../staleness";
 import { useStore } from "../store";
 
 export function Strip({ itemId }: { itemId: string }) {
   const item = useStore((s) => s.items[itemId]);
+  const settings = useStore((s) => s.settings);
   const isEditing = useStore((s) => s.editingItemId === itemId);
+  const [dateField, setDateField] = useState<"start" | "due" | null>(null);
   const setEditingItemId = useStore((s) => s.setEditingItemId);
   const openBlockModal = useStore((s) => s.openBlockModal);
   const onItemUpdated = useStore((s) => s.onItemUpdated);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: itemId, disabled: isEditing });
+    useSortable({ id: itemId, disabled: isEditing || dateField !== null });
 
   if (!item) return null;
+
+  const now = Date.now();
+  const stale = isStale(item, settings, now);
+  const overdue =
+    item.state === "active" && item.due_at !== null && item.due_at < now;
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -55,7 +64,7 @@ export function Strip({ itemId }: { itemId: string }) {
         aria-label="Drag handle"
         {...(isEditing ? {} : listeners)}
       >
-        {item.state === "blocked" ? "⏸" : "≡"}
+        {stale ? "⚠" : item.state === "blocked" ? "⏸" : "≡"}
       </span>
 
       {isEditing ? (
@@ -72,12 +81,36 @@ export function Strip({ itemId }: { itemId: string }) {
               {item.blocked_reason}
             </span>
           ) : null}
+          {item.start_at !== null ? (
+            <span className="strip-date-badge strip-start">
+              ▸ {format(item.start_at, "MMM d")}
+            </span>
+          ) : null}
+          {item.due_at !== null ? (
+            <span
+              className={
+                "strip-date-badge strip-due" + (overdue ? " is-overdue" : "")
+              }
+            >
+              ● {format(item.due_at, "MMM d")}
+            </span>
+          ) : null}
         </span>
       )}
+
+      {dateField !== null ? (
+        <StripDatePicker
+          item={item}
+          field={dateField}
+          onDone={() => setDateField(null)}
+          onUpdated={onItemUpdated}
+        />
+      ) : null}
 
       <StripMenu
         item={item}
         onEdit={() => setEditingItemId(item.id)}
+        onSetDate={(f) => setDateField(f)}
         onToggleDone={async () => {
           try {
             const next = item.state === "done" ? "active" : "done";
@@ -188,12 +221,14 @@ function StripInlineEdit({
 function StripMenu({
   item,
   onEdit,
+  onSetDate,
   onToggleDone,
   onToggleBlocked,
   onDelete,
 }: {
   item: Item;
   onEdit: () => void;
+  onSetDate: (field: "start" | "due") => void;
   onToggleDone: () => void;
   onToggleBlocked: () => void;
   onDelete: () => void;
@@ -218,11 +253,6 @@ function StripMenu({
     fn();
   }
 
-  function stub() {
-    setOpen(false);
-    console.log("date picker lands in I-09");
-  }
-
   return (
     <div className="strip-menu-wrap" ref={ref}>
       <button
@@ -242,10 +272,18 @@ function StripMenu({
           <button type="button" role="menuitem" onClick={() => run(onEdit)}>
             Edit
           </button>
-          <button type="button" role="menuitem" onClick={stub}>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => run(() => onSetDate("start"))}
+          >
             Set start date…
           </button>
-          <button type="button" role="menuitem" onClick={stub}>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => run(() => onSetDate("due"))}
+          >
             Set due date…
           </button>
           <button type="button" role="menuitem" onClick={() => run(onToggleDone)}>
@@ -270,4 +308,93 @@ function StripMenu({
       ) : null}
     </div>
   );
+}
+
+function StripDatePicker({
+  item,
+  field,
+  onDone,
+  onUpdated,
+}: {
+  item: Item;
+  field: "start" | "due";
+  onDone: () => void;
+  onUpdated: (item: Item) => void;
+}) {
+  const existing = field === "start" ? item.start_at : item.due_at;
+  const [value, setValue] = useState(existing ? unixMsToDateStr(existing) : "");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    ref.current?.focus();
+  }, []);
+
+  async function commit(next: number | null) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const raw = await invoke<unknown>("set_item_date", {
+        id: item.id,
+        field,
+        value: next,
+      });
+      onUpdated(Item.parse(raw));
+      onDone();
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      if (msg === "NO_OP") onDone();
+      else {
+        console.error("set_item_date failed:", err);
+        setBusy(false);
+      }
+    }
+  }
+
+  return (
+    <div
+      className="strip-date-picker"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onDone();
+        }
+      }}
+    >
+      <input
+        ref={ref}
+        type="date"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+      />
+      <button
+        type="button"
+        onClick={() => commit(value ? dateStrToUnixMs(value) : null)}
+        disabled={busy}
+      >
+        Save
+      </button>
+      {existing !== null ? (
+        <button type="button" onClick={() => commit(null)} disabled={busy}>
+          Clear
+        </button>
+      ) : null}
+      <button type="button" onClick={onDone} disabled={busy}>
+        Cancel
+      </button>
+    </div>
+  );
+}
+
+function unixMsToDateStr(ms: number): string {
+  const d = new Date(ms);
+  const y = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const da = String(d.getDate()).padStart(2, "0");
+  return `${y}-${mo}-${da}`;
+}
+
+function dateStrToUnixMs(s: string): number {
+  const [y, m, d] = s.split("-").map(Number);
+  return new Date(y, m - 1, d).getTime();
 }

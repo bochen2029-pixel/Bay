@@ -366,6 +366,63 @@ pub fn set_item_state_inner(
         .ok_or_else(|| "state-changed item not found in projection".to_string())
 }
 
+// ── set_item_date ─────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn set_item_date(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+    field: String,
+    value: Option<i64>,
+) -> Result<Item, String> {
+    let item = set_item_date_inner(&pool, id, field, value)?;
+    app.emit(ITEM_UPDATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_UPDATED_EVENT}: {e}"))?;
+    Ok(item)
+}
+
+pub fn set_item_date_inner(
+    pool: &SqlitePool,
+    id: String,
+    field: String,
+    value: Option<i64>,
+) -> Result<Item, String> {
+    if field != "start" && field != "due" {
+        return Err(format!("BAD_ARGS: invalid date field {field:?}"));
+    }
+
+    let _ = db::write_event(pool, |tx, _ts| {
+        let current = db::items::read_item_by_id_tx(tx, &id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+        let value_before = match field.as_str() {
+            "start" => current.start_at,
+            "due" => current.due_at,
+            _ => unreachable!(),
+        };
+        if value_before == value {
+            return Err("NO_OP".into());
+        }
+        let payload = json!({
+            "field": field,
+            "value_before": value_before,
+            "value_after": value,
+        });
+        Ok(EventDraft {
+            event_type: EventType::ItemDateSet,
+            item_id: Some(id.clone()),
+            payload,
+        })
+    })?;
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
+    items
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or_else(|| "dated item not found in projection".to_string())
+}
+
 // ── delete_item ───────────────────────────────────────────────────
 
 #[tauri::command]
@@ -1265,6 +1322,59 @@ mod tests {
         let done = set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
         assert_eq!(done.state, ItemState::Done);
         assert!(done.blocked_reason.is_none());
+    }
+
+    // ── set_item_date ────────────────────────────────────────────
+
+    #[test]
+    fn set_item_date_start_and_due() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+
+        let ts1: i64 = 1_700_000_000_000;
+        let with_start =
+            set_item_date_inner(&pool, item.id.clone(), "start".into(), Some(ts1))
+                .unwrap();
+        assert_eq!(with_start.start_at, Some(ts1));
+        assert_eq!(with_start.due_at, None);
+
+        let ts2: i64 = 1_710_000_000_000;
+        let with_both =
+            set_item_date_inner(&pool, item.id.clone(), "due".into(), Some(ts2)).unwrap();
+        assert_eq!(with_both.start_at, Some(ts1));
+        assert_eq!(with_both.due_at, Some(ts2));
+
+        // Clear start by passing None.
+        let cleared =
+            set_item_date_inner(&pool, item.id.clone(), "start".into(), None).unwrap();
+        assert_eq!(cleared.start_at, None);
+        assert_eq!(cleared.due_at, Some(ts2));
+    }
+
+    #[test]
+    fn set_item_date_rejects_invalid_field() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let err = set_item_date_inner(&pool, item.id.clone(), "finish".into(), Some(1))
+            .unwrap_err();
+        assert!(err.starts_with("BAD_ARGS"));
+    }
+
+    #[test]
+    fn set_item_date_rejects_no_op() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let err =
+            set_item_date_inner(&pool, item.id.clone(), "start".into(), None).unwrap_err();
+        assert_eq!(err, "NO_OP");
+    }
+
+    #[test]
+    fn set_item_date_rejects_unknown_id() {
+        let pool = fresh_pool();
+        let err = set_item_date_inner(&pool, "nope".into(), "start".into(), Some(1))
+            .unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
     }
 
     // ── delete_item / restore_item ───────────────────────────────

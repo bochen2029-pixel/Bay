@@ -19,6 +19,7 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         EventType::ItemMoved => apply_item_moved(tx, event),
         EventType::ItemEdited => apply_item_edited(tx, event),
         EventType::ItemStateChanged => apply_item_state_changed(tx, event),
+        EventType::ItemDateSet => apply_item_date_set(tx, event),
         EventType::ItemDeleted => apply_item_deleted(tx, event),
         EventType::ItemRestored => apply_item_restored(tx, event),
 
@@ -29,9 +30,6 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         EventType::LlmSuggestionGenerated
         | EventType::LlmSuggestionAccepted
         | EventType::LlmSuggestionRejected => Ok(()),
-
-        // Remaining arms land with their increments.
-        EventType::ItemDateSet => Err("ITEM_DATE_SET handler lands in I-09".into()),
     }
 }
 
@@ -173,6 +171,49 @@ fn apply_item_state_changed(tx: &Transaction<'_>, event: &Event) -> Result<(), S
     if updated != 1 {
         return Err(format!(
             "ITEM_STATE_CHANGED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemDateSetPayload {
+    field: String, // "start" | "due"
+    #[allow(dead_code)]
+    value_before: Option<i64>,
+    value_after: Option<i64>,
+}
+
+fn apply_item_date_set(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_DATE_SET event missing item_id".to_string())?;
+    let p: ItemDateSetPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode ITEM_DATE_SET payload: {e}"))?;
+
+    // Only two valid column names; matched explicitly to avoid any
+    // mistaken-looking string interpolation into the SQL.
+    let updated = match p.field.as_str() {
+        "start" => tx
+            .execute(
+                "UPDATE items SET start_at = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND deleted = 0",
+                params![p.value_after, event.ts, id],
+            )
+            .map_err(|e| format!("update item start_at: {e}"))?,
+        "due" => tx
+            .execute(
+                "UPDATE items SET due_at = ?1, updated_at = ?2 \
+                 WHERE id = ?3 AND deleted = 0",
+                params![p.value_after, event.ts, id],
+            )
+            .map_err(|e| format!("update item due_at: {e}"))?,
+        other => return Err(format!("ITEM_DATE_SET invalid field {other:?}")),
+    };
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_DATE_SET target item {id} not found (updated {updated} rows)"
         ));
     }
     Ok(())

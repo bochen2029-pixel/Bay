@@ -545,3 +545,235 @@ button:hover {
 .undo-toast-action:hover {
   opacity: 0.85;
 }
+
+/* ── Date badges + picker (I-09) ───────────────────────────────── */
+
+.strip-date-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 5px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  font-variant-numeric: tabular-nums;
+}
+
+.strip-date-badge.is-overdue {
+  color: #c0392b;
+  border-color: rgba(192, 57, 43, 0.4);
+}
+
+.strip-date-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px;
+}
+
+.strip-date-picker input[type="date"] {
+  font: inherit;
+  color: inherit;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 2px 4px;
+}
+
+/* ── Calendar view ─────────────────────────────────────────────── */
+
+.calendar {
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.calendar-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.calendar-header h2.calendar-title {
+  margin: 0;
+  flex: 1 1 auto;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.calendar-today {
+  font-size: 12px;
+}
+
+.calendar-dowrow {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  font-size: 11px;
+  color: var(--fg-muted);
+  text-transform: uppercase;
+}
+
+.calendar-dow {
+  padding: 4px 6px;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+}
+
+.calendar-day {
+  background: var(--bg-elevated);
+  border: none;
+  padding: 4px 6px;
+  min-height: 88px;
+  text-align: left;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: inherit;
+  font: inherit;
+}
+
+.calendar-day:hover {
+  background: var(--bg);
+}
+
+.calendar-day.is-outside {
+  opacity: 0.4;
+}
+
+.calendar-day.is-today .calendar-day-number {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.calendar-day-number {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-day-pills {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.calendar-pill {
+  font-size: 11px;
+  padding: 1px 4px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.calendar-pill.pill-due {
+  border-color: rgba(42, 109, 244, 0.4);
+}
+
+.calendar-pill-overflow {
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.calendar-legend {
+  display: flex;
+  gap: 16px;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+.day-sheet-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+
+.day-sheet {
+  width: min(480px, 90vw);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+
+.day-sheet-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.day-sheet-header h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.day-sheet-empty {
+  padding: 14px;
+  color: var(--fg-muted);
+  font-size: 13px;
+}
+
+.day-sheet-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+}
+
+.day-sheet-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 14px;
+  text-align: left;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+
+.day-sheet-list button:hover {
+  background: var(--bg);
+}
+
+.day-sheet-tag {
+  color: var(--fg-muted);
+  font-family: ui-monospace, "Cascadia Code", "Consolas", monospace;
+}
+
+.day-sheet-tier {
+  min-width: 32px;
+  font-size: 11px;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.day-sheet-content {
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
+}

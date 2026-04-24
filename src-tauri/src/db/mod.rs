@@ -289,9 +289,11 @@ mod tests {
     #[test]
     fn write_events_rolls_back_when_any_apply_fails() {
         // The load-bearing correctness property behind swap_move: a
-        // partial compound write must leave zero state on disk. Drive
-        // the failure by staging a second event whose handler is not
-        // yet implemented (ITEM_DELETED lands in I-08 and returns Err).
+        // partial compound write must leave zero state on disk.
+        // Drive the failure by staging a second event whose apply
+        // handler rejects — here, an ITEM_MOVED targeting a
+        // non-existent item_id (handler checks that exactly 1 row
+        // was updated and errors otherwise).
         use serde_json::json;
 
         let pool = mem_pool();
@@ -316,9 +318,9 @@ mod tests {
         assert_eq!(created.event_type, EventType::ItemCreated);
 
         // Two-draft compound: first draft is a valid ITEM_MOVED for our
-        // seed; second draft routes through an unimplemented handler
-        // and fails at apply time. Everything from both drafts must be
-        // discarded.
+        // seed; second draft targets a non-existent id and the
+        // apply_item_moved handler errors because UPDATE matched zero
+        // rows. Both drafts must roll back.
         let result = write_events(&pool, |_tx, _ts| {
             Ok(vec![
                 EventDraft {
@@ -333,17 +335,19 @@ mod tests {
                     }),
                 },
                 EventDraft {
-                    event_type: EventType::ItemDateSet,
-                    item_id: Some("seed-id".into()),
+                    event_type: EventType::ItemMoved,
+                    item_id: Some("does-not-exist".into()),
                     payload: json!({
-                        "field": "due",
-                        "value_before": null,
-                        "value_after": 1_700_000_000_000i64,
+                        "tier_before": "inbox",
+                        "rank_before": "q",
+                        "tier_after": "C",
+                        "rank_after": "q",
+                        "reason": null,
                     }),
                 },
             ])
         });
-        assert!(result.is_err(), "second draft's unimplemented handler must Err");
+        assert!(result.is_err(), "second draft must fail — missing target row");
 
         let conn = pool.get().unwrap();
         let event_count: i64 = conn

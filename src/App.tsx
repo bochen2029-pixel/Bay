@@ -27,6 +27,7 @@ import { MoveReasonModal } from "./components/MoveReasonModal";
 import { SwapModal } from "./components/SwapModal";
 import { BlockModal } from "./components/BlockModal";
 import { UndoToast } from "./components/UndoToast";
+import { CalendarView } from "./components/CalendarView";
 
 type View = "board" | "calendar" | "timetravel";
 
@@ -61,11 +62,12 @@ export default function App() {
   }, [bootstrap]);
 
   function handleView(v: View) {
-    if (v === "board") {
-      setView("board");
+    if (v === "timetravel") {
+      // Time-travel view lands in I-10.
+      console.log(`${VIEW_LABELS[v]}: not yet implemented`);
       return;
     }
-    console.log(`${VIEW_LABELS[v]}: not yet implemented`);
+    setView(v);
   }
 
   return (
@@ -73,7 +75,12 @@ export default function App() {
       <TauriEventBridge />
       <BackendWarningBanner />
       <TopBar view={view} onView={handleView} />
-      <main className="main">{view === "board" ? <Board /> : null}</main>
+      <main className="main">
+        {view === "board" ? <Board /> : null}
+        {view === "calendar" ? (
+          <CalendarView onFocusItem={() => setView("board")} />
+        ) : null}
+      </main>
       <QuickCaptureModal />
       <MoveReasonModal />
       <SwapModal />
