@@ -32,6 +32,7 @@ pub struct SettingsPatch {
     pub lan_capture_shared_secret: Option<Option<String>>,
     pub llm: Option<LlmPatch>,
     pub analyze_window_days: Option<i64>,
+    pub close_to_tray: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -129,6 +130,9 @@ pub fn update_settings<R: Runtime>(
     }
     if let Some(v) = patch.analyze_window_days {
         s.analyze_window_days = v;
+    }
+    if let Some(v) = patch.close_to_tray {
+        s.close_to_tray = v;
     }
 
     // Persist.

@@ -87,16 +87,26 @@ pub fn run() {
 
             // Tray icon + menu: close-to-tray behavior per SPEC §10.10.
             // The window's close_requested handler below redirects to
-            // .hide() so closing the window keeps the app and its hotkey
-            // live. Quit is reachable from the tray menu or Cmd/Ctrl+Q
-            // (handled by the frontend via a tauri event).
+            // .hide() when settings.close_to_tray is true (the default).
+            // Users can flip the setting off to get a regular OS-level
+            // close. Quit is always reachable from the tray menu.
             build_tray(&handle)?;
             if let Some(win) = app.get_webview_window("main") {
                 let win_clone = win.clone();
                 win.on_window_event(move |event| {
                     if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = win_clone.hide();
+                        let close_to_tray = win_clone
+                            .app_handle()
+                            .state::<commands::settings::SettingsState>()
+                            .lock()
+                            .map(|s| s.close_to_tray)
+                            .unwrap_or(true);
+                        if close_to_tray {
+                            api.prevent_close();
+                            let _ = win_clone.hide();
+                        }
+                        // else: let the close proceed; the window
+                        // closes and the app exits.
                     }
                 });
             }

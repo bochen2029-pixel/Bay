@@ -52,6 +52,21 @@ function GeneralSection({ settings }: { settings: Settings }) {
         </FieldRow>
       ))}
 
+      <FieldRow label="Close to tray">
+        <label className="settings-inline">
+          <input
+            type="checkbox"
+            checked={settings.close_to_tray}
+            onChange={(e) =>
+              void persistPatch({ close_to_tray: e.target.checked })
+            }
+          />
+          <span>
+            Hide to the system tray instead of quitting on window close.
+          </span>
+        </label>
+      </FieldRow>
+
       <FieldRow label="Event log">
         <button type="button" onClick={handleExport}>
           Export event log…
@@ -404,6 +419,7 @@ type PatchShape = {
   lan_capture_shared_secret?: string | null;
   llm?: { base_url?: string; model?: string; timeout_ms?: number };
   analyze_window_days?: number;
+  close_to_tray?: boolean;
 };
 
 async function persistPatch(patch: PatchShape) {

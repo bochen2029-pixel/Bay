@@ -66,6 +66,7 @@ function seed(item: Item) {
         timeout_ms: 30000,
       },
       analyze_window_days: 30,
+      close_to_tray: true,
     },
     bootstrapped: true,
   });

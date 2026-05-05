@@ -27,6 +27,7 @@ import { MoveReasonModal } from "./components/MoveReasonModal";
 import { SwapModal } from "./components/SwapModal";
 import { BlockModal } from "./components/BlockModal";
 import { UndoToast } from "./components/UndoToast";
+import { LanCaptureToast } from "./components/LanCaptureToast";
 import { CalendarView } from "./components/CalendarView";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { TimeTravelView } from "./components/TimeTravelView";
@@ -101,6 +102,7 @@ export default function App() {
       <SwapModal />
       <BlockModal />
       <UndoToast />
+      <LanCaptureToast />
     </div>
   );
 }

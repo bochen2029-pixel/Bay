@@ -76,6 +76,10 @@ export const Settings = z.object({
   lan_capture_shared_secret: z.string().nullable(),
   llm: LlmSettings,
   analyze_window_days: z.number(),
+  /** When true, closing the window hides to tray; otherwise OS-level
+   *  close. Backend defaults to true; clients written before this
+   *  field existed parse fine because the backend always returns it. */
+  close_to_tray: z.boolean(),
 });
 export type Settings = z.infer<typeof Settings>;
 

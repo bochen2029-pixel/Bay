@@ -49,6 +49,14 @@ export type DeletedPending = {
  *  false. Resets on app launch. */
 export type DoneRevealed = Record<Tier, boolean>;
 
+/** Most recent LAN-captured item. Drives the auto-dismissing toast
+ *  shown when phone capture succeeds, so the desktop user gets visual
+ *  confirmation without switching focus. */
+export type LanCaptureFlash = {
+  content: string;
+  ts: number;
+};
+
 type State = {
   items: Record<string, Item>;
   itemsByTier: Record<Tier, string[]>;
@@ -64,6 +72,7 @@ type State = {
   editingItemId: string | null;
   blockPending: { itemId: string } | null;
   deletedPending: DeletedPending | null;
+  lanCaptureFlash: LanCaptureFlash | null;
 
   /** Items marked done during this session. Rendered inline alongside
    *  active items per SPEC §10.2 resolution; on next app launch they
@@ -96,6 +105,8 @@ type Actions = {
 
   clearDeletedPending: () => void;
   toggleDoneRevealed: (tier: Tier) => void;
+
+  setLanCaptureFlash: (flash: LanCaptureFlash | null) => void;
 };
 
 type Store = State & Actions;
@@ -127,6 +138,7 @@ export const useStore = create<Store>((set, get) => ({
   editingItemId: null,
   blockPending: null,
   deletedPending: null,
+  lanCaptureFlash: null,
   sessionDoneIds: new Set<string>(),
   doneRevealed: EMPTY_DONE_REVEALED,
 
@@ -257,6 +269,8 @@ export const useStore = create<Store>((set, get) => ({
     set((s) => ({
       doneRevealed: { ...s.doneRevealed, [tier]: !s.doneRevealed[tier] },
     })),
+
+  setLanCaptureFlash: (flash) => set({ lanCaptureFlash: flash }),
 }));
 
 function compareRank(a: string, b: string): number {

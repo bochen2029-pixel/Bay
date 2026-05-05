@@ -24,6 +24,7 @@ export function TauriEventBridge() {
   const onItemDeleted = useStore((s) => s.onItemDeleted);
   const openQuickCapture = useStore((s) => s.openQuickCapture);
   const setBackendWarning = useStore((s) => s.setBackendWarning);
+  const setLanCaptureFlash = useStore((s) => s.setLanCaptureFlash);
 
   useEffect(() => {
     // `listen` resolves asynchronously; guard against unmount before
@@ -88,6 +89,26 @@ export function TauriEventBridge() {
       }),
     );
 
+    // LAN capture posts dual events: `item_created` (handled above —
+    // inserts into the store) and `lan_capture_received` (handled
+    // here — surfaces a transient toast so the desktop user sees the
+    // submission landed without switching view). The two are
+    // intentionally separate: future analytics can distinguish
+    // LAN-sourced captures from command-sourced.
+    track(
+      listen<unknown>("lan_capture_received", (event) => {
+        try {
+          const item = Item.parse(event.payload);
+          setLanCaptureFlash({ content: item.content, ts: Date.now() });
+        } catch (err) {
+          console.error(
+            "lan_capture_received: payload failed Zod parse",
+            err,
+          );
+        }
+      }),
+    );
+
     return () => {
       cancelled = true;
       for (const fn of unlisteners) fn();
@@ -98,6 +119,7 @@ export function TauriEventBridge() {
     onItemDeleted,
     openQuickCapture,
     setBackendWarning,
+    setLanCaptureFlash,
   ]);
 
   return null;

@@ -24,6 +24,15 @@ pub struct Settings {
     pub lan_capture_shared_secret: Option<String>,
     pub llm: LlmSettings,
     pub analyze_window_days: i64,
+    /// When true (default), closing the window hides it to the tray
+    /// rather than quitting. Backward-compat: settings.json files
+    /// from before this field existed deserialize with the default.
+    #[serde(default = "default_true")]
+    pub close_to_tray: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +64,7 @@ impl Default for Settings {
                 timeout_ms: 30_000,
             },
             analyze_window_days: 30,
+            close_to_tray: true,
         }
     }
 }
