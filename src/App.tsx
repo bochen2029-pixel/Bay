@@ -33,19 +33,21 @@ import { InspectorPanel } from "./components/InspectorPanel";
 import { TimeTravelView } from "./components/TimeTravelView";
 import { SettingsView } from "./components/SettingsView";
 import { AnalyzePanel } from "./components/AnalyzePanel";
+import { ArchiveView } from "./components/ArchiveView";
 
-type View = "board" | "calendar" | "timetravel" | "settings";
+type View = "board" | "calendar" | "timetravel" | "archive" | "settings";
 
 const VIEW_LABELS: Record<View, string> = {
   board: "Board",
   calendar: "Calendar",
   timetravel: "Time-travel",
+  archive: "Archive",
   settings: "Settings",
 };
 
 // The top-bar navigation switcher excludes Settings; Settings is
 // reached via the gear icon instead.
-const SWITCHER_VIEWS: View[] = ["board", "calendar", "timetravel"];
+const SWITCHER_VIEWS: View[] = ["board", "calendar", "timetravel", "archive"];
 
 const TIER_CAP: Record<Tier, number | undefined> = {
   inbox: undefined,
@@ -93,6 +95,7 @@ export default function App() {
         {view === "timetravel" ? (
           <TimeTravelView onExit={() => setView("board")} />
         ) : null}
+        {view === "archive" ? <ArchiveView /> : null}
         {view === "settings" ? <SettingsView /> : null}
       </main>
       <InspectorPanel />

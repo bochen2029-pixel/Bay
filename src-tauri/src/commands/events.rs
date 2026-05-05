@@ -122,6 +122,25 @@ pub fn get_items_at_inner(
     db::items::list_active_items(&conn)
 }
 
+// ── list_archived_items ───────────────────────────────────────────
+
+/// Read all soft-deleted items, most-recently-deleted first. Backs
+/// the Archive view in v1.1; restoring an item from this list calls
+/// the existing `restore_item` command.
+#[tauri::command]
+pub fn list_archived_items(
+    pool: State<'_, SqlitePool>,
+) -> Result<Vec<crate::domain::Item>, String> {
+    list_archived_items_inner(&pool)
+}
+
+pub fn list_archived_items_inner(
+    pool: &SqlitePool,
+) -> Result<Vec<crate::domain::Item>, String> {
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    db::items::list_deleted_items(&conn)
+}
+
 // ── rebuild_projection ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -340,6 +359,47 @@ mod tests {
         let after2 = snapshot(&pool);
         assert_eq!(r2.items_affected, 2);
         assert_eq!(after1, after2);
+    }
+
+    #[test]
+    fn list_archived_items_returns_only_deleted_sorted_by_recency() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::Inbox, "first".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::A, "second".into(), None, None).unwrap();
+        let _c = create_item_inner(&pool, Tier::B, "still alive".into(), None, None).unwrap();
+
+        // Delete in order a then b — b should rank first in the
+        // archive listing (sorted by updated_at DESC).
+        delete_item_inner(&pool, &a.id).unwrap();
+        // Bump ts so the sort order is unambiguous on fast machines
+        // where consecutive write_event() calls can land in the same
+        // millisecond.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        delete_item_inner(&pool, &b.id).unwrap();
+
+        let archived = list_archived_items_inner(&pool).unwrap();
+        assert_eq!(archived.len(), 2, "alive item must be excluded");
+        assert_eq!(archived[0].id, b.id, "most-recently-deleted first");
+        assert_eq!(archived[1].id, a.id);
+        assert!(archived.iter().all(|i| i.deleted));
+    }
+
+    #[test]
+    fn list_archived_items_empty_when_nothing_deleted() {
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::Inbox, "alive".into(), None, None).unwrap();
+        let archived = list_archived_items_inner(&pool).unwrap();
+        assert!(archived.is_empty());
+    }
+
+    #[test]
+    fn list_archived_items_excludes_restored() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::Inbox, "x".into(), None, None).unwrap();
+        delete_item_inner(&pool, &a.id).unwrap();
+        assert_eq!(list_archived_items_inner(&pool).unwrap().len(), 1);
+        restore_item_inner(&pool, &a.id).unwrap();
+        assert!(list_archived_items_inner(&pool).unwrap().is_empty());
     }
 
     #[test]

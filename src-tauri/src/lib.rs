@@ -125,6 +125,7 @@ pub fn run() {
             commands::items::restore_item,
             commands::events::get_events,
             commands::events::get_items_at,
+            commands::events::list_archived_items,
             commands::events::rebuild_projection,
             commands::settings::get_settings,
             commands::settings::update_settings,

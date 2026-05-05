@@ -260,6 +260,28 @@ fn apply_item_restored(tx: &Transaction<'_>, event: &Event) -> Result<(), String
     Ok(())
 }
 
+/// Read all soft-deleted items, sorted by `updated_at DESC` so the
+/// archive view surfaces the most-recently-deleted first. Backs the
+/// `list_archived_items` command (Archive view in v1.1). Caller is
+/// outside any transaction; takes a plain Connection.
+pub fn list_deleted_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, content, tier, rank, state, blocked_reason, \
+                    start_at, due_at, created_at, updated_at, deleted \
+             FROM items WHERE deleted = 1 ORDER BY updated_at DESC, id DESC",
+        )
+        .map_err(|e| format!("prepare list_deleted_items: {e}"))?;
+    let rows = stmt
+        .query_map([], row_to_item)
+        .map_err(|e| format!("query_map deleted items: {e}"))?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| format!("row_to_item (deleted): {e}"))?);
+    }
+    Ok(out)
+}
+
 /// Read all non-deleted items, sorted by tier then rank, for the
 /// bootstrap payload. Takes a plain `Connection` because the caller is
 /// outside any in-flight transaction; a transactional variant lands in
