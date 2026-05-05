@@ -15,7 +15,7 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use r2d2::{Pool, PooledConnection};
+use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Transaction;
 use serde_json::Value;
@@ -26,8 +26,6 @@ pub mod events;
 pub mod items;
 
 pub type SqlitePool = Pool<SqliteConnectionManager>;
-#[allow(dead_code)] // consumed from I-10 rebuild_projection onward
-pub type SqliteConn = PooledConnection<SqliteConnectionManager>;
 
 /// Migration SQL embedded at compile time so the binary is self-contained.
 /// First tuple element is the target `user_version` after the SQL applies.

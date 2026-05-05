@@ -359,10 +359,9 @@ pub fn min_rank_in_tier(tx: &Transaction<'_>, tier: Tier) -> Result<Option<Strin
 }
 
 /// Read the lexicographically-greatest non-deleted rank in a tier.
-/// Kept for future uses (end-of-tier insertion via drag-to-end); not
-/// currently called, but parallel to min_rank_in_tier and cheap to
-/// carry.
-#[allow(dead_code)]
+/// Used by `move_item` (end-of-tier insertion when `to_rank` is None)
+/// and `swap_move` (placing the demoted item at the bottom of its
+/// destination tier).
 pub fn max_rank_in_tier(tx: &Transaction<'_>, tier: Tier) -> Result<Option<String>, String> {
     tx.query_row(
         "SELECT rank FROM items WHERE tier = ?1 AND deleted = 0 ORDER BY rank DESC LIMIT 1",

@@ -8,11 +8,7 @@ pub mod event;
 pub mod item;
 pub mod rank;
 
-#[allow(unused_imports)]
 pub use capacity::{A_CAP, B_CAP};
-#[allow(unused_imports)]
 pub use event::{Event, EventType};
-#[allow(unused_imports)]
 pub use item::{Item, ItemState, Tier};
-#[allow(unused_imports)]
 pub use rank::rank_between;

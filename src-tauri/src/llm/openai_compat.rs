@@ -71,11 +71,10 @@ impl OpenAiCompatClient {
         })
     }
 
-    /// Synchronous chat completion for I-14's analyze flow. Returns
+    /// Synchronous chat completion for the analyze flow. Returns
     /// the assistant's content string. `max_tokens` caps completion
     /// length; callers should keep it tight (<= 800) to stay within
     /// Ollama/LM-Studio budgets.
-    #[allow(dead_code)] // consumed by analyze command in I-14
     pub async fn chat(
         &self,
         system: &str,

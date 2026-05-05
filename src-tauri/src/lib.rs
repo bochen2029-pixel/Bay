@@ -14,10 +14,6 @@ mod keychain;
 mod llm;
 mod settings;
 
-// Domain types are scaffolded ahead of incremental consumers (rank_between
-// and state/event types are used from I-03 onward). Silence dead_code while
-// the scaffold outpaces usage.
-#[allow(dead_code)]
 mod domain;
 
 use capture::CaptureState;

@@ -120,7 +120,10 @@ fn render_map(m: &std::collections::HashMap<String, i64>) -> String {
         return "{}".into();
     }
     let mut pairs: Vec<(&String, &i64)> = m.iter().collect();
-    pairs.sort_by_key(|(k, _)| k.clone());
+    // Sort by reference comparison — avoids the (*k).clone() allocation
+    // and silences clippy's `suspicious_double_ref_op` on `k.clone()`
+    // (which would have cloned the &String, not the inner String).
+    pairs.sort_by(|(a, _), (b, _)| a.cmp(b));
     let parts: Vec<String> = pairs.iter().map(|(k, v)| format!("{k}={v}")).collect();
     parts.join(", ")
 }

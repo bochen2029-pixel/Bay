@@ -23,7 +23,6 @@ pub fn has_api_key() -> bool {
     entry().map_or(false, |e| e.get_password().is_ok())
 }
 
-#[allow(dead_code)] // consumed by llm/openai_compat.rs in I-13
 pub fn get_api_key() -> Option<String> {
     entry().and_then(|e| e.get_password().ok())
 }
