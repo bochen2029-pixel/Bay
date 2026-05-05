@@ -68,7 +68,10 @@ function midpoint(a, b) {
     }
   }
   const da = a.length === 0 ? 0 : digitIndex(a[0]);
-  const db = b === null ? DIGITS.length : digitIndex(b[0]);
+  // Treat null and empty-string identically as "no upper bound" — see
+  // src/rank.ts and src-tauri/src/domain/rank.rs for the explanation.
+  const db =
+    b === null || b.length === 0 ? DIGITS.length : digitIndex(b[0]);
   if (db > da + 1) {
     return DIGITS[Math.floor((da + db) / 2)];
   }

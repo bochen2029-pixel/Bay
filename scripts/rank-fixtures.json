@@ -1,0 +1,218 @@
+{
+  "case_count": 42,
+  "cases": [
+    {
+      "a": null,
+      "b": null,
+      "expected": "i"
+    },
+    {
+      "a": null,
+      "b": "0",
+      "expected": "0i"
+    },
+    {
+      "a": null,
+      "b": "a",
+      "expected": "5"
+    },
+    {
+      "a": null,
+      "b": "m",
+      "expected": "b"
+    },
+    {
+      "a": null,
+      "b": "z",
+      "expected": "h"
+    },
+    {
+      "a": null,
+      "b": "0a",
+      "expected": "05"
+    },
+    {
+      "a": null,
+      "b": "0z",
+      "expected": "0h"
+    },
+    {
+      "a": "0",
+      "b": null,
+      "expected": "i"
+    },
+    {
+      "a": "a",
+      "b": null,
+      "expected": "n"
+    },
+    {
+      "a": "m",
+      "b": null,
+      "expected": "t"
+    },
+    {
+      "a": "y",
+      "b": null,
+      "expected": "z"
+    },
+    {
+      "a": "z",
+      "b": null,
+      "expected": "zi"
+    },
+    {
+      "a": "zz",
+      "b": null,
+      "expected": "zzi"
+    },
+    {
+      "a": "a",
+      "b": "c",
+      "expected": "b"
+    },
+    {
+      "a": "a",
+      "b": "z",
+      "expected": "m"
+    },
+    {
+      "a": "0",
+      "b": "z",
+      "expected": "h"
+    },
+    {
+      "a": "0",
+      "b": "9",
+      "expected": "4"
+    },
+    {
+      "a": "c",
+      "b": "g",
+      "expected": "e"
+    },
+    {
+      "a": "d",
+      "b": "o",
+      "expected": "i"
+    },
+    {
+      "a": "0",
+      "b": "a",
+      "expected": "5"
+    },
+    {
+      "a": "9",
+      "b": "a",
+      "expected": "9i"
+    },
+    {
+      "a": "0",
+      "b": "1",
+      "expected": "0i"
+    },
+    {
+      "a": "8",
+      "b": "9",
+      "expected": "8i"
+    },
+    {
+      "a": "a",
+      "b": "b",
+      "expected": "ai"
+    },
+    {
+      "a": "b",
+      "b": "c",
+      "expected": "bi"
+    },
+    {
+      "a": "y",
+      "b": "z",
+      "expected": "yi"
+    },
+    {
+      "a": "aa",
+      "b": "ab",
+      "expected": "aai"
+    },
+    {
+      "a": "ab",
+      "b": "ac",
+      "expected": "abi"
+    },
+    {
+      "a": "a0",
+      "b": "a1",
+      "expected": "a0i"
+    },
+    {
+      "a": "a8",
+      "b": "a9",
+      "expected": "a8i"
+    },
+    {
+      "a": "ay",
+      "b": "az",
+      "expected": "ayi"
+    },
+    {
+      "a": "az",
+      "b": "b",
+      "expected": "azi"
+    },
+    {
+      "a": "a0",
+      "b": "b0",
+      "expected": "b"
+    },
+    {
+      "a": "ab",
+      "b": "z",
+      "expected": "m"
+    },
+    {
+      "a": "ay",
+      "b": "c",
+      "expected": "b"
+    },
+    {
+      "a": "a",
+      "b": "aa",
+      "expected": "a5"
+    },
+    {
+      "a": "a",
+      "b": "ab",
+      "expected": "a5"
+    },
+    {
+      "a": "a",
+      "b": "az",
+      "expected": "ah"
+    },
+    {
+      "a": "aa",
+      "b": "b",
+      "expected": "an"
+    },
+    {
+      "a": "ab",
+      "b": "b",
+      "expected": "an"
+    },
+    {
+      "a": "aab",
+      "b": "ab",
+      "expected": "aan"
+    },
+    {
+      "a": "a",
+      "b": "aab",
+      "expected": "a5"
+    }
+  ],
+  "generator": "src-tauri/src/bin/rank_fixture_gen.rs",
+  "note": "Regenerate via `cargo run --bin rank_fixture_gen`. Both Rust (domain::rank::tests::matches_committed_fixture) and TS (src/rank.parity.test.ts) verify their own output against this fixture; diverging output on either side fails the relevant test.",
+  "version": 1
+}

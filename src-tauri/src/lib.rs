@@ -14,7 +14,11 @@ mod keychain;
 mod llm;
 mod settings;
 
-mod domain;
+// `pub mod` so binaries under `src/bin/` (e.g. rank_fixture_gen) can
+// reach `bay_lib::domain::rank_between` to produce cross-language
+// fixtures. The exposed surface is benign — Tier/ItemState/Event types,
+// capacity constants, the rank helper — none of it sensitive.
+pub mod domain;
 
 use capture::CaptureState;
 use commands::settings::{DataDir, SettingsState};

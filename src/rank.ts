@@ -52,8 +52,16 @@ function midpoint(a: string, b: string | null): string {
   }
 
   // No common prefix.
+  // For `db`, treat null and empty-string identically: both signal "no
+  // upper bound" — the recursion can land here with `b === ""` after
+  // the prefix-stripping branch above strips the entire input. The
+  // Rust port handles this implicitly via `as_bytes().first().map_or(
+  // DIGITS.len(), …)`; do the same here. Without this branch, an
+  // input like (null, "0") triggers `digitIndex(undefined)` and
+  // throws, while Rust silently returns "0i".
   const da = a.length === 0 ? 0 : digitIndex(a[0]);
-  const db = b === null ? DIGITS.length : digitIndex(b[0]);
+  const db =
+    b === null || b.length === 0 ? DIGITS.length : digitIndex(b[0]);
 
   if (db > da + 1) {
     // Room for a single-digit midpoint strictly between da and db.

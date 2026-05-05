@@ -180,4 +180,50 @@ mod tests {
     fn panics_on_equal_bounds() {
         let _ = rank_between(Some("m"), Some("m"));
     }
+
+    /// Cross-language parity oracle. Reads `scripts/rank-fixtures.json`
+    /// (committed; regenerate via `cargo run --bin rank_fixture_gen`)
+    /// and asserts every case's `expected` value matches what THIS
+    /// implementation produces. The matching test on the TS side is
+    /// `src/rank.parity.test.ts`. If the two implementations ever
+    /// drift, exactly one of the two tests fails — the side whose
+    /// output no longer matches the committed fixture.
+    ///
+    /// SPEC §4.2: rank algorithm is doctrine-locked. An intentional
+    /// change requires regenerating the fixture (the JSON diff is
+    /// reviewable in the same PR) and both verifiers re-pass at the
+    /// new outputs.
+    #[test]
+    fn matches_committed_fixture() {
+        let path: std::path::PathBuf = [
+            env!("CARGO_MANIFEST_DIR"),
+            "..",
+            "scripts",
+            "rank-fixtures.json",
+        ]
+        .iter()
+        .collect();
+        let raw = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+        let fixture: serde_json::Value = serde_json::from_str(&raw)
+            .expect("rank-fixtures.json is valid JSON");
+
+        let cases = fixture["cases"]
+            .as_array()
+            .expect("fixture.cases is an array");
+        assert!(!cases.is_empty(), "fixture must contain at least one case");
+
+        for (i, case) in cases.iter().enumerate() {
+            let a = case["a"].as_str();
+            let b = case["b"].as_str();
+            let expected = case["expected"]
+                .as_str()
+                .unwrap_or_else(|| panic!("case {i}: expected is not a string"));
+            let got = rank_between(a, b);
+            assert_eq!(
+                got, expected,
+                "case {i} (a={a:?}, b={b:?}): expected {expected:?}, got {got:?}",
+            );
+        }
+    }
 }
