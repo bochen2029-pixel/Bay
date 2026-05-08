@@ -1,13 +1,9 @@
 # CLAUDE.md — Bay
 
-> v1.6 — 2026-05-07. Refreshed "Current state" section to reflect
-> v0.1.1 (the v1.1 cleanup pass shipped: vitest+RTL harness, rank
-> Rust↔TS parity, mockito HTTP mocks for the LLM client, dedicated
-> LAN-capture toast, close-to-tray promoted to settings toggle, and
-> Archive view for soft-deleted items). Doctrine principles and "Cut
-> from v1" list unchanged. Co-pass with SPEC.md v1.4 → v1.5 reconciling
-> §10.3 / §10.10 / §5.1 with the shipped surfaces. Prior versions at
-> archive/CLAUDE_v1.0.md … archive/CLAUDE_v1.5.md.
+> v1.5 — 2026-04-24. Added "Resumable context" section pointing at
+> the memory directory so a fresh Claude Code instance knows where
+> to rehydrate from. Prior versions at archive/CLAUDE_v1.0.md …
+> archive/CLAUDE_v1.4.md.
 
 > Working title. Rename at will. Placeholder chosen to match the ATC strip-bay metaphor the design derives from. If renamed, update this file, `package.json`, `tauri.conf.json`, and any user-facing strings.
 
@@ -223,25 +219,4 @@ None assumed. If this directory ends up nested under another project root with i
 
 ## Current state
 
-**v0.1.1 shipped.** All 14 build-plan increments (`I-01..I-14`) landed at
-`v0.1.0` (2026-04-24). A disciplined v1.1 cleanup pass landed at `v0.1.1`
-(2026-05-05): vitest + @testing-library/react render harness with jsdom
-dialog polyfill (closes the rendering-bug class motivated by the
-post-I-14 overflow-clip bug `1912e5b`); `rank_between` Rust↔TS
-fixture-driven parity test (caught a real empty-`b` crash in the TS port);
-`mockito` HTTP mocks for `OpenAiCompatClient`; dedicated
-`lan_capture_received` toast; close-to-tray promoted from hardcoded
-behavior to a Settings → General toggle (default true); and a top-level
-`<ArchiveView>` for soft-deleted items, fulfilling the SPEC §10.3
-"alternative" deferred from v1.
-
-Doctrine versions at this commit: CLAUDE.md v1.6, SPEC.md v1.5,
-PROMPTS.md v1.3. Public on GitHub at
-https://github.com/bochen2029-pixel/Bay (MIT).
-
-Next action is yours: residual cleanup (the only empirically motivated
-debt left is a React DevTools Profiler sibling-render automated check;
-rank rebalance is intentionally deferred per SPEC §10.4) or v2 scope
-(LLM re-org accept-path, recurring tasks, LLM streaming). Both should
-follow the increment-prompt rhythm in PROMPTS.md §2 with archive-and-diff
-doctrine discipline.
+SPEC.md v1.1+ and PROMPTS.md v1.1+ committed. v1.2 reconciles CLAUDE.md doctrine with SPEC §10 resolutions. Next action: begin build per PROMPTS.md §2 I-01.

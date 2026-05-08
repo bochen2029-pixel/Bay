@@ -1,18 +1,7 @@
 # SPEC.md — Bay
 
-> v1.5 — 2026-05-07. Reconciles spec with the v0.1.1 cleanup-pass
-> surfaces that shipped after v0.1.0:
->   - §1.1 BayStore.activeView gains `'archive'`.
->   - §1.2 component tree adds `<ArchiveView>` and `<LanCaptureToast>`.
->   - §5.1 commands table gains `list_archived_items`.
->   - §9 gains a "Post-v1.0 delivered (v1.1 cleanup)" subsection.
->   - §10.3 (soft-delete visibility): the "Trash view" alternative is
->     no longer deferred — it shipped as `<ArchiveView>` in v0.1.1.
->   - §10.10 (window close): close-to-tray is now a user-toggleable
->     Settings → General field; default remains true.
-> No payload schema changes, no IPC contract changes beyond the new
-> read-only command, no doctrine drift in CLAUDE.md beyond the matching
-> v1.6 "Current state" refresh. Co-pass with CLAUDE.md v1.5 → v1.6.
+> v1.4 — 2026-04-24. Minor: §5.3 hotkey-field inline default
+> reconciled with §10.1 (Ctrl+Alt+N, not Ctrl+Shift+Space).
 > Prior versions in archive/.
 
 > Implementation specification. Scope-locked by `CLAUDE.md`. All design decisions in `CLAUDE.md` are authoritative; this document translates them into buildable detail without introducing new scope.
@@ -48,7 +37,7 @@ interface BayStore {
   settings: Settings;
 
   // UI state
-  activeView: 'board' | 'calendar' | 'timetravel' | 'archive' | 'settings';
+  activeView: 'board' | 'calendar' | 'timetravel' | 'settings';
   timeTravelTs: number | null;                        // unix ms when in timetravel mode
   selectedItemId: string | null;                      // for inspector
   modals: {
@@ -122,14 +111,10 @@ interface BayStore {
  │    │    │         └─ <CalendarItemPill/>*
  │    │    └─ <CalendarLegend/>            // start-date vs due-date color key
  │    │
- │    ├─ <TimeTravelView>
- │    │    ├─ <TimestampPicker/>
- │    │    ├─ <BoardView readOnly/>        // reuses BoardView
- │    │    └─ <ExitTimeTravelButton/>
- │    │
- │    └─ <ArchiveView>                     // v0.1.1 — soft-delete recovery
- │         ├─ <ArchiveRow/>*               // tier badge + content + delete-date + Restore
- │         └─ <ArchiveEmptyState/>
+ │    └─ <TimeTravelView>
+ │         ├─ <TimestampPicker/>
+ │         ├─ <BoardView readOnly/>        // reuses BoardView
+ │         └─ <ExitTimeTravelButton/>
  │
  ├─ <InspectorPanel/>                      // side drawer; opens when selectedItemId
  │
@@ -142,8 +127,6 @@ interface BayStore {
  │    └─ <SettingsModal/>                  // or <SettingsView/> inline
  │
  └─ <ToastHost/>                           // transient notifications
-      ├─ <UndoToast/>                      // post-delete restore window (10s)
-      └─ <LanCaptureToast/>                // v0.1.1 — fires on lan_capture_received
 ```
 
 ### 1.3 Component ownership rules
@@ -628,7 +611,6 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `set_item_date` | `{ id, field, value }` | `Item` | `ITEM_NOT_FOUND` |
 | `delete_item` | `{ id }` | `void` | `ITEM_NOT_FOUND` |
 | `restore_item` | `{ id }` | `Item` | `ITEM_NOT_FOUND`, `NOT_DELETED` |
-| `list_archived_items` | — | `Item[]` | — |
 | `get_events` | `{ item_id?, since_ts?, until_ts?, limit? }` | `Event[]` | — |
 | `get_items_at` | `{ ts }` | `Item[]` | `TS_BEFORE_EPOCH` |
 | `rebuild_projection` | — | `{ items_affected: number }` | `DB_ERROR` |
@@ -1129,49 +1111,14 @@ Demo: point at local Ollama (`http://localhost:11434/v1` + `llama3.2`) → test 
 
 Demo: board with ~20 items and some recent moves + completions → click Analyze → 2-5 observations appear within ~5s on Ollama → Mark Reviewed logs acceptance event.
 
-### Post-v1.0 delivered (v1.1 cleanup pass — shipped at `v0.1.1`)
+### Post-v1 checklist (not part of v1)
 
-The v1.1 cleanup pass closed every empirically motivated debt item that
-v1.0 left behind. None of it expanded the design surface beyond what
-§10.3 / §10.10 had already enumerated as alternatives.
-
-- **vitest + @testing-library/react render harness.** Frontend test
-  layer added (`src/test/setup.ts`); jsdom does not implement
-  `HTMLDialogElement`'s modal API, so the setup polyfills
-  `showModal` / `show` / `close` / `cancel` directly. Eight spec files
-  cover BlockModal, SwapModal, MoveReasonModal, Strip overflow menu,
-  ArchiveView, LanCaptureToast, the rank Rust↔TS parity test, and the
-  pre-existing pure-helper smoke. Closes the rendering-bug class
-  motivated by the post-I-14 overflow-clip fix `1912e5b`.
-- **`rank_between` Rust↔TS parity.** A new
-  `src-tauri/src/bin/rank_fixture_gen.rs` emits
-  `scripts/rank-fixtures.json`; the TS suite `src/rank.parity.test.ts`
-  feeds the same fixtures into both implementations and asserts
-  byte-identical output. Surfaced and fixed an empty-`b` edge crash
-  in the TS port.
-- **HTTP mocks for `OpenAiCompatClient`.** `mockito` added as a Rust
-  dev-dependency; auth failure, rate-limiting, malformed JSON, and
-  timeout paths now exercised in `cargo test --lib` without real
-  network. Closes the "LLM client has no unit tests" gap.
-- **`<LanCaptureToast>` component.** The `lan_capture_received` event
-  in §5.2 now drives a dedicated toast; previously it shared the
-  generic `item_created` path with no UI distinction.
-- **`close_to_tray` settings toggle.** Added to §5.3 `Settings`; default
-  `true` (preserves v1.0 behavior). See §10.10.
-- **`<ArchiveView>` for soft-deleted items.** The §10.3 alternative.
-  See §10.3 and §5.1 (`list_archived_items`).
-- **Zero-warning baseline restored.** Stale `#[allow(dead_code)]`
-  markers swept; clippy double-ref-clone fix in `llm/prompt.rs`.
-
-### Still deferred (post-v0.1.1)
-
-- Rank rebalance implementation (helper exists; no trigger per §10.4).
-- LLM re-org proposals with accept/reject resulting in real events
-  (the §10.5 schema is preserved for this; the wiring is v2 scope).
-- Recurring tasks (CLAUDE.md "Cut from v1"; v2 candidate).
-- LLM response streaming (§8.6 — single response in v1; v2 nicety).
-- React DevTools Profiler sibling-render automated check (still
-  empirical — caught manually if at all).
+- Rank rebalance implementation.
+- LLM re-org proposals with accept/reject resulting in real events.
+- Recurring tasks.
+- Archive view for soft-deleted items.
+- LLM response streaming.
+- Per-increment unit tests tightened to behavior tests (currently each increment has shallow tests; harden in a v1.1 pass).
 
 ---
 
@@ -1201,13 +1148,13 @@ All decisions from v1.0 §10 are resolved. Below is the resolved state for audit
 
 ### 10.3 Soft-delete visibility
 
-**RESOLVED (revised, then extended in v0.1.1):** Undo-delete toast ("Deleted. Undo") appears for 10 seconds after delete; click emits `ITEM_RESTORED` via `restore_item` and clears `items.deleted=1`. The original v1 resolution was "no other restoration UI"; the v1.1 cleanup pass shipped the §10.3 alternative (the "Trash view") as a top-level `<ArchiveView>` listing soft-deleted items by `updated_at DESC, id DESC`. Each row: tier badge, content, delete date, Restore button. Restore reuses `restore_item`; failures (e.g., `CAP_EXCEEDED` if the original tier is full at restore time) surface inline next to the offending row without dropping the view. Backed by the new read-only command `list_archived_items` (see §5.1) which calls `db::items::list_deleted_items(conn)`. No new event types, no schema changes, no new write paths.
+**RESOLVED (revised):** Undo-delete toast ("Deleted. Undo") appears for 10 seconds after delete; click emits `ITEM_RESTORED` via `restore_item` and clears `items.deleted=1`. No other restoration UI in v1.
 
 **Ambiguity**: soft-deleted items are excluded from projection but preserved in event log. Can the user see or restore them?
 
-**Recommended default (v1, superseded)**: no v1 UI for restoration. Deleted items visible only via time-travel (restore by… nothing, time-travel is read-only). Event history viewable only if user knows the item id (manual DB query).
+**Recommended default**: no v1 UI for restoration. Deleted items visible only via time-travel (restore by… nothing, time-travel is read-only). Event history viewable only if user knows the item id (manual DB query).
 
-**Alternative (delivered in v0.1.1)**: a "Trash" view with restore button. The v1 doctrine deferred this to "v1.5 if anyone asks"; the v1.1 cleanup pass picked it up because the gap between the 10s undo-toast and the manual-DB escape hatch was wider than usable.
+**Alternative**: add a "Trash" view with restore button. Scope creep; defer to v1.5 if anyone asks.
 
 ### 10.4 Rank rebalance trigger
 
@@ -1271,13 +1218,13 @@ All decisions from v1.0 §10 are resolved. Below is the resolved state for audit
 
 ### 10.10 Window close behavior
 
-**RESOLVED (default, extended in v0.1.1):** Close → minimize to tray; quit only via tray menu or Cmd/Ctrl+Q with confirmation. Global hotkey remains active while in tray. *(v0.1.1 amendment: close-to-tray behavior is now user-toggleable in Settings → General as `close_to_tray` (boolean, default `true`). When the user disables it, close → quit, accepting the loss of background-hotkey availability as their explicit choice. The default preserves the original v1 behavior.)*
+**RESOLVED (default):** Close → minimize to tray; quit only via tray menu or Cmd/Ctrl+Q with confirmation. Global hotkey remains active while in tray.
 
 **Ambiguity**: does closing the window quit the app or minimize to tray? Affects global hotkey availability.
 
 **Recommended default**: close → minimize to tray. App continues running; global hotkey stays active. Quit only via tray menu → Quit or `Cmd/Ctrl+Q` with confirmation.
 
-**Alternative**: close quits. Then global hotkey only works when app is open, which defeats most of its purpose. Originally rejected; the v0.1.1 setting makes this an opt-in path for users who explicitly prefer it, rather than the default.
+**Alternative**: close quits. Then global hotkey only works when app is open, which defeats most of its purpose. Reject.
 
 ### 10.11 Multi-monitor quick-capture position
 
@@ -1313,4 +1260,4 @@ All decisions from v1.0 §10 are resolved. Below is the resolved state for audit
 
 ---
 
-*End of SPEC.md. Current version: v1.5. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*
+*End of SPEC.md. Current version: v1.2. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*
