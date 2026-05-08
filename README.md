@@ -49,7 +49,7 @@ Build from source. You'll need:
 Clone and build:
 
 ```bash
-git clone <repo-url> Bay
+git clone https://github.com/bochen2029-pixel/Bay.git
 cd Bay
 pnpm install
 pnpm tauri dev      # run from source
@@ -220,5 +220,5 @@ reject diffs, recurring tasks, archive view). None belong in v1.
 
 ## License
 
-Personal project. If you find this useful and want to fork or adapt it,
-open an issue.
+MIT — see [LICENSE](LICENSE). Fork, adapt, ship; an issue or note back if
+something is useful is welcome but not required.
