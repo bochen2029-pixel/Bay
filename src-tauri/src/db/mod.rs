@@ -31,6 +31,7 @@ pub type SqlitePool = Pool<SqliteConnectionManager>;
 /// First tuple element is the target `user_version` after the SQL applies.
 const MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../../../migrations/001_initial.sql")),
+    (2, include_str!("../../../migrations/002_invariants.sql")),
 ];
 
 pub fn open_pool(db_path: &Path) -> Result<SqlitePool, String> {
@@ -163,7 +164,10 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 1);
+        // Migration 001 -> user_version 1 (schema); migration 002 ->
+        // user_version 2 (DB-enforced invariants: events append-only
+        // trigger + items CHECK constraints).
+        assert_eq!(v, 2);
     }
 
     #[test]
@@ -175,7 +179,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 1);
+        assert_eq!(v, 2);
     }
 
     #[test]
@@ -200,6 +204,171 @@ mod tests {
                 "items".to_string(),
             ]
         );
+    }
+
+    // ── Append-only trigger enforcement (migration 002) ────────────
+    //
+    // These tests prove the `events` append-only trigger actually
+    // blocks UPDATE and DELETE at the storage layer. The trigger is
+    // the mechanical guarantee behind CLAUDE.md's "events is append-
+    // only" doctrine — without these tests, a future code path (or a
+    // hand-rolled write) could silently violate the invariant and the
+    // only signal would be a runtime ABORT. With these tests, the
+    // trigger's presence and behavior are pinned.
+
+    #[test]
+    fn events_append_only_trigger_blocks_update() {
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        // Seed one event via the legitimate INSERT path.
+        let _ = write_event(&pool, |_tx, _ts| {
+            Ok(EventDraft {
+                event_type: EventType::ItemCreated,
+                item_id: Some("itm-1".into()),
+                payload: serde_json::json!({
+                    "content": "hello", "tier": "inbox", "rank": "m",
+                    "start_at": null, "due_at": null,
+                }),
+            })
+        })
+        .unwrap();
+
+        // Direct UPDATE on events must ABORT with the doctrine message.
+        let conn = pool.get().unwrap();
+        let err = conn
+            .execute("UPDATE events SET type = 'ITEM_EDITED' WHERE id = 1", [])
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("append-only"),
+            "UPDATE on events must be blocked by the trigger; got: {msg}"
+        );
+
+        // The event row must be unchanged.
+        let type_str: String = conn
+            .query_row("SELECT type FROM events WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(type_str, "ITEM_CREATED", "blocked UPDATE must not mutate the row");
+    }
+
+    #[test]
+    fn events_append_only_trigger_blocks_delete() {
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let _ = write_event(&pool, |_tx, _ts| {
+            Ok(EventDraft {
+                event_type: EventType::ItemCreated,
+                item_id: Some("itm-1".into()),
+                payload: serde_json::json!({
+                    "content": "hello", "tier": "inbox", "rank": "m",
+                    "start_at": null, "due_at": null,
+                }),
+            })
+        })
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let err = conn
+            .execute("DELETE FROM events WHERE id = 1", [])
+            .unwrap_err();
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("append-only"),
+            "DELETE on events must be blocked by the trigger; got: {msg}"
+        );
+
+        // The event row must still exist.
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "blocked DELETE must not remove the row");
+    }
+
+    #[test]
+    fn events_append_only_trigger_allows_insert() {
+        // The trigger must NOT block the legitimate INSERT path — only
+        // UPDATE and DELETE. This confirms the trigger doesn't over-fire
+        // and break the only legal write path (db::write_events).
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        for i in 0..5 {
+            let _ = write_event(&pool, |_tx, _ts| {
+                Ok(EventDraft {
+                    event_type: EventType::ItemCreated,
+                    item_id: Some(format!("itm-{i}")),
+                    payload: serde_json::json!({
+                        "content": format!("item {i}"), "tier": "inbox", "rank": "m",
+                        "start_at": null, "due_at": null,
+                    }),
+                })
+            })
+            .unwrap();
+        }
+        let conn = pool.get().unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 5, "INSERT path must work normally; trigger only blocks UPDATE/DELETE");
+    }
+
+    #[test]
+    fn items_check_constraints_reject_invalid_rows() {
+        // The CHECK constraints added in migration 002 must reject
+        // rows that violate the invariants, even if a buggy handler
+        // tried to write them. We can't easily drive these through
+        // the Rust handlers (they validate upstream), so test the
+        // constraints directly via raw SQL.
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let conn = pool.get().unwrap();
+
+        // deleted must be 0 or 1.
+        let err = conn
+            .execute(
+                "INSERT INTO items (id, content, tier, rank, state, created_at, updated_at, deleted) \
+                 VALUES ('x', 'c', 'inbox', 'm', 'active', 0, 0, 2)",
+                [],
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("CHECK") || format!("{err}").contains("constraint"));
+
+        // content must be 1..=4096 chars.
+        let err = conn
+            .execute(
+                "INSERT INTO items (id, content, tier, rank, state, created_at, updated_at) \
+                 VALUES ('x', '', 'inbox', 'm', 'active', 0, 0)",
+                [],
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("CHECK") || format!("{err}").contains("constraint"));
+
+        // rank must be non-empty.
+        let err = conn
+            .execute(
+                "INSERT INTO items (id, content, tier, rank, state, created_at, updated_at) \
+                 VALUES ('x', 'c', 'inbox', '', 'active', 0, 0)",
+                [],
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("CHECK") || format!("{err}").contains("constraint"));
+
+        // state='blocked' requires blocked_reason NOT NULL.
+        let err = conn
+            .execute(
+                "INSERT INTO items (id, content, tier, rank, state, blocked_reason, created_at, updated_at) \
+                 VALUES ('x', 'c', 'inbox', 'm', 'blocked', NULL, 0, 0)",
+                [],
+            )
+            .unwrap_err();
+        assert!(format!("{err}").contains("CHECK") || format!("{err}").contains("constraint"));
+
+        // A valid row must insert cleanly.
+        conn.execute(
+            "INSERT INTO items (id, content, tier, rank, state, blocked_reason, created_at, updated_at) \
+             VALUES ('ok', 'c', 'inbox', 'm', 'active', NULL, 0, 0)",
+            [],
+        )
+        .expect("valid row must insert");
     }
 
     #[test]

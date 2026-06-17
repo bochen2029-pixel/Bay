@@ -47,14 +47,16 @@ items:
     notes: "15 property tests added across 4 modules: rank (8), events (2: rebuild determinism + get_items_at now), items (4: cap A/B/inbox-C + swap atomicity), db (1: write_events rollback any position). cargo test 106/106 (up from 91). cargo build warning-clean."
   - id: P2b
     description: "DB-enforced invariants: migration 002_invariants.sql (CHECKs + append-only trigger), user_version→2, verify-schema.py"
-    status: NOT_STARTED
+    status: DONE
     dependency: [P0]
     blocks: [P2e]
     fan_out: 1
     verifiability: AUTONOMOUSLY_VERIFIABLE
     cost_estimate: 1h
+    cost_actual: 0.5h
     critical: true
     oracle: [property, runtime]
+    notes: "Migration 002 adds events_no_update + events_no_delete triggers (append-only now runtime-enforced, not just prose) + items CHECK constraints (deleted IN (0,1), content 1..4096, rank non-empty, blocked=>reason). 4 new tests prove the trigger blocks UPDATE/DELETE and allows INSERT, and CHECKs reject invalid rows. user_version=2. verify-schema.py updated to load all migrations + expect v2. cargo test 110/110."
   - id: P2c
     description: "Operator golden cases: contracts/golden/{projection,swap,rank,caps}.json + CI/hook check"
     status: NOT_STARTED

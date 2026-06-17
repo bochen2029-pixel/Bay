@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 00c4ef456cfa0cedfcf6c0a9c4a54d57eff3669afe7a7e8936e3a2fad1806b54 # shrinks to ops = [Create { tier: Inbox, content: " " }]
+cc 7bf4cee4da5d827eb54f3d59e21374bec6de861080b9f6e9cfc98a4ae5a9ebf4 # shrinks to ops = [Create { tier: Inbox, content: "0" }]

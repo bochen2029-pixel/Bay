@@ -156,6 +156,60 @@ specific cases) might miss it.
 tests). `cargo build` warning-clean. `proptest` dev-dep added per
 ADR-003.
 
+## 2026-06-17T02:00:00Z — Phase 2b DB-enforced invariants (migration 002)
+
+The CLAUDE.md "events is append-only" prohibition is now a **runtime
+trigger-enforced truth**, not just prose. Migration `002_invariants.sql`
+adds:
+
+**Oracle: runtime (SQLite triggers + CHECK constraints).**
+
+### events append-only triggers
+- `events_no_update` — `BEFORE UPDATE ON events` raises
+  `ABORT 'events is append-only (Bay doctrine): UPDATE refused'`.
+- `events_no_delete` — `BEFORE DELETE ON events` raises
+  `ABORT 'events is append-only (Bay doctrine): DELETE refused'`.
+- INSERT (the only legal write path via `db::write_events` →
+  `events::append_event`) is unaffected.
+
+### items CHECK constraints (table rebuild)
+- `length(content) BETWEEN 1 AND 4096` (SPEC §4.3; matches Rust
+  `MAX_CONTENT_LEN` counted as Unicode scalar values).
+- `length(rank) >= 1` (rank never empty).
+- `deleted IN (0, 1)` (soft-delete flag is boolean).
+- `state != 'blocked' OR blocked_reason IS NOT NULL` (SPEC §3.1 guard:
+  blocked requires a reason — previously enforced only in
+  `set_item_state_inner`).
+- Existing `tier`/`state` CHECKs from migration 001 preserved.
+
+### Tests proving enforcement (4 new, db/mod.rs)
+- `events_append_only_trigger_blocks_update` — direct `UPDATE events`
+  ABORTs with "append-only"; row unchanged.
+- `events_append_only_trigger_blocks_delete` — direct `DELETE FROM
+  events` ABORTs with "append-only"; row remains.
+- `events_append_only_trigger_allows_insert` — 5 sequential
+  `write_event` calls succeed; trigger doesn't over-fire.
+- `items_check_constraints_reject_invalid_rows` — direct INSERTs
+  violating each CHECK (deleted=2, empty content, empty rank,
+  blocked-without-reason) all ABORT; valid row inserts cleanly.
+
+### Infrastructure updates
+- `db/mod.rs` `MIGRATIONS` const now includes `(2, include_str!(...002...))`.
+- Migration version tests updated to expect `user_version=2`.
+- `scripts/verify-schema.py` rewritten to load expected CREATEs from
+  ALL migration files (later overrides earlier), expect v2, and
+  include triggers in the schema object set.
+
+**Test count: 110/110 passing** (up from 106; +4 trigger-enforcement
+tests). `cargo build` warning-clean. `PRAGMA user_version=2`.
+
+The four load-bearing invariants are now enforced at THREE layers:
+(1) Rust handlers (convention + validation), (2) property tests
+(non-LLM oracle), (3) DB triggers + CHECKs (runtime mechanical). A
+future code path that tries `UPDATE events SET ...` or writes an
+invalid item row will ABORT at the storage layer regardless of what
+the Rust code does.
+
 ---
 
 ## Oracle taxonomy (v7, for reference)

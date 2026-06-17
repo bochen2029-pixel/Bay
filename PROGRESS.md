@@ -77,3 +77,24 @@
   #[test] fns — unambiguous, compiles reliably across proptest versions.
 - Phase 2a save point: committing. Next: Phase 2b (DB-enforced
   invariants — migration 002 with CHECKs + append-only trigger).
+
+## 2026-06-17T02:00:00Z — Phase 2b close (DB-enforced invariants)
+
+- Migration 002_invariants.sql: events_no_update + events_no_delete
+  triggers (append-only now runtime-enforced) + items CHECK
+  constraints (content length, rank non-empty, deleted boolean,
+  blocked=>reason). Table-rebuild pattern for items (ALTER TABLE
+  ADD CONSTRAINT doesn't exist in SQLite).
+- Wired into db/mod.rs MIGRATIONS const; user_version now 1->2.
+- 4 new tests prove the trigger blocks UPDATE/DELETE, allows INSERT,
+  and CHECKs reject invalid rows (deleted=2, empty content, empty
+  rank, blocked-without-reason).
+- verify-schema.py rewritten: loads expected CREATEs from ALL
+  migrations (later overrides earlier), expects v2, includes triggers.
+- cargo test 110/110 (up from 106). cargo build warning-clean.
+- Subtlety: migration SQL must NOT contain BEGIN/COMMIT — the runner
+  in db/mod.rs already wraps each migration in its own tx. Caught by
+  "cannot start a transaction within a transaction" error on first
+  run; fixed by removing the inner BEGIN/COMMIT.
+- Phase 2b save point: committing. Next: Phase 2c (operator golden
+  cases — contracts/golden/*.json).
