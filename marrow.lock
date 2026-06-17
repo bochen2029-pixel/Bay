@@ -1,0 +1,64 @@
+# marrow.lock — Bay v0.2.0 substrate reproducibility manifest
+#
+# Captures the substrate state at milestone boundaries so the audit
+# question "how exactly did the system produce this behavior at <tag>?"
+# has an answer. Checked in at every release tag and at run boundaries.
+#
+# This is the run-start snapshot for the v0.2.0 revamp run.
+
+version: 0.2.0-dev
+captured_at: 2026-06-17T00:00:00Z
+milestone: autonomous-run-2026-06-17-start
+
+# Code dependencies (covered by lockfiles; referenced here for audit)
+package_locks:
+  - pnpm-lock.yaml: present
+  - src-tauri/Cargo.lock: present
+
+# Model substrate
+models:
+  primary:
+    family: zai
+    version: GLM-5.2
+    harness: zcode-cli
+  verification:
+    family: zai
+    version: GLM-5.2  # same family — note in QUESTIONS.md if model-diverse pass needed
+  notes: >
+    Cold-context two-pass uses a fresh subagent of the same family.
+    Charter §9 requires a non-LLM oracle (property/golden) for all
+    critical modules precisely because same-family verification shares
+    blind spots. Model-diverse pass-3 available if Phase 2e surfaces
+    systematic error.
+
+# LLM integration (Bay's optional analyze feature; user-configured)
+bay_llm_integration:
+  endpoint_type: openai-compatible
+  default_base_url: http://localhost:11434/v1
+  default_model: llama3.2
+  api_key_storage: os-keychain-via-keyring
+  prompt_templates:
+    - id: bay-analyze-system-v1
+      location: src-tauri/src/llm/prompt.rs::SYSTEM_PROMPT
+    - id: bay-analyze-user-v1
+      location: src-tauri/src/llm/prompt.rs::format_user_prompt
+    - id: bay-analyze-retry-v1
+      location: src-tauri/src/llm/prompt.rs::RETRY_PREFIX
+
+# Eval criteria (Bay's LLM is advisory-only; no deployment gating in v1)
+evals:
+  suite: none  # advisory-only; analyze observations are human-reviewed, not eval-gated
+  notes: >
+    Phase 5 I-20 (LLM re-org proposals) may warrant an eval suite if
+    proposal quality becomes a concern. Deferred.
+
+# Deployment
+deployment_artifact: none  # local-first desktop app; no deploy artifact
+
+# Methodology
+methodology:
+  skill: solo-enterprise-architect
+  version: 7.0.0
+  tier: Heavy
+  charter: AUTONOMY_CHARTER.md
+  spine_files: 9  # RUN_STATE, TASKLIST, QUESTIONS, BLOCKERS, VERIFIED, COMPACTION_BRIEF, PROGRESS, run-metrics.jsonl, DECISIONS

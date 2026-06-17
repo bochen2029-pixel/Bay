@@ -1,0 +1,7 @@
+# Normalize line endings. Bay is developed on Windows but ships cross-
+# platform; keep text files LF in the repo, let git check out native
+# on each platform.
+* text=auto eol=lf
+
+# Shell hooks must stay LF (Git Bash executes them).
+*.sh text eol=lf

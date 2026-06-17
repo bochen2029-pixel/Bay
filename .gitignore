@@ -30,3 +30,10 @@ WixTools/
 *.db-shm
 *.db-wal
 *.log
+
+# Autonomy spine (v0.2.0 revamp run) — ephemeral / runtime state.
+# Run-state ledgers (RUN_STATE.md, TASKLIST.md, etc.) ARE version-
+# controlled; only the lockfile and chunker output are ephemeral.
+.run-lock
+.chunks/
+
