@@ -516,6 +516,23 @@ button:hover {
   border-color: var(--border);
 }
 
+/* I-16: C-tier collapse (SPEC §10.12) — "Show all N items" button. */
+.bay-show-all {
+  align-self: stretch;
+  padding: 8px 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  text-align: center;
+}
+.bay-show-all:hover {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+
 /* Undo-delete toast, bottom-center, auto-dismisses at 10s. */
 .undo-toast {
   position: fixed;

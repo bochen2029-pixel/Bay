@@ -318,6 +318,15 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
   const toggleDoneRevealed = useStore((s) => s.toggleDoneRevealed);
   const cap = TIER_CAP[tier];
 
+  // I-16 C-tier collapse (SPEC §10.12): C is unbounded; at >50 visible
+  // items, default-collapse to show the first 50 with a "Show all"
+  // button. Inbox/A/B are bounded (A/B by caps, Inbox by triage flow)
+  // so the collapse is C-only. The threshold matches SPEC §10.12's
+  // "show first 50, click to expand."
+  const COLLAPSE_THRESHOLD = 50;
+  const eligibleForCollapse = tier === "C";
+  const [expanded, setExpanded] = useState(false);
+
   // Visible ids: active + blocked always; done only if (a) marked done
   // this session, or (b) the per-bay reveal is on. Hidden-done count
   // drives the "Show N earlier done items" link.
@@ -341,6 +350,18 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
     }
     return { visibleIds: visible, activeCount: active, hiddenDoneCount: hiddenDone };
   }, [itemIds, items, sessionDoneIds, revealed]);
+
+  // Apply the C-tier collapse: if eligible and not expanded and over
+  // threshold, slice to the first COLLAPSE_THRESHOLD ids. The hidden
+  // count drives the "Show all N items" button.
+  const shouldCollapse =
+    eligibleForCollapse && !expanded && visibleIds.length > COLLAPSE_THRESHOLD;
+  const renderedIds = shouldCollapse
+    ? visibleIds.slice(0, COLLAPSE_THRESHOLD)
+    : visibleIds;
+  const collapsedCount = shouldCollapse
+    ? visibleIds.length - COLLAPSE_THRESHOLD
+    : 0;
 
   const counter =
     cap !== undefined ? `${activeCount} / ${cap}` : `${activeCount} items`;
@@ -371,9 +392,27 @@ function BayColumn({ tier, label }: { tier: Tier; label: string }) {
       ) : null}
       <SortableContext items={visibleIds} strategy={verticalListSortingStrategy}>
         <div className="bay-body">
-          {visibleIds.map((id) => (
+          {renderedIds.map((id) => (
             <Strip key={id} itemId={id} />
           ))}
+          {shouldCollapse ? (
+            <button
+              type="button"
+              className="bay-show-all"
+              onClick={() => setExpanded(true)}
+            >
+              Show all {visibleIds.length} items ({collapsedCount} more)
+            </button>
+          ) : null}
+          {expanded && eligibleForCollapse && visibleIds.length > COLLAPSE_THRESHOLD ? (
+            <button
+              type="button"
+              className="bay-show-all"
+              onClick={() => setExpanded(false)}
+            >
+              Collapse to first {COLLAPSE_THRESHOLD}
+            </button>
+          ) : null}
           {hiddenDoneCount > 0 ? (
             <button
               type="button"

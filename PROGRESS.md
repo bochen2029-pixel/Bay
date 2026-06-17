@@ -138,3 +138,16 @@
 - Arrow-key navigation, Enter to run, Esc to close, mouse hover.
 - pnpm build clean (385 modules); pnpm test 85/85.
 - I-15 save point: committing. Next: I-16 (C-tier virtualization).
+
+## 2026-06-17T04:15:00Z — Phase 4 I-16 C-tier collapse
+
+- BayColumn (App.tsx): C-tier collapse per SPEC §10.12. At >50 visible
+  items in C, default-collapse to first 50 + "Show all N items (M
+  more)" button. Inbox/A/B excluded (bounded by caps/triage). Collapsed
+  state is local useState (session-scoped, not persisted — matches the
+  done-reveal pattern).
+- The SortableContext still gets the full visibleIds list (so drag
+  works on the collapsed tier); only the rendered strips are sliced.
+- .bay-show-all CSS added (dashed border, matches .bay-show-done style).
+- pnpm build clean (385 modules); pnpm test 85/85.
+- I-16 save point: committing. Next: I-17 (undo/redo stack).
