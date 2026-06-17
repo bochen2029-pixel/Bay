@@ -1,20 +1,13 @@
 # CLAUDE.md — Bay
 
-> v1.7 — 2026-06-17. v0.2.0 revamp in progress. Phase 2 (correctness
-> layer) shipped: property tests (15 across the 6 critical modules),
-> DB-enforced invariants (migration 002 — append-only trigger on
-> `events` + items CHECK constraints, `user_version` 1→2), operator
-> golden cases (`contracts/golden/`), and the **type-level LLM
-> firewall** (`ProjectionEvent` enum — LLM events structurally cannot
-> reach the projection; the firewall is now "type system won't let
-> you," not "match arm returns Ok(())"). The four load-bearing
-> invariants (events append-only; projection pure; swap atomic; caps
-> active-only) are now enforced at three layers: Rust handlers,
-> property tests (non-LLM oracle), DB triggers + CHECKs (runtime).
-> Doctrine principles and "Cut from v1" list unchanged. Co-pass with
-> SPEC.md v1.5 → v1.6 reconciling §5.1/§6/§6.2 drift + adding §4.4/§4.5/
-> §4.6/§11. Prior versions at archive/CLAUDE_v1.0.md …
-> archive/CLAUDE_v1.6.md.
+> v1.6 — 2026-05-07. Refreshed "Current state" section to reflect
+> v0.1.1 (the v1.1 cleanup pass shipped: vitest+RTL harness, rank
+> Rust↔TS parity, mockito HTTP mocks for the LLM client, dedicated
+> LAN-capture toast, close-to-tray promoted to settings toggle, and
+> Archive view for soft-deleted items). Doctrine principles and "Cut
+> from v1" list unchanged. Co-pass with SPEC.md v1.4 → v1.5 reconciling
+> §10.3 / §10.10 / §5.1 with the shipped surfaces. Prior versions at
+> archive/CLAUDE_v1.0.md … archive/CLAUDE_v1.5.md.
 
 > Working title. Rename at will. Placeholder chosen to match the ATC strip-bay metaphor the design derives from. If renamed, update this file, `package.json`, `tauri.conf.json`, and any user-facing strings.
 
@@ -230,54 +223,25 @@ None assumed. If this directory ends up nested under another project root with i
 
 ## Current state
 
-**v0.2.0 revamp in progress.** v0.1.1 shipped first (see below); the
-v0.2.0 revamp then attacked the two problems v0.1.1 left: (1)
-correctness was asserted, not enforced; (2) doctrine had drifted from
-implementation. Phase 2 (the correctness layer) is complete:
+**v0.1.1 shipped.** All 14 build-plan increments (`I-01..I-14`) landed at
+`v0.1.0` (2026-04-24). A disciplined v1.1 cleanup pass landed at `v0.1.1`
+(2026-05-05): vitest + @testing-library/react render harness with jsdom
+dialog polyfill (closes the rendering-bug class motivated by the
+post-I-14 overflow-clip bug `1912e5b`); `rank_between` Rust↔TS
+fixture-driven parity test (caught a real empty-`b` crash in the TS port);
+`mockito` HTTP mocks for `OpenAiCompatClient`; dedicated
+`lan_capture_received` toast; close-to-tray promoted from hardcoded
+behavior to a Settings → General toggle (default true); and a top-level
+`<ArchiveView>` for soft-deleted items, fulfilling the SPEC §10.3
+"alternative" deferred from v1.
 
-- **Property tests** (Phase 2a): 15 property tests across the 6
-  critical modules (`write_events`, `apply_event_to_projection`,
-  `swap_move_inner`, `rank_between`, `get_items_at_inner`,
-  `rebuild_projection_inner`). `proptest = "1"` dev-dep. These are the
-  non-LLM oracle for the Externality Principle.
-- **DB-enforced invariants** (Phase 2b): migration `002_invariants.sql`
-  adds `events_no_update` + `events_no_delete` triggers — `events` is
-  now append-only at the storage layer, not just by convention. Items
-  CHECK constraints (content 1..4096, rank non-empty, deleted IN (0,1),
-  blocked⇒reason). `PRAGMA user_version` 1→2.
-- **Operator golden cases** (Phase 2c): `contracts/golden/` with
-  projection (7), swap (6), caps (12), rank (42 mirrored). All
-  `_status:proposed` pending operator freeze. `scripts/check-golden.py`
-  CI check.
-- **Type-level LLM firewall** (Phase 2d): new `ProjectionEvent` enum
-  (7 item-event variants only). `apply_event_to_projection` dispatches
-  on it, not `EventType`. LLM events return `None` from
-  `to_projection_event()` and structurally cannot reach the projection.
-  The firewall is now "type system won't let you," not "match arm
-  returns Ok(())".
-
-The four load-bearing invariants (events append-only; projection pure;
-swap atomic; caps active-only) are now enforced at THREE layers: Rust
-handlers (convention + validation), property tests (non-LLM oracle),
-DB triggers + CHECKs (runtime mechanical). Test count: 113/113
-(up from 91 at v0.1.1 baseline). `cargo build` warning-clean.
-
-**v0.1.1 (prior):** All 14 build-plan increments (`I-01..I-14`) landed
-at `v0.1.0` (2026-04-24). A disciplined v1.1 cleanup pass landed at
-`v0.1.1` (2026-05-05): vitest + @testing-library/react render harness;
-`rank_between` Rust↔TS fixture-driven parity test; `mockito` HTTP mocks
-for `OpenAiCompatClient`; dedicated `lan_capture_received` toast;
-close-to-tray promoted to a Settings → General toggle; and a top-level
-`<ArchiveView>` for soft-deleted items.
-
-Doctrine versions at this commit: CLAUDE.md v1.7, SPEC.md v1.6,
-PROMPTS.md v1.4. Public on GitHub at
+Doctrine versions at this commit: CLAUDE.md v1.6, SPEC.md v1.5,
+PROMPTS.md v1.3. Public on GitHub at
 https://github.com/bochen2029-pixel/Bay (MIT).
 
-Next: Phase 3 (doctrine reconciliation — in progress), then Phase 4
-(above-and-beyond UX: command palette, C-tier virtualization,
-undo/redo, audit-log search, batch ops), Phase 5 (selective v2: LLM
-re-org accept-path finally populating `resulting_event_ids`, recurring
-tasks, LLM streaming), Phase 6 (full v2: sync, multi-profile, theming,
-plugin surface, mobile companion). All follow the increment-prompt
-rhythm in PROMPTS.md §2 with archive-and-diff doctrine discipline.
+Next action is yours: residual cleanup (the only empirically motivated
+debt left is a React DevTools Profiler sibling-render automated check;
+rank rebalance is intentionally deferred per SPEC §10.4) or v2 scope
+(LLM re-org accept-path, recurring tasks, LLM streaming). Both should
+follow the increment-prompt rhythm in PROMPTS.md §2 with archive-and-diff
+doctrine discipline.

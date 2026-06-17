@@ -1,17 +1,8 @@
 # PROMPTS.md — Bay
 
-> v1.4 — 2026-06-17. v0.2.0 revamp in progress. §1 principle count
-> unchanged (six). The §2 increment corpus gains I-15..I-27 as the
-> v0.2.0 phases ship (Phase 4: I-15 palette, I-16 C-tier
-> virtualization, I-17 undo/redo, I-18 audit-log search, I-19 batch
-> ops; Phase 5: I-20 LLM re-org diffs, I-21 recurring, I-22 streaming;
-> Phase 6: I-23 sync, I-24 multi-profile, I-25 theming, I-26 plugin
-> surface, I-27 mobile companion). Each increment prompt is added with
-> the same scope/out-of-scope/demo/verify structure as I-01..I-14 when
-> its phase lands. §4 commit template gains a `DECISION:`/`SPEC:`/
-> `CHARTER_EXPANSION:` prefix note matching the autonomy spine. Co-pass
-> with CLAUDE.md v1.6 → v1.7 and SPEC.md v1.5 → v1.6. Prior versions
-> in archive/.
+> v1.3 — 2026-04-24. Minor: §1 principle count corrected from
+> "five" to "six" to match CLAUDE.md §Design philosophy. Prior
+> versions in archive/.
 
 > Operational companion to `CLAUDE.md` (doctrine) and `SPEC.md` (implementation detail). Copy-paste-ready prompts for Claude Code sessions. Stable across SPEC revisions because increment prompts reference `SPEC.md §9 I-NN` rather than restating increment content.
 
@@ -953,4 +944,4 @@ Before closing Claude Code and committing, confirm:
 
 ---
 
-*End of PROMPTS.md. Current version: v1.4. Prior versions in archive/. Per-prompt wording is tuned to resist specific failure modes; change with care.*
+*End of PROMPTS.md. Current version: v1.2. Prior versions in archive/. Per-prompt wording is tuned to resist specific failure modes; change with care.*

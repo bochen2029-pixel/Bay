@@ -85,3 +85,58 @@ component lib. Still, minimize deps; collapse-only may be enough.
 - Hand-rolled windowing: fine for collapse; painful for true
   virtualization.
 **Consequences:** Possibly one new runtime dep; ADR updated at I-16.
+
+## ADR-005 — SPEC §5.1 `bootstrap` return shape: amend SPEC, not code
+**Date:** 2026-06-17
+**Status:** Active
+**Context:** SPEC §5.1 (v1.5) said `bootstrap` returns
+`{items, settings, lanCapture}`. The actual code (`lib.rs:49-52`)
+returns `{items, settings}` — no `lanCapture` field. The frontend
+`BootstrapResult` Zod schema also omits `lanCapture`. The frontend
+calls `get_lan_capture_status` separately when it needs LAN capture
+state (e.g., Settings view). So `lanCapture` in bootstrap was
+spec'd but never implemented, and the separate command covers the
+need.
+**Decision:** Amend SPEC §5.1 to match code: `bootstrap` returns
+`{items, settings}`. Do NOT add `lanCapture` to the bootstrap return
+— the separate `get_lan_capture_status` command is the right surface
+(LAN capture state is only needed in Settings, not at app start).
+**Rationale:** Code is canonical when doc conflicts (charter §3
+pre-authorization). The separate-command pattern is cleaner (bootstrap
+stays minimal; LAN capture state is fetched on-demand). Adding
+`lanCapture` to bootstrap would couple app-start to LAN server state,
+which is undesirable (the server may not be running at bootstrap).
+**Alternatives rejected:**
+- Add `lanCapture` to bootstrap return: couples app-start to LAN
+  server state; redundant with `get_lan_capture_status`.
+- Leave SPEC drifting: stores debt; the spec's authority erodes.
+**Consequences:** SPEC §5.1 reconciled with code. Frontend unchanged
+(it already matches the code). No behavior change.
+
+## ADR-006 — Type-level LLM firewall via `ProjectionEvent` (Phase 2d)
+**Date:** 2026-06-17
+**Status:** Active
+**Context:** The LLM firewall (CLAUDE.md "LLM firewalled out of the
+decision path") was enforced by an explicit `Ok(())` match arm for
+the three `LlmSuggestion*` `EventType` variants in
+`apply_event_to_projection`. A future edit could accidentally add
+projection logic to an LLM arm, or a new LLM event type could slip
+past the exhaustiveness check.
+**Decision:** Introduce `ProjectionEvent` enum (7 item-event variants
+only; deliberately no LLM variants). `EventType::to_projection_event()`
+returns `Option<ProjectionEvent>` (None for LLM events).
+`apply_event_to_projection` dispatches on `ProjectionEvent`, not
+`EventType`. The firewall is now "type system won't let you."
+**Rationale:** Compile-time contract enforcement wherever the type
+system permits (solo-enterprise-architect v7). The firewall's policy
+lives in one place (`to_projection_event`); everywhere else, the types
+carry it. Adding projection logic for an LLM event now requires adding
+a `ProjectionEvent` variant, which the compiler flags at every match.
+**Alternatives rejected:**
+- Keep the `Ok(())` match arm: convention, not type-level; vulnerable
+  to future edits.
+- Sealed trait: Rust's sealed-trait pattern is heavier; an enum with
+  exhaustive match is the right primitive for 7 variants.
+**Consequences:** `apply_event_to_projection` signature unchanged
+(still takes `&Event`); the conversion happens inside. All existing
+tests pass (behavior identical). 3 new tests pin the firewall.

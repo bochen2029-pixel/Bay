@@ -210,6 +210,35 @@ future code path that tries `UPDATE events SET ...` or writes an
 invalid item row will ABORT at the storage layer regardless of what
 the Rust code does.
 
+## 2026-06-17T03:00:00Z — Phase 2e two-pass verification (in flight)
+
+**Oracle gate (non-LLM) — GREEN.** This is the load-bearing gate per
+AUTONOMY_CHARTER §9. All 6 critical modules have BOTH:
+- Property tests (Phase 2a): 15 property tests covering rank bounds,
+  projection determinism, swap atomicity, cap enforcement, write_events
+  rollback, get_items_at monotonicity. All pass.
+- Operator golden cases (Phase 2c): projection.json (7), swap.json (6),
+  caps.json (12), rank.json (42 mirrored from scripts/rank-fixtures.json).
+  All _status:proposed pending operator freeze. CI check
+  (scripts/check-golden.py) green.
+
+**Cold-context LLM verifier pass (pass 2) — DISPATCHED, IN FLIGHT.**
+Two `verifier` subagents dispatched in parallel with cold context (no
+pass-1 implementer reasoning):
+- Verifier A: event/projection spine (write_events,
+  apply_event_to_projection, rebuild_projection, get_items_at,
+  ProjectionEvent firewall, append-only trigger).
+- Verifier B: mutation/rank spine (swap_move_inner, rank_between,
+  cap enforcement in create/move/set_item_state).
+
+Their findings will be appended here on completion. Any BLOCKING
+drift finding will be fixed before Phase 3 commits; STRUCTURAL findings
+logged for operator review; COSMETIC noted.
+
+**Test count at Phase 2e dispatch: 113/113 passing.** cargo build
+warning-clean. The non-LLM oracle gate is the authority; the cold-
+context pass is defense-in-depth against rationalization drift.
+
 ---
 
 ## Oracle taxonomy (v7, for reference)

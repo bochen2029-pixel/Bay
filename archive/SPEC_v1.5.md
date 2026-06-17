@@ -1,29 +1,19 @@
 # SPEC.md — Bay
 
-> v1.6 — 2026-06-17. v0.2.0 revamp in progress. Reconciles spec with
-> the v0.2.0 Phase 2 correctness layer and fixes accumulated drift:
->   - §5.1 `bootstrap` return shape corrected to match code
->     (`{items, settings}` — the `lanCapture` field was never
->     implemented; the frontend calls `get_lan_capture_status`
->     separately when needed).
->   - §6 module layout reconciled with the actual flatter tree
->     (bootstrap in lib.rs; swap in commands/items.rs; capture as one
->     capture/mod.rs + capture.html; settings in settings.rs; no
->     separate error.rs/tracing.rs/db/projection.rs).
->   - §6.2 frontend deps: removed `@tauri-apps/plugin-global-shortcut`
->     (hotkey is Rust-side; surfaces to JS only as
->     `quick_capture_requested`).
->   - §4.4 DB-enforced invariants (migration 002: append-only trigger
->     on `events` + items CHECK constraints).
->   - §4.5 Golden cases (operator-owned ground truth; contracts/golden/).
->   - §4.6 ProjectionEvent — type-level LLM firewall.
->   - §11 Property tests (proptest; the non-LLM oracle).
->   - §9 gains a "Post-v1.1 delivered (v0.2.0 correctness layer)"
->     subsection.
-> No payload schema changes that break existing event logs. The new
-> `ProjectionEvent` type is internal (Rust-only); the JSON event
-> payload schema (§4.3) is unchanged. Co-pass with CLAUDE.md v1.6 →
-> v1.7. Prior versions in archive/.
+> v1.5 — 2026-05-07. Reconciles spec with the v0.1.1 cleanup-pass
+> surfaces that shipped after v0.1.0:
+>   - §1.1 BayStore.activeView gains `'archive'`.
+>   - §1.2 component tree adds `<ArchiveView>` and `<LanCaptureToast>`.
+>   - §5.1 commands table gains `list_archived_items`.
+>   - §9 gains a "Post-v1.0 delivered (v1.1 cleanup)" subsection.
+>   - §10.3 (soft-delete visibility): the "Trash view" alternative is
+>     no longer deferred — it shipped as `<ArchiveView>` in v0.1.1.
+>   - §10.10 (window close): close-to-tray is now a user-toggleable
+>     Settings → General field; default remains true.
+> No payload schema changes, no IPC contract changes beyond the new
+> read-only command, no doctrine drift in CLAUDE.md beyond the matching
+> v1.6 "Current state" refresh. Co-pass with CLAUDE.md v1.5 → v1.6.
+> Prior versions in archive/.
 
 > Implementation specification. Scope-locked by `CLAUDE.md`. All design decisions in `CLAUDE.md` are authoritative; this document translates them into buildable detail without introducing new scope.
 
@@ -621,82 +611,6 @@ In v1 `resulting_event_ids` is always empty (advisory-only; see §10).
 
 ---
 
-### 4.4 DB-enforced invariants (v0.2.0, migration 002)
-
-The four load-bearing invariants are enforced at the storage layer by
-migration `002_invariants.sql`, not just by Rust handler convention.
-
-**`events` append-only triggers.** `BEFORE UPDATE ON events` and
-`BEFORE DELETE ON events` triggers raise `ABORT 'events is append-only
-(Bay doctrine)'`. The only legal write path is `INSERT` via
-`db::write_events` → `events::append_event`. Any `UPDATE events SET …`
-or `DELETE FROM events` — from any code path, present or future —
-ABORTs at the storage layer. CLAUDE.md's "If you ever find yourself
-writing `UPDATE events SET …` or `DELETE FROM events`, stop" is now a
-runtime truth, not prose.
-
-**`items` CHECK constraints** (table rebuild in migration 002):
-- `length(content) BETWEEN 1 AND 4096` (SPEC §4.3 ITEM_CREATED; matches
-  Rust `MAX_CONTENT_LEN` counted as Unicode scalar values).
-- `length(rank) >= 1` (rank is never empty).
-- `deleted IN (0, 1)` (soft-delete flag is boolean).
-- `state != 'blocked' OR blocked_reason IS NOT NULL` (SPEC §3.1 guard:
-  blocked requires a reason — previously enforced only in
-  `set_item_state_inner`).
-- Existing `tier`/`state` CHECKs from migration 001 preserved.
-
-`PRAGMA user_version` is `2` after migration 002. `scripts/verify-schema.py`
-loads expected CREATEs from ALL migration files (later overrides earlier)
-and includes triggers in the schema object set.
-
-### 4.5 Golden cases (v0.2.0, operator-owned ground truth)
-
-`contracts/golden/` holds operator-authored input→expected-output pairs
-— the only assertions in the system the agent did not author. The
-cheapest true externality (Externality Principle). If implementation
-passes contract tests but fails a golden case, that's a `JOINT_WRONG`
-finding — the most dangerous class.
-
-| File | Module | Cases | Status |
-|---|---|---|---|
-| `projection.json` | `apply_event_to_projection` + `rebuild_projection_inner` | 7 | proposed |
-| `swap.json` | `swap_move_inner` | 6 | proposed |
-| `caps.json` | `create_item`/`move_item`/`set_item_state`/`swap_move` | 12 | proposed |
-| `rank.json` | `rank_between` | 42 (mirrors `scripts/rank-fixtures.json`) | frozen |
-
-`_status: proposed` → operator reviews and freezes. Once frozen, editing
-requires `SPEC:` tag + operator action per AUTONOMY_CHARTER §12.
-`scripts/check-golden.py` is the CI check: fails if a critical module
-has zero golden cases, or if a frozen file is edited without `SPEC:`.
-
-### 4.6 ProjectionEvent — type-level LLM firewall (v0.2.0)
-
-The LLM firewall (CLAUDE.md §LLM scope v1: "The LLM never mutates
-state") is enforced at the **type level**, not by convention.
-
-`ProjectionEvent` is a 7-variant enum (the item event types only:
-`ItemCreated`, `ItemEdited`, `ItemMoved`, `ItemStateChanged`,
-`ItemDateSet`, `ItemDeleted`, `ItemRestored`). The three
-`LlmSuggestion*` variants on `EventType` are **deliberately absent** —
-there is no `ProjectionEvent::LlmSuggestion*` variant.
-
-`EventType::to_projection_event() -> Option<ProjectionEvent>` is the
-firewall's single boundary: item events → `Some`; LLM events → `None`.
-`apply_event_to_projection` converts `event.event_type` to
-`Option<ProjectionEvent>`; `None` → `Ok(())` (LLM event, skip
-projection); `Some` → dispatch on `ProjectionEvent`. The projection's
-match arms structurally cannot handle an LLM event because there is no
-variant for it.
-
-Before v0.2.0, the firewall lived in an explicit `Ok(())` match arm for
-the three LLM `EventType` variants. A future edit could have
-accidentally added projection logic to an LLM arm. After v0.2.0, adding
-projection logic for an LLM event requires adding a `ProjectionEvent`
-variant, which the compiler flags at every match site. The firewall is
-"the type system won't let you," not "the match arm returns Ok(())".
-
----
-
 ## 5. IPC contract
 
 All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: string, message: string, detail?: any }`. Frontend discriminates on `code`.
@@ -705,7 +619,7 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 
 | Command | Params | Returns | Errors |
 |---|---|---|---|
-| `bootstrap` | — | `{ items: Item[], settings: Settings }` | `DB_MIGRATE_FAILED` |
+| `bootstrap` | — | `{ items: Item[], settings: Settings, lanCapture: { enabled: bool, url: string \| null } }` | `DB_MIGRATE_FAILED` |
 | `create_item` | `{ content, tier, start_at?, due_at? }` | `Item` | `CAP_EXCEEDED`, `CONTENT_EMPTY`, `CONTENT_TOO_LONG` |
 | `edit_item` | `{ id, content }` | `Item` | `ITEM_NOT_FOUND`, `CONTENT_EMPTY`, `CONTENT_TOO_LONG` |
 | `move_item` | `{ id, to_tier, to_rank?, reason? }` | `Item` | `ITEM_NOT_FOUND`, `CAP_EXCEEDED`, `INVALID_RANK` |
@@ -774,74 +688,52 @@ interface Settings {
 
 ## 6. Rust module layout
 
-> **v1.6 reconciliation:** the v1.5 spec listed a finer-grained tree
-> (`commands/bootstrap.rs`, `commands/swap.rs`, `db/projection.rs`,
-> `capture/server.rs`+`capture/html.rs`+`capture/ip.rs`,
-> `settings_file.rs`, `error.rs`, `tracing.rs`). The actual shipped
-> tree is **flatter** — the spec'd files were consolidated during
-> implementation with no behavior gap. The tree below reflects reality.
-
 ```
 src-tauri/src/
-├── main.rs                    — binary entry (windows_subsystem, calls bay_lib::run())
-├── lib.rs                     — Tauri builder, command registration, bootstrap,
-│                                resolve_data_dir, tray, close-to-tray wiring
+├── main.rs                    — Tauri builder, command registration, bootstrap
+├── lib.rs                     — re-exports (for unit testing harness)
 │
 ├── db/
-│   ├── mod.rs                 — Pool, migration runner (MIGRATIONS const embeds
-│   │                            001 + 002), write_event/write_events (the ONLY
-│   │                            write path — atomic append+apply in one tx),
-│   │                            unix_ms_now, EventDraft
-│   ├── events.rs              — append_event (INSERT only; the append-only
-│   │                            trigger in migration 002 blocks UPDATE/DELETE)
-│   └── items.rs               — apply_event_to_projection (dispatches on
-│                                ProjectionEvent — the type-level LLM firewall),
-│                                read helpers (list_active_items, list_deleted_items,
-│                                read_item_by_id_tx/_any_tx), rank/count helpers
+│   ├── mod.rs                 — Pool setup, migration runner, transaction helpers
+│   ├── events.rs              — append_event, get_events, iterate_events
+│   ├── items.rs               — items table read queries, update_from_event
+│   └── projection.rs          — replay events → rebuild items table; verify_projection
 │
 ├── domain/
-│   ├── mod.rs                 — re-exports (A_CAP, B_CAP, Event, EventType,
-│   │                            ProjectionEvent, Item, ItemState, Tier, rank_between)
-│   ├── item.rs                — Item struct, Tier enum, ItemState enum
-│   ├── event.rs               — Event struct, EventType enum (10 variants),
-│   │                            ProjectionEvent enum (7 variants — the LLM
-│   │                            firewall: LLM events map to None via
-│   │                            to_projection_event()), as_sql/from_sql
-│   ├── rank.rs                — rank_between (fractional indexing; base-36)
-│   └── capacity.rs            — A_CAP=5, B_CAP=12 constants
+│   ├── mod.rs
+│   ├── item.rs                — Item struct, Tier enum, State enum
+│   ├── event.rs               — Event struct, EventType enum, typed Payload variants
+│   ├── rank.rs                — fractional-indexing helpers
+│   └── capacity.rs            — cap constants, cap check functions
 │
 ├── commands/
-│   ├── mod.rs                 — module hub (re-exports capture, events, items, llm, settings)
-│   ├── items.rs               — create/edit/move/set_state/set_date/delete/restore
-│   │                            + swap_move_inner (atomic two-event swap);
-│   │                            each wraps a *_inner pure function for unit testing
-│   ├── events.rs              — get_events, get_items_at (time-travel replay),
-│   │                            rebuild_projection, list_archived_items, export_events
-│   ├── settings.rs            — get/update_settings, set_llm_api_key, test_llm_connection,
-│   │                            export_events; SettingsState, DataDir managed state
-│   ├── capture.rs             — toggle_lan_capture, get_lan_capture_status
-│   └── llm.rs                 — analyze, accept_suggestion, reject_suggestion
+│   ├── mod.rs                 — Error type, Result alias, shared helpers
+│   ├── bootstrap.rs           — bootstrap command
+│   ├── items.rs               — create/edit/move/delete/state/date commands
+│   ├── swap.rs                — swap_move command (its own file; transactional)
+│   ├── events.rs              — get_events, get_items_at commands
+│   ├── settings.rs            — get/update settings
+│   ├── capture.rs             — toggle_lan_capture
+│   └── llm.rs                 — set_llm_config, test_llm_connection, analyze, accept/reject
 │
 ├── capture/
-│   ├── mod.rs                 — CaptureState (lifecycle), axum router + routes
-│   │                            (GET /, GET /health, POST /capture), QR SVG gen,
-│   │                            shared-secret gate; embeds capture.html via include_str!
-│   └── capture.html           — mobile capture page (self-contained HTML/CSS/JS)
+│   ├── mod.rs                 — lifecycle: start, stop, is_running
+│   ├── server.rs              — axum router, routes
+│   ├── html.rs                — compile-time embedded capture page (include_str!)
+│   └── ip.rs                  — LAN IP detection (first non-loopback IPv4)
 │
 ├── llm/
-│   ├── mod.rs                 — LlmConfig, LlmError, TestResult
-│   ├── openai_compat.rs       — OpenAiCompatClient (reqwest; /v1/chat/completions)
-│   ├── prompt.rs              — SYSTEM_PROMPT, RETRY_PREFIX, format_user_prompt
-│   │                            (uses A_CAP/B_CAP constants, not magic numbers)
-│   ├── compression.rs         — compress (SQL-driven aggregates → AnalyzeContext)
-│   └── parse.rs               — parse_observations (strict JSON; unknown-id filtering)
+│   ├── mod.rs                 — LlmClient trait
+│   ├── openai_compat.rs       — OpenAI-compatible endpoint implementation
+│   ├── prompt.rs              — system + user prompt templates (const strs)
+│   ├── compression.rs         — event log → compact prompt input
+│   └── parse.rs               — strict parser for LLM response → Observation[]
 │
-├── keychain.rs                — keyring wrapper (SERVICE="bay", has/get/set_api_key)
-├── settings.rs                — Settings struct, load (falls back to defaults),
-│                                write_to_disk (strips has_api_key before serialize)
-├── hotkey.rs                  — register/unregister/reregister (tauri-plugin-global-shortcut);
-│                                emits quick_capture_requested on press
-└── (no separate error.rs / tracing.rs / settings_file.rs — folded into the above)
+├── keychain.rs                — thin wrapper around `keyring` crate
+├── settings_file.rs           — JSON settings file in app-data dir (non-secret fields)
+├── hotkey.rs                  — global shortcut registration via tauri-plugin-global-shortcut
+├── error.rs                   — BayError enum + serde + From impls
+└── tracing.rs                 — log setup (to file in app-data dir)
 ```
 
 ### 6.1 Key dependencies (Cargo.toml)
@@ -888,27 +780,18 @@ UUIDv7 for item ids: time-ordered, so items sort naturally by creation time when
 {
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
+    "@tauri-apps/plugin-global-shortcut": "^2",
     "@dnd-kit/core": "^6",
     "@dnd-kit/sortable": "^8",
     "@dnd-kit/utilities": "^3",
-    "date-fns": "^3",
     "react": "^18",
     "react-dom": "^18",
+    "zustand": "^4",
     "zod": "^3",
-    "zustand": "^4"
+    "date-fns": "^3"
   }
 }
 ```
-
-> **v1.6 reconciliation:** the v1.5 spec listed
-> `@tauri-apps/plugin-global-shortcut` as a frontend dep. It is NOT in
-> `package.json` and never was — the global hotkey is registered on the
-> **Rust** side via `tauri-plugin-global-shortcut` (see §6.1
-> `Cargo.toml`) and surfaces to the frontend only as the
-> `quick_capture_requested` Tauri event. No JS-side shortcut plugin is
-> needed. `@tauri-apps/plugin-dialog` IS a frontend dep (used by the
-> Settings → Export event log save dialog); v1.5 omitted it.
 
 No UI component library. Styling with CSS modules or vanilla CSS per system-theme-only directive. If a calendar grid becomes painful, consider `@internationalized/date` + hand-rolled grid; do not pull in a date-picker library.
 
@@ -1280,48 +1163,15 @@ v1.0 left behind. None of it expanded the design surface beyond what
 - **Zero-warning baseline restored.** Stale `#[allow(dead_code)]`
   markers swept; clippy double-ref-clone fix in `llm/prompt.rs`.
 
-### Post-v1.1 delivered (v0.2.0 correctness layer — Phase 2)
-
-The v0.2.0 revamp attacked the two problems v0.1.1 left: correctness
-was asserted not enforced, and doctrine had drifted. Phase 2 (the
-correctness layer) is complete; the four load-bearing invariants are
-now mechanically enforced at three layers (Rust handlers, property
-tests, DB triggers + CHECKs).
-
-- **Property tests** (Phase 2a, §11): 15 property tests across the 6
-  critical modules. `proptest = "1"` Cargo dev-dep. The non-LLM oracle.
-- **DB-enforced invariants** (Phase 2b, §4.4): migration
-  `002_invariants.sql` — `events` append-only triggers + `items` CHECK
-  constraints. `PRAGMA user_version` 1→2.
-- **Operator golden cases** (Phase 2c, §4.5): `contracts/golden/` with
-  25 cases (projection 7, swap 6, caps 12) + rank 42 mirrored. All
-  `_status:proposed` pending operator freeze. `scripts/check-golden.py`.
-- **Type-level LLM firewall** (Phase 2d, §4.6): `ProjectionEvent` enum;
-  `apply_event_to_projection` dispatches on it. LLM events return `None`
-  from `to_projection_event()` and structurally cannot reach the
-  projection. "Type system won't let you," not "match arm returns Ok(())."
-- **Bug-fix** (Phase 1): `llm/prompt.rs` hardcoded `/ 5`/`/ 12` →
-  `A_CAP`/`B_CAP`. Audit confirmed 4 other candidate "bugs" were
-  documented design choices or correct behavior; 1 was SPEC drift
-  (§5.1 `bootstrap`) reconciled in this version.
-
-Test count: 113/113 (up from 91 at v0.1.1). `cargo build` warning-clean.
-
 ### Still deferred (post-v0.1.1)
 
 - Rank rebalance implementation (helper exists; no trigger per §10.4).
 - LLM re-org proposals with accept/reject resulting in real events
-  (the §10.5 schema is preserved for this; the wiring is v2 scope —
-  Phase 5 I-20 will finally populate `resulting_event_ids`).
-- Recurring tasks (CLAUDE.md "Cut from v1"; v2 candidate — Phase 5 I-21).
-- LLM response streaming (§8.6 — single response in v1; v2 nicety —
-  Phase 5 I-22).
+  (the §10.5 schema is preserved for this; the wiring is v2 scope).
+- Recurring tasks (CLAUDE.md "Cut from v1"; v2 candidate).
+- LLM response streaming (§8.6 — single response in v1; v2 nicety).
 - React DevTools Profiler sibling-render automated check (still
   empirical — caught manually if at all).
-- Above-and-beyond UX (command palette, C-tier virtualization,
-  undo/redo, audit-log search, batch ops) — Phase 4 I-15..I-19.
-- Full v2 modernization (sync, multi-profile, theming, plugin surface,
-  mobile companion) — Phase 6 I-23..I-27.
 
 ---
 
@@ -1463,32 +1313,4 @@ All decisions from v1.0 §10 are resolved. Below is the resolved state for audit
 
 ---
 
-## 11. Property tests (v0.2.0, non-LLM oracle)
-
-Property tests assert structural laws that hold for **all** valid
-inputs, independent of anyone's interpretation of expected output. They
-are the Externality Principle's non-LLM oracle for the 6 critical
-modules (AUTONOMY_CHARTER §9). `proptest = "1"` is a Cargo dev-dep
-(ADR-003); test-only, doesn't ship.
-
-| Module | Property tests | What they assert |
-|---|---|---|
-| `domain::rank::rank_between` | 8 | strictly-between bounds (both/upper/lower); no-trailing-zero invariant; monotone front/end/midpoint insertion |
-| `apply_event_to_projection` + `rebuild_projection_inner` | 2 | **THE projection-determinism property**: for any event sequence, rebuild reproduces items exactly; `get_items_at(now)` == live non-deleted projection |
-| `swap_move_inner` + cap enforcement | 4 | cap A/B never exceeded under creates; inbox/C unbounded; swap preserves active counts + emits 2 adjacent-id same-ts events |
-| `db::write_events` | 1 | rollback for ANY failing position in a multi-event batch (atomicity) |
-
-The projection-determinism property is the single most important: if it
-ever breaks, the event-sourcing invariant is violated (items is no
-longer a pure projection of events). The property test generates random
-interleavings of create/edit/move/state/delete/restore and asserts
-rebuild reproduces the items table exactly.
-
-Property tests complement (do not replace) the unit tests (which pin
-specific scenarios) and the DB triggers/CHECKs (which enforce at
-runtime). The three layers together make the four load-bearing
-invariants mechanically unbreakable.
-
----
-
-*End of SPEC.md. Current version: v1.6. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*
+*End of SPEC.md. Current version: v1.5. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*

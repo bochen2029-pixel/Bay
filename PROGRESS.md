@@ -98,3 +98,28 @@
   run; fixed by removing the inner BEGIN/COMMIT.
 - Phase 2b save point: committing. Next: Phase 2c (operator golden
   cases — contracts/golden/*.json).
+
+## 2026-06-17T03:30:00Z — Phase 3 close (doctrine reconciliation)
+
+- Archived v1.6/v1.5/v1.3 to archive/CLAUDE_v1.6.md, SPEC_v1.5.md,
+  PROMPTS_v1.3.md.
+- Bumped: CLAUDE.md v1.7, SPEC.md v1.6, PROMPTS.md v1.4.
+- SPEC drift reconciled:
+  - 5.1 bootstrap return shape: {items,settings,lanCapture} ->
+    {items,settings} (code is canonical; ADR-005).
+  - 6 module layout: reconciled with actual flatter tree (bootstrap
+    in lib.rs; swap in commands/items.rs; capture as one mod.rs +
+    capture.html; no error.rs/tracing.rs/settings_file.rs).
+  - 6.2 frontend deps: removed @tauri-apps/plugin-global-shortcut
+    (Rust-side; surfaces as quick_capture_requested event); added
+    @tauri-apps/plugin-dialog (was missing from spec).
+- New SPEC sections: 4.4 DB-enforced invariants, 4.5 Golden cases,
+  4.6 ProjectionEvent type-level LLM firewall, 11 Property tests.
+- New 9 subsection: Post-v1.1 delivered (v0.2.0 correctness layer).
+- CLAUDE.md Current state refreshed to v0.2.0-in-progress.
+- DECISIONS.md: ADR-005 (bootstrap shape), ADR-006 (ProjectionEvent
+  firewall).
+- SPEC_AMENDMENT.md left in place for operator review of the doctrine
+  bump (per charter §5 protocol).
+- Phase 3 save point: committing. Next: Phase 4 (above-and-beyond UX
+  — I-15 command palette first).
