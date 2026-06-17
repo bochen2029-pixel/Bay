@@ -60,3 +60,20 @@
   diagnostics (correct idiom).
 - Phase 1 save point: committing the prompt.rs fix. Next: Phase 2a
   (property tests — the load-bearing correctness layer).
+
+## 2026-06-17T01:30:00Z — Phase 2a close (15 property tests, non-LLM oracle)
+
+- Added proptest = "1" as Cargo dev-dep (ADR-003).
+- 15 property tests across the 6 critical modules:
+  - rank_between: 8 (bounds, monotone front/end/midpoint, no-trailing-zero)
+  - apply_event_to_projection + rebuild: 2 (THE projection-determinism
+    property; get_items_at(now)==live)
+  - swap_move + cap enforcement: 4 (cap A/B/inbox-C; swap atomicity +
+    active-count preservation)
+  - write_events rollback: 1 (any failing position -> full rollback)
+- cargo test 106/106 (up from 91). cargo build warning-clean.
+- The proptest! macro's fn-form had edge cases (zero-arg tests, doc
+  comments); used the closure form proptest!(|...| {...}) inside plain
+  #[test] fns — unambiguous, compiles reliably across proptest versions.
+- Phase 2a save point: committing. Next: Phase 2b (DB-enforced
+  invariants — migration 002 with CHECKs + append-only trigger).

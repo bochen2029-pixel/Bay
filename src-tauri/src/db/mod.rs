@@ -462,4 +462,91 @@ mod tests {
             .unwrap();
         rows.collect::<Result<_, _>>().unwrap()
     }
+
+    // ── Property test (non-LLM oracle for write_events rollback) ────
+    //
+    // The existing `write_events_rolls_back_when_any_apply_fails` test
+    // pins one scenario (failing event at position 1 of 2). This
+    // property test generalizes: for ANY position of the failing
+    // event in a multi-event batch (first, middle, last), the entire
+    // batch rolls back — zero events appended, zero projection
+    // changes. This is the atomicity guarantee swap_move depends on.
+
+    use proptest::prelude::*;
+
+    #[test]
+    fn prop_write_events_rolls_back_for_any_failing_position() {
+        use serde_json::json;
+        proptest!(|(batch_size in 2u32..5, fail_pos in 0u32..5)| {
+            // fail_pos must be within the batch; if not, skip (proptest
+            // will regenerate).
+            prop_assume!(fail_pos < batch_size);
+
+            let pool = mem_pool();
+            run_migrations(&pool).unwrap();
+
+            // Seed one real item so the projection has a "before" state
+            // to verify the rollback preserves.
+            let _seed = write_event(&pool, |_tx, _ts| {
+                Ok(EventDraft {
+                    event_type: EventType::ItemCreated,
+                    item_id: Some("seed-id".into()),
+                    payload: json!({
+                        "content": "seed",
+                        "tier": "inbox",
+                        "rank": "m",
+                        "start_at": null,
+                        "due_at": null,
+                    }),
+                })
+            })
+            .unwrap();
+
+            let events_before: i64 = pool.get().unwrap()
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                .unwrap();
+            let items_before = snapshot_items(&pool);
+
+            // Build a batch of `batch_size` ITEM_MOVED drafts, where the
+            // draft at `fail_pos` targets a non-existent id (apply_item_moved
+            // errors because UPDATE matched zero rows). All others target
+            // the seed item (which would succeed in isolation).
+            let result = write_events(&pool, |_tx, _ts| {
+                let mut drafts = Vec::new();
+                for i in 0..batch_size {
+                    let (item_id, rank_after) = if i == fail_pos {
+                        ("does-not-exist".to_string(), "q".to_string())
+                    } else {
+                        ("seed-id".to_string(), format!("z{i}"))
+                    };
+                    drafts.push(EventDraft {
+                        event_type: EventType::ItemMoved,
+                        item_id: Some(item_id),
+                        payload: json!({
+                            "tier_before": "inbox",
+                            "rank_before": "m",
+                            "tier_after": "A",
+                            "rank_after": rank_after,
+                            "reason": null,
+                        }),
+                    });
+                }
+                Ok(drafts)
+            });
+
+            // The batch must error (because fail_pos targets a missing id).
+            prop_assert!(result.is_err(),
+                "write_events must error when any draft's apply fails");
+
+            // Atomicity: zero new events, projection unchanged.
+            let events_after: i64 = pool.get().unwrap()
+                .query_row("SELECT COUNT(*) FROM events", [], |r| r.get(0))
+                .unwrap();
+            prop_assert_eq!(events_after, events_before,
+                "failed write_events must roll back ALL event appends (atomicity)");
+            let items_after = snapshot_items(&pool);
+            prop_assert_eq!(items_after, items_before,
+                "failed write_events must leave projection untouched (atomicity)");
+        });
+    }
 }

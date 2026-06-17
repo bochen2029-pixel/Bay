@@ -226,4 +226,136 @@ mod tests {
             );
         }
     }
+
+    // ── Property tests (non-LLM oracle for rank_between) ───────────
+    //
+    // These are the Externality Principle's mechanical check on
+    // rank_between: structural laws that must hold for ALL valid
+    // inputs, independent of anyone's interpretation of the expected
+    // output. If a future refactor breaks the bounds property, the
+    // existing unit tests (which assert specific bounds on a handful
+    // of cases) might miss it; the property test catches it.
+    //
+    // Written as plain #[test] fns that call proptest's TestRunner
+    // directly — the `proptest!` macro's fn-form has edge cases around
+    // zero-arg tests and meta attributes; the explicit TestRunner form
+    // is more verbose but unambiguous and compiles reliably across
+    // proptest versions.
+
+    use proptest::prelude::*;
+
+    /// Generate a valid rank string: a non-empty sequence of base-36
+    /// digits, not ending in '0' (the no-trailing-zero invariant the
+    /// algorithm preserves inductively).
+    fn valid_rank_strategy() -> impl Strategy<Value = String> {
+        prop::collection::vec("[0-9a-z]", 1..=8)
+            .prop_map(|chars| chars.join(""))
+            .prop_filter("no trailing '0'", |s| !s.ends_with('0'))
+    }
+
+    /// Property 1: rank_between(a, b) is strictly between a and b
+    /// for all valid (a, b) with a < b.
+    #[test]
+    fn prop_strictly_between_both_bounded() {
+        proptest!(|(a in valid_rank_strategy(), b in valid_rank_strategy())| {
+            // Skip cases where a >= b (rank_between would panic by design).
+            prop_assume!(a < b);
+            let mid = rank_between(Some(&a), Some(&b));
+            prop_assert!(mid.as_str() > a.as_str(), "mid {mid:?} must be > a {a:?}");
+            prop_assert!(mid.as_str() < b.as_str(), "mid {mid:?} must be < b {b:?}");
+        });
+    }
+
+    /// Property 2: rank_between(None, b) < b for all valid b.
+    #[test]
+    fn prop_strictly_below_upper_bound() {
+        proptest!(|(b in valid_rank_strategy())| {
+            let mid = rank_between(None, Some(&b));
+            prop_assert!(!mid.is_empty());
+            prop_assert!(mid.as_str() < b.as_str());
+        });
+    }
+
+    /// Property 3: rank_between(a, None) > a for all valid a.
+    #[test]
+    fn prop_strictly_above_lower_bound() {
+        proptest!(|(a in valid_rank_strategy())| {
+            let mid = rank_between(Some(&a), None);
+            prop_assert!(!mid.is_empty());
+            prop_assert!(mid.as_str() > a.as_str());
+        });
+    }
+
+    /// Property 4: rank_between(None, None) is non-empty (a valid
+    /// standalone rank) and preserves the no-trailing-zero invariant.
+    #[test]
+    fn prop_unbounded_returns_nonempty() {
+        let mid = rank_between(None, None);
+        assert!(!mid.is_empty(), "mid must be non-empty, got {mid:?}");
+        assert!(!mid.ends_with('0'), "mid must not end in '0', got {mid:?}");
+    }
+
+    /// Property 5: the no-trailing-zero invariant. The algorithm
+    /// must never produce a rank ending in '0' (it preserves this
+    /// inductively from an empty database). This is the precondition
+    /// that makes future rank_between calls valid.
+    #[test]
+    fn prop_never_trailing_zero() {
+        proptest!(|(a in prop::option::of(valid_rank_strategy()),
+                    b in prop::option::of(valid_rank_strategy()))| {
+            // Skip invalid (Some, Some) pairs where a >= b.
+            if let (Some(ref a_str), Some(ref b_str)) = (&a, &b) {
+                prop_assume!(a_str < b_str);
+            }
+            let mid = rank_between(a.as_deref(), b.as_deref());
+            prop_assert!(!mid.ends_with('0'),
+                "mid {mid:?} must not end in '0' (no-trailing-zero invariant)");
+        });
+    }
+
+    /// Property 6: monotonicity under repeated front-insertion.
+    #[test]
+    fn prop_front_inserts_are_monotone_decreasing() {
+        proptest!(|(n in 1u32..30)| {
+            let mut first = "m".to_string();
+            for _ in 0..n {
+                let r = rank_between(None, Some(&first));
+                prop_assert!(r.as_str() < first.as_str(), "front insert must decrease");
+                first = r;
+            }
+        });
+    }
+
+    /// Property 7: monotonicity under repeated end-insertion.
+    #[test]
+    fn prop_end_inserts_are_monotone_increasing() {
+        proptest!(|(n in 1u32..30)| {
+            let mut prev: Option<String> = None;
+            let mut last = "".to_string();
+            for _ in 0..n {
+                let r = rank_between(prev.as_deref(), None);
+                prop_assert!(r.as_str() > last.as_str() || last.is_empty(),
+                    "end insert must increase");
+                last = r.clone();
+                prev = Some(r);
+            }
+        });
+    }
+
+    /// Property 8: midpoint idempotent under repeated insertion
+    /// between two fixed bounds — every new rank stays strictly
+    /// between the bounds, and the sequence is monotone.
+    #[test]
+    fn prop_midpoint_inserts_stay_between_bounds() {
+        proptest!(|(n in 1u32..30)| {
+            let lo = "a".to_string();
+            let mut cur_hi = "c".to_string();
+            for _ in 0..n {
+                let r = rank_between(Some(&lo), Some(&cur_hi));
+                prop_assert!(r.as_str() > lo.as_str(), "must stay > lo");
+                prop_assert!(r.as_str() < cur_hi.as_str(), "must stay < cur_hi");
+                cur_hi = r;
+            }
+        });
+    }
 }

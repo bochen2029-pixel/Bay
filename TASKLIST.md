@@ -35,14 +35,16 @@ items:
     notes: "1 real bug fixed (prompt.rs magic numbers -> A_CAP/B_CAP). 4 confirmed-not-bugs (documented design choices / correct behavior). 1 deferred to Phase 3 (SPEC drift). Sweep clean. cargo test 91/91."
   - id: P2a
     description: "Property tests: proptest for rank_between, projection determinism, swap atomicity, write_events rollback, get_items_at"
-    status: IN_PROGRESS
+    status: DONE
     dependency: [P0]
     blocks: [P2e]
     fan_out: 1
     verifiability: AUTONOMOUSLY_VERIFIABLE
     cost_estimate: 3h
+    cost_actual: 0.75h
     critical: true
     oracle: [property]
+    notes: "15 property tests added across 4 modules: rank (8), events (2: rebuild determinism + get_items_at now), items (4: cap A/B/inbox-C + swap atomicity), db (1: write_events rollback any position). cargo test 106/106 (up from 91). cargo build warning-clean."
   - id: P2b
     description: "DB-enforced invariants: migration 002_invariants.sql (CHECKs + append-only trigger), user_version→2, verify-schema.py"
     status: NOT_STARTED

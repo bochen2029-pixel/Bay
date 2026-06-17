@@ -37,6 +37,12 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-feature
 # test exercise auth failure, rate limiting, malformed responses, and
 # the timeout path without a real network. Dev-only; doesn't ship.
 mockito = "1"
+# Proptest: property-based testing for the load-bearing invariants
+# (rank_between bounds; projection determinism; swap atomicity;
+# write_events rollback; get_items_at monotonicity). The non-LLM
+# oracle for the 6 critical modules per AUTONOMY_CHARTER §9 / the
+# Externality Principle. Dev-only; doesn't ship.
+proptest = "1"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]

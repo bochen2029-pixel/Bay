@@ -1586,4 +1586,147 @@ mod tests {
 
         assert_eq!(before, after, "replay must reproduce the moved state");
     }
+
+    // ── Property tests (non-LLM oracle for swap_move + cap enforcement) ──
+    //
+    // These are the Externality Principle's mechanical check on
+    // swap_move_inner and the cap-enforcement paths in create/move/
+    // set_item_state. The existing tests pin specific scenarios; these
+    // generalize: the invariants must hold for ALL valid inputs.
+
+    use proptest::prelude::*;
+
+    /// Count active items in a tier directly from the projection.
+    fn count_active(pool: &SqlitePool, tier: Tier) -> i64 {
+        let conn = pool.get().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*) FROM items WHERE tier = ?1 AND state = 'active' AND deleted = 0",
+            [tier.as_sql()],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    /// Property: cap enforcement is invariant under any sequence of
+    /// creates into A. After any number of create_item calls into A,
+    /// count_active(A) <= A_CAP. Creates beyond cap must return
+    /// CAP_EXCEEDED and not increment the count.
+    #[test]
+    fn prop_cap_a_never_exceeded_under_creates() {
+        proptest!(|(n_extra in 0u32..8)| {
+            let pool = fresh_pool();
+            // Fill A to cap.
+            for _ in 0..A_CAP {
+                create_item_inner(&pool, Tier::A, "a".into(), None, None).unwrap();
+            }
+            assert_eq!(count_active(&pool, Tier::A), A_CAP as i64);
+
+            // Try to create n_extra more; each must fail with CAP_EXCEEDED.
+            for i in 0..n_extra {
+                let err = create_item_inner(&pool, Tier::A, format!("extra-{i}"), None, None)
+                    .expect_err("create beyond A cap must error");
+                assert_eq!(err, "CAP_EXCEEDED", "expected CAP_EXCEEDED, got {err:?}");
+            }
+            // Count must still be exactly A_CAP.
+            prop_assert_eq!(count_active(&pool, Tier::A), A_CAP as i64,
+                "A active count must never exceed cap");
+        });
+    }
+
+    /// Property: cap enforcement is invariant under any sequence of
+    /// creates into B (cap 12).
+    #[test]
+    fn prop_cap_b_never_exceeded_under_creates() {
+        proptest!(|(n_extra in 0u32..8)| {
+            let pool = fresh_pool();
+            for _ in 0..B_CAP {
+                create_item_inner(&pool, Tier::B, "b".into(), None, None).unwrap();
+            }
+            assert_eq!(count_active(&pool, Tier::B), B_CAP as i64);
+
+            for i in 0..n_extra {
+                let err = create_item_inner(&pool, Tier::B, format!("extra-{i}"), None, None)
+                    .expect_err("create beyond B cap must error");
+                assert_eq!(err, "CAP_EXCEEDED");
+            }
+            prop_assert_eq!(count_active(&pool, Tier::B), B_CAP as i64,
+                "B active count must never exceed cap");
+        });
+    }
+
+    /// Property: Inbox and C are unbounded — any number of creates
+    /// succeeds without CAP_EXCEEDED.
+    #[test]
+    fn prop_inbox_and_c_unbounded() {
+        proptest!(|(n in 1u32..20)| {
+            let pool = fresh_pool();
+            for i in 0..n {
+                create_item_inner(&pool, Tier::Inbox, format!("inb-{i}"), None, None)
+                    .expect("Inbox create must never hit cap");
+                create_item_inner(&pool, Tier::C, format!("c-{i}"), None, None)
+                    .expect("C create must never hit cap");
+            }
+            prop_assert_eq!(count_active(&pool, Tier::Inbox), n as i64);
+            prop_assert_eq!(count_active(&pool, Tier::C), n as i64);
+        });
+    }
+
+    /// Property: swap_move atomicity — after a successful swap into a
+    /// full A, the entering-tier active count is unchanged (one in,
+    /// one out) and the leaving_dest count is +1. Two events land
+    /// with adjacent ids and shared ts.
+    #[test]
+    fn prop_swap_move_preserves_active_counts_and_atomicity() {
+        proptest!(|(leaving_dest_choice in 0u32..2, reason_present in any::<bool>())| {
+            let pool = fresh_pool();
+            let (a_items, inbox_item) = fill_a_and_seed_inbox_item(&pool);
+            let demoted = a_items.last().unwrap().clone();
+            let leaving_dest = if leaving_dest_choice == 0 { Tier::B } else { Tier::C };
+            let entering_rank =
+                crate::domain::rank_between(None, Some(a_items[0].rank.as_str()));
+            let reason = if reason_present { Some("prop reason".to_string()) } else { None };
+
+            let a_before = count_active(&pool, Tier::A);
+            let dest_before = count_active(&pool, leaving_dest);
+
+            let result = swap_move_inner(
+                &pool,
+                demoted.id.clone(),
+                leaving_dest,
+                inbox_item.id.clone(),
+                Tier::A,
+                entering_rank,
+                reason,
+            ).expect("swap_move must succeed when A is at cap");
+
+            // Active counts: A unchanged (one in, one out); leaving_dest +1.
+            prop_assert_eq!(count_active(&pool, Tier::A), a_before,
+                "A active count must be unchanged after swap (one in, one out)");
+            prop_assert_eq!(count_active(&pool, leaving_dest), dest_before + 1,
+                "leaving_dest active count must be +1 after swap");
+
+            // Atomicity: two ITEM_MOVED events with adjacent ids and shared ts.
+            let conn = pool.get().unwrap();
+            let (ids, ts): (Vec<i64>, Vec<i64>) = {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT id, ts FROM events WHERE type = 'ITEM_MOVED' ORDER BY id DESC LIMIT 2",
+                    )
+                    .unwrap();
+                let rows = stmt
+                    .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                    .unwrap();
+                let mut v: Vec<(i64, i64)> = rows.collect::<Result<_, _>>().unwrap();
+                v.sort();
+                v.into_iter().map(|(id, ts)| (id, ts)).unzip()
+            };
+            prop_assert_eq!(ids.len(), 2, "swap must emit exactly two ITEM_MOVED events");
+            prop_assert_eq!(ids[1], ids[0] + 1, "the two events must have adjacent ids");
+            prop_assert_eq!(ts[0], ts[1], "the two events must share a ts (single tx)");
+
+            // The leaving item is now in leaving_dest; the entering item is in A.
+            prop_assert_eq!(result.leaving.tier, leaving_dest);
+            prop_assert_eq!(result.entering.tier, Tier::A);
+        });
+    }
 }

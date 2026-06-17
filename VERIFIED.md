@@ -99,6 +99,63 @@ correct behavior** (confirmed, not bugs); **1 is SPEC-vs-code drift**
 real bug found (prompt.rs magic numbers). Baseline still green after
 the fix.
 
+## 2026-06-17T01:30:00Z — Phase 2a property tests (non-LLM oracle)
+
+15 property tests added across the 6 critical modules' surfaces. These
+are the Externality Principle's mechanical checks — structural laws
+that must hold for ALL valid inputs, independent of anyone's
+interpretation of expected output. If a future refactor breaks an
+invariant, the property tests catch it where unit tests (which assert
+specific cases) might miss it.
+
+**Oracle: property tests (proptest 1.11, dev-dep).**
+
+### rank_between (domain/rank.rs) — 8 property tests
+- `prop_strictly_between_both_bounded` — rank_between(a,b) strictly
+  between a and b for all valid (a,b) with a < b.
+- `prop_strictly_below_upper_bound` — rank_between(None, b) < b.
+- `prop_strictly_above_lower_bound` — rank_between(a, None) > a.
+- `prop_unbounded_returns_nonempty` — rank_between(None, None) is a
+  valid non-empty rank with no trailing '0'.
+- `prop_never_trailing_zero` — the no-trailing-zero invariant holds
+  for ALL valid inputs (the precondition for future rank_between calls).
+- `prop_front_inserts_are_monotone_decreasing` — repeated front-insert
+  produces a strictly decreasing sequence.
+- `prop_end_inserts_are_monotone_increasing` — repeated end-insert
+  produces a strictly increasing sequence.
+- `prop_midpoint_inserts_stay_between_bounds` — repeated midpoint
+  insert between fixed bounds stays strictly between.
+
+### apply_event_to_projection + rebuild_projection (commands/events.rs) — 2 property tests
+- `prop_rebuild_reproduces_items_for_any_event_sequence` — **THE load-
+  bearing property**: for ANY valid event sequence (random interleaving
+  of create/edit/move/state/delete/restore), rebuild_projection
+  (wipe + replay all events) reproduces the items table exactly.
+- `prop_get_items_at_now_matches_live` — get_items_at(now) matches the
+  live non-deleted projection for any event sequence (time-travel-to-
+  now == live state).
+
+### swap_move_inner + cap enforcement (commands/items.rs) — 4 property tests
+- `prop_cap_a_never_exceeded_under_creates` — A active count never
+  exceeds A_CAP under any number of creates (extra creates return
+  CAP_EXCEEDED, count stays at cap).
+- `prop_cap_b_never_exceeded_under_creates` — same for B / B_CAP.
+- `prop_inbox_and_c_unbounded` — Inbox and C never hit CAP_EXCEEDED.
+- `prop_swap_move_preserves_active_counts_and_atomicity` — after a
+  successful swap into full A: entering-tier count unchanged (one in,
+  one out), leaving_dest +1, two ITEM_MOVED events with adjacent ids
+  + shared ts (single-tx atomicity).
+
+### write_events (db/mod.rs) — 1 property test
+- `prop_write_events_rolls_back_for_any_failing_position` — for ANY
+  position of the failing event in a multi-event batch (first, middle,
+  last), the entire batch rolls back (zero events, zero projection
+  changes). Generalizes the existing single-scenario rollback test.
+
+**Test count: 106/106 passing** (up from 91 at baseline; +15 property
+tests). `cargo build` warning-clean. `proptest` dev-dep added per
+ADR-003.
+
 ---
 
 ## Oracle taxonomy (v7, for reference)

@@ -361,6 +361,170 @@ mod tests {
         assert_eq!(after1, after2);
     }
 
+    // ── Property tests (non-LLM oracle for projection determinism) ──
+    //
+    // THE single most important property in the system: for ANY valid
+    // event sequence, rebuild_projection (wipe + replay all events)
+    // reproduces the items table exactly. If this ever breaks, the
+    // event-sourcing invariant is violated — items is no longer a pure
+    // projection of events. This is the Externality Principle's
+    // mechanical check on apply_event_to_projection + rebuild_projection.
+    //
+    // The existing tests above pin specific scenarios (creates, moves,
+    // states, deletes, restores). This property test generalizes: any
+    // random interleaving of valid ops must preserve determinism.
+
+    use proptest::prelude::*;
+
+    /// One operation in a random event sequence. Each variant maps to
+    /// a `*_inner` call. The strategy keeps op sequences bounded so
+    /// the test stays fast (<60s per property test, per charter).
+    #[derive(Debug, Clone)]
+    enum Op {
+        Create { tier: Tier, content: String },
+        Edit { item_idx: usize, content: String },
+        Move { item_idx: usize, to_tier: Tier },
+        SetState { item_idx: usize, state: ItemState },
+        Delete { item_idx: usize },
+        Restore { item_idx: usize },
+    }
+
+    fn tier_strategy() -> impl Strategy<Value = Tier> {
+        prop_oneof![
+            Just(Tier::Inbox),
+            Just(Tier::A),
+            Just(Tier::B),
+            Just(Tier::C),
+        ]
+    }
+
+    fn state_strategy() -> impl Strategy<Value = ItemState> {
+        prop_oneof![
+            Just(ItemState::Active),
+            Just(ItemState::Done),
+            // Blocked requires a reason; we always pass a valid one.
+            Just(ItemState::Blocked),
+        ]
+    }
+
+    fn content_strategy() -> impl Strategy<Value = String> {
+        "[a-z0-9 ]{1,20}"
+    }
+
+    fn op_strategy(num_items: usize) -> impl Strategy<Value = Op> {
+        let item_idx = if num_items > 0 { 0..num_items } else { 0..1 };
+        prop_oneof![
+            (tier_strategy(), content_strategy()).prop_map(|(tier, content)| Op::Create { tier, content }),
+            (item_idx.clone(), content_strategy()).prop_map(move |(idx, content)| Op::Edit { item_idx: idx, content }),
+            (item_idx.clone(), tier_strategy()).prop_map(move |(idx, to_tier)| Op::Move { item_idx: idx, to_tier }),
+            (item_idx.clone(), state_strategy()).prop_map(move |(idx, state)| Op::SetState { item_idx: idx, state }),
+            item_idx.clone().prop_map(move |idx| Op::Delete { item_idx: idx }),
+            item_idx.prop_map(move |idx| Op::Restore { item_idx: idx }),
+        ]
+    }
+
+    /// Apply a sequence of ops to a fresh pool, returning the live item ids
+    /// (so the caller can correlate). Ops that would error (edit/delete/restore
+    /// on a missing index, move into a full tier, etc.) are silently skipped —
+    /// the property is about determinism for ops that DID land, not about
+    /// covering every op.
+    fn apply_ops(pool: &SqlitePool, ops: &[Op]) -> Vec<String> {
+        let mut live_ids: Vec<String> = Vec::new();
+        let mut deleted_ids: Vec<String> = Vec::new();
+        for op in ops {
+            match op {
+                Op::Create { tier, content } => {
+                    if let Ok(item) = create_item_inner(pool, *tier, content.clone(), None, None) {
+                        live_ids.push(item.id);
+                    }
+                }
+                Op::Edit { item_idx, content } => {
+                    if let Some(id) = live_ids.get(*item_idx) {
+                        let _ = edit_item_inner(pool, id.clone(), content.clone());
+                    }
+                }
+                Op::Move { item_idx, to_tier } => {
+                    if let Some(id) = live_ids.get(*item_idx) {
+                        // move_item_inner needs a to_rank; pass None to get end-of-tier.
+                        let _ = move_item_inner(pool, id.clone(), *to_tier, None, None);
+                    }
+                }
+                Op::SetState { item_idx, state } => {
+                    if let Some(id) = live_ids.get(*item_idx) {
+                        let reason = if *state == ItemState::Blocked {
+                            Some("test block reason".to_string())
+                        } else {
+                            None
+                        };
+                        let _ = set_item_state_inner(pool, id.clone(), *state, reason);
+                    }
+                }
+                Op::Delete { item_idx } => {
+                    if let Some(id) = live_ids.get(*item_idx).cloned() {
+                        if delete_item_inner(pool, &id).is_ok() {
+                            live_ids.retain(|x| x != &id);
+                            deleted_ids.push(id);
+                        }
+                    }
+                }
+                Op::Restore { item_idx } => {
+                    if let Some(id) = deleted_ids.get(*item_idx).cloned() {
+                        if restore_item_inner(pool, &id).is_ok() {
+                            live_ids.push(id.clone());
+                            deleted_ids.retain(|x| x != &id);
+                        }
+                    }
+                }
+            }
+        }
+        live_ids
+    }
+
+    /// Property 1 (the load-bearing one): for any valid event sequence,
+    /// rebuild_projection reproduces the items table exactly.
+    #[test]
+    fn prop_rebuild_reproduces_items_for_any_event_sequence() {
+        proptest!(|(ops in prop::collection::vec(op_strategy(10), 1..15))| {
+            let pool = fresh_pool();
+            apply_ops(&pool, &ops);
+
+            let before = snapshot(&pool);
+            rebuild_projection_inner(&pool).expect("rebuild must succeed for any valid event sequence");
+            let after = snapshot(&pool);
+            prop_assert_eq!(before, after,
+                "rebuild_projection must reproduce items exactly for any event sequence");
+        });
+    }
+
+    /// Property 2: get_items_at(now) matches the live projection for any
+    /// event sequence. (Time-travel to now == live state.)
+    #[test]
+    fn prop_get_items_at_now_matches_live() {
+        proptest!(|(ops in prop::collection::vec(op_strategy(10), 1..15))| {
+            let pool = fresh_pool();
+            apply_ops(&pool, &ops);
+
+            let live = snapshot(&pool);
+            let now_ts = db::unix_ms_now();
+            let at_now = get_items_at_inner(&pool, now_ts).expect("get_items_at(now) must succeed");
+            // get_items_at returns Item[]; snapshot returns (id,content,tier,deleted).
+            // Compare the id set + content + tier + deleted flag.
+            let at_now_snapshot: Vec<(String, String, String, i64)> = at_now.iter()
+                .map(|i| (i.id.clone(), i.content.clone(), i.tier.as_sql().to_string(), 0i64))
+                .collect();
+            // live includes deleted=1 rows; at_now only returns non-deleted.
+            // Filter live to non-deleted for comparison.
+            let live_non_deleted: Vec<_> = live.into_iter().filter(|(_, _, _, d)| *d == 0).collect();
+            // Both sorted by id for stable comparison.
+            let mut a = live_non_deleted.clone();
+            let mut b = at_now_snapshot.clone();
+            a.sort_by(|x, y| x.0.cmp(&y.0));
+            b.sort_by(|x, y| x.0.cmp(&y.0));
+            prop_assert_eq!(a, b,
+                "get_items_at(now) must match live non-deleted projection");
+        });
+    }
+
     #[test]
     fn list_archived_items_returns_only_deleted_sorted_by_recency() {
         let pool = fresh_pool();
