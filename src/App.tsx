@@ -34,6 +34,7 @@ import { TimeTravelView } from "./components/TimeTravelView";
 import { SettingsView } from "./components/SettingsView";
 import { AnalyzePanel } from "./components/AnalyzePanel";
 import { ArchiveView } from "./components/ArchiveView";
+import { CommandPalette } from "./components/CommandPalette";
 
 type View = "board" | "calendar" | "timetravel" | "archive" | "settings";
 
@@ -100,6 +101,7 @@ export default function App() {
       </main>
       <InspectorPanel />
       <AnalyzePanel open={analyzeOpen} onClose={() => setAnalyzeOpen(false)} />
+      <CommandPalette view={view} onView={handleView} onAnalyze={() => setAnalyzeOpen(true)} />
       <QuickCaptureModal />
       <MoveReasonModal />
       <SwapModal />
@@ -119,6 +121,15 @@ function TopBar({
   onView: (v: View) => void;
   onAnalyze: () => void;
 }) {
+  // Open the palette via the button. (The Cmd/Ctrl+K keyboard shortcut
+  // is handled inside <CommandPalette> itself; this button is a
+  // discoverability affordance.)
+  function openPalette() {
+    // Dispatch a synthetic Ctrl+K so the palette's own listener handles it.
+    document.dispatchEvent(
+      new KeyboardEvent("keydown", { key: "k", metaKey: true, ctrlKey: true }),
+    );
+  }
   return (
     <header className="topbar">
       <div className="topbar-brand">Bay</div>
@@ -136,6 +147,15 @@ function TopBar({
         ))}
         <button type="button" className="view-button" onClick={onAnalyze}>
           Analyze
+        </button>
+        <button
+          type="button"
+          className="view-button palette-trigger"
+          onClick={openPalette}
+          aria-label="Command palette"
+          title="Command palette (Ctrl+K)"
+        >
+          ⌘K
         </button>
         <button
           type="button"

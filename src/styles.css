@@ -1439,3 +1439,118 @@ button:hover {
   color: #c0392b;
   font-size: 12px;
 }
+
+/* ── Command palette (I-15) ────────────────────────────────────── */
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  z-index: 60;
+}
+.palette-card {
+  width: min(560px, 92vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.palette-input {
+  width: 100%;
+  padding: 14px 16px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 15px;
+  outline: none;
+}
+.palette-input::placeholder {
+  color: var(--fg-muted);
+}
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.palette-group {
+  list-style: none;
+}
+.palette-group-label {
+  padding: 8px 16px 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--fg-muted);
+}
+.palette-group ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.palette-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  cursor: pointer;
+  color: var(--fg);
+}
+.palette-option.is-active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.palette-option.is-active .palette-option-hint {
+  color: var(--accent-fg);
+  opacity: 0.85;
+}
+.palette-option-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-option-hint {
+  font-size: 12px;
+  color: var(--fg-muted);
+  flex-shrink: 0;
+}
+.palette-empty {
+  padding: 16px;
+  color: var(--fg-muted);
+  text-align: center;
+  list-style: none;
+}
+.palette-footer {
+  padding: 8px 16px;
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+.palette-footer kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 4px;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.palette-trigger {
+  font-family: inherit;
+  font-size: 12px;
+  opacity: 0.8;
+}
+.palette-trigger:hover {
+  opacity: 1;
+}

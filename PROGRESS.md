@@ -123,3 +123,18 @@
   bump (per charter §5 protocol).
 - Phase 3 save point: committing. Next: Phase 4 (above-and-beyond UX
   — I-15 command palette first).
+
+## 2026-06-17T04:00:00Z — Phase 4 I-15 command palette
+
+- New component: src/components/CommandPalette.tsx. Opens on
+  Cmd/Ctrl+K (global document listener) or the ⌘K button in TopBar.
+- Fuzzy-search across: navigate (board/calendar/timetravel/archive/
+  settings), create (quick-capture to inbox; add to A/B/C switches to
+  board), actions (run analyze, open archive), jump-to-item (top 50
+  items by tier, selecting sets selectedItemId + switches to board).
+- Reuses existing store actions + invoke paths; NO new write paths,
+  NO new event types, NO new backend commands. LLM firewall + caps
+  hold (create routes through create_item; restore through restore_item).
+- Arrow-key navigation, Enter to run, Esc to close, mouse hover.
+- pnpm build clean (385 modules); pnpm test 85/85.
+- I-15 save point: committing. Next: I-16 (C-tier virtualization).
