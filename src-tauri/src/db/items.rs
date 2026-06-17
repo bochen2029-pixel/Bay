@@ -2,34 +2,50 @@
 //! fully derivable from the `events` log. Every projection mutation
 //! routes through `apply_event_to_projection`.
 //!
-//! The match below is intentionally exhaustive on `EventType` — when a
-//! new event variant is introduced, the compiler forces this match to
-//! handle it, which forces the projection to stay in sync with the log.
-//! No registry, no dispatch table, no trait. SPEC §4.3 is short enough
-//! that the single match is the right primitive.
+//! ## Type-level LLM firewall (Phase 2d)
+//!
+//! `apply_event_to_projection` dispatches on `ProjectionEvent`, NOT on
+//! `EventType`. The conversion `EventType::to_projection_event()`
+//! returns `None` for the three `LlmSuggestion*` event types, so an LLM
+//! event cannot reach the projection's match arms — there is no
+//! `ProjectionEvent::LlmSuggestion*` variant to even match. The
+//! firewall is "the type system won't let you," not "the match arm
+//! returns Ok(())".
+//!
+//! This is the compile-time enforcement of CLAUDE.md §LLM scope v1:
+//! "The LLM never mutates state." The deterministic tier (typed event
+//! handlers, SQLite) owns all writes; the LLM observes the event log
+//! and produces advisory output only.
+//!
+//! The match below is intentionally exhaustive on `ProjectionEvent` —
+//! when a new item-event variant is introduced, the compiler forces
+//! this match to handle it, which forces the projection to stay in
+//! sync with the log. No registry, no dispatch table, no trait. SPEC
+//! §4.3 is short enough that the single match is the right primitive.
 
 use rusqlite::{params, OptionalExtension, Row, Transaction};
 use serde::Deserialize;
 
-use crate::domain::{Event, EventType, Item, ItemState, Tier};
+use crate::domain::{Event, Item, ItemState, ProjectionEvent, Tier};
 
 pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
-    match event.event_type {
-        EventType::ItemCreated => apply_item_created(tx, event),
-        EventType::ItemMoved => apply_item_moved(tx, event),
-        EventType::ItemEdited => apply_item_edited(tx, event),
-        EventType::ItemStateChanged => apply_item_state_changed(tx, event),
-        EventType::ItemDateSet => apply_item_date_set(tx, event),
-        EventType::ItemDeleted => apply_item_deleted(tx, event),
-        EventType::ItemRestored => apply_item_restored(tx, event),
-
-        // LLM suggestion events are advisory-only per CLAUDE.md §LLM
-        // scope v1 and SPEC §4.3. They affect the event log but never
-        // the projection. Keeping them as explicit `Ok(())` arms (rather
-        // than a wildcard) preserves the compiler's exhaustiveness check.
-        EventType::LlmSuggestionGenerated
-        | EventType::LlmSuggestionAccepted
-        | EventType::LlmSuggestionRejected => Ok(()),
+    // The LLM firewall's single boundary: convert EventType to
+    // Option<ProjectionEvent>. LLM events return None -> we return
+    // Ok(()) without touching the projection. Item events return Some
+    // -> dispatched below. There is no LLM variant on ProjectionEvent,
+    // so the match below structurally cannot handle an LLM event.
+    let projection_event = match event.event_type.to_projection_event() {
+        Some(pe) => pe,
+        None => return Ok(()),
+    };
+    match projection_event {
+        ProjectionEvent::ItemCreated => apply_item_created(tx, event),
+        ProjectionEvent::ItemMoved => apply_item_moved(tx, event),
+        ProjectionEvent::ItemEdited => apply_item_edited(tx, event),
+        ProjectionEvent::ItemStateChanged => apply_item_state_changed(tx, event),
+        ProjectionEvent::ItemDateSet => apply_item_date_set(tx, event),
+        ProjectionEvent::ItemDeleted => apply_item_deleted(tx, event),
+        ProjectionEvent::ItemRestored => apply_item_restored(tx, event),
     }
 }
 

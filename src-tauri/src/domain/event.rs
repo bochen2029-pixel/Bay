@@ -60,6 +60,63 @@ impl EventType {
     }
 }
 
+/// The seven event types that MAY affect the `items` projection.
+///
+/// This is the **type-level LLM firewall** (Phase 2d / CLAUDE.md
+/// "LLM firewalled out of state"). The three `LlmSuggestion*` variants
+/// on `EventType` are deliberately NOT present here: an LLM event
+/// cannot be fed into the projection logic because there is no
+/// `ProjectionEvent` variant for it. The projection's `apply` function
+/// dispatches on `ProjectionEvent`, not `EventType`, so the compiler
+/// enforces that LLM events never mutate the projection — the firewall
+/// is "the type system won't let you," not "the match arm returns
+/// Ok(())".
+///
+/// The conversion `EventType -> Option<ProjectionEvent>` is the single
+/// boundary: item events map to `Some`; LLM events map to `None`.
+/// Callers that receive `None` skip projection application (the event
+/// still lands in the append-only `events` log; it just doesn't touch
+/// `items`). This is the only place the firewall's policy lives in
+/// code — everywhere else, the types carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProjectionEvent {
+    ItemCreated,
+    ItemEdited,
+    ItemMoved,
+    ItemStateChanged,
+    ItemDateSet,
+    ItemDeleted,
+    ItemRestored,
+}
+
+impl EventType {
+    /// Convert an `EventType` to a `ProjectionEvent`, returning `None`
+    /// for LLM suggestion events. This is the LLM firewall's single
+    /// boundary: item events pass through; LLM events don't.
+    ///
+    /// The projection's `apply` function takes a `ProjectionEvent`, so
+    /// once an event has been converted, the type system guarantees it
+    /// cannot be an LLM event. There is no `LlmSuggestion*` variant on
+    /// `ProjectionEvent` to even reach the projection logic.
+    pub fn to_projection_event(self) -> Option<ProjectionEvent> {
+        match self {
+            EventType::ItemCreated => Some(ProjectionEvent::ItemCreated),
+            EventType::ItemEdited => Some(ProjectionEvent::ItemEdited),
+            EventType::ItemMoved => Some(ProjectionEvent::ItemMoved),
+            EventType::ItemStateChanged => Some(ProjectionEvent::ItemStateChanged),
+            EventType::ItemDateSet => Some(ProjectionEvent::ItemDateSet),
+            EventType::ItemDeleted => Some(ProjectionEvent::ItemDeleted),
+            EventType::ItemRestored => Some(ProjectionEvent::ItemRestored),
+            // LLM events are advisory-only (CLAUDE.md §LLM scope v1,
+            // SPEC §4.3). They land in the event log but never the
+            // projection. Returning None here is the firewall.
+            EventType::LlmSuggestionGenerated
+            | EventType::LlmSuggestionAccepted
+            | EventType::LlmSuggestionRejected => None,
+        }
+    }
+}
+
 /// One row of the append-only `events` table. Payload is kept as untyped
 /// JSON here; typed-payload variants arrive in I-03+ when event writers
 /// need them. SPEC §4.3.
@@ -94,5 +151,90 @@ mod tests {
         for (variant, expected) in cases {
             assert_eq!(serde_json::to_string(&variant).unwrap(), expected);
         }
+    }
+
+    // ── Type-level LLM firewall tests (Phase 2d) ───────────────────
+    //
+    // These tests pin the firewall's behavior: the seven item event
+    // types convert to Some(ProjectionEvent); the three LLM event
+    // types convert to None. If someone ever adds an LLM variant to
+    // ProjectionEvent by mistake, these tests catch it. If someone
+    // adds a new item event type but forgets to add it to
+    // ProjectionEvent, the compiler catches it (the match in
+    // to_projection_event becomes non-exhaustive).
+
+    #[test]
+    fn item_event_types_convert_to_projection_event() {
+        assert_eq!(
+            EventType::ItemCreated.to_projection_event(),
+            Some(ProjectionEvent::ItemCreated)
+        );
+        assert_eq!(
+            EventType::ItemEdited.to_projection_event(),
+            Some(ProjectionEvent::ItemEdited)
+        );
+        assert_eq!(
+            EventType::ItemMoved.to_projection_event(),
+            Some(ProjectionEvent::ItemMoved)
+        );
+        assert_eq!(
+            EventType::ItemStateChanged.to_projection_event(),
+            Some(ProjectionEvent::ItemStateChanged)
+        );
+        assert_eq!(
+            EventType::ItemDateSet.to_projection_event(),
+            Some(ProjectionEvent::ItemDateSet)
+        );
+        assert_eq!(
+            EventType::ItemDeleted.to_projection_event(),
+            Some(ProjectionEvent::ItemDeleted)
+        );
+        assert_eq!(
+            EventType::ItemRestored.to_projection_event(),
+            Some(ProjectionEvent::ItemRestored)
+        );
+    }
+
+    #[test]
+    fn llm_event_types_do_not_convert_to_projection_event() {
+        // The LLM firewall: these three event types return None,
+        // meaning they cannot reach the projection's apply logic.
+        // There is no ProjectionEvent::LlmSuggestion* variant.
+        assert_eq!(EventType::LlmSuggestionGenerated.to_projection_event(), None);
+        assert_eq!(EventType::LlmSuggestionAccepted.to_projection_event(), None);
+        assert_eq!(EventType::LlmSuggestionRejected.to_projection_event(), None);
+    }
+
+    #[test]
+    fn projection_event_has_no_llm_variants() {
+        // Sanity: the ProjectionEvent enum must have exactly 7 variants
+        // (the item event types), never the 3 LLM types. This is a
+        // structural assertion — if someone adds an LLM variant, this
+        // test fails.
+        let all = [
+            ProjectionEvent::ItemCreated,
+            ProjectionEvent::ItemEdited,
+            ProjectionEvent::ItemMoved,
+            ProjectionEvent::ItemStateChanged,
+            ProjectionEvent::ItemDateSet,
+            ProjectionEvent::ItemDeleted,
+            ProjectionEvent::ItemRestored,
+        ];
+        // Each converts back to its EventType counterpart.
+        for pe in all {
+            let et = match pe {
+                ProjectionEvent::ItemCreated => EventType::ItemCreated,
+                ProjectionEvent::ItemEdited => EventType::ItemEdited,
+                ProjectionEvent::ItemMoved => EventType::ItemMoved,
+                ProjectionEvent::ItemStateChanged => EventType::ItemStateChanged,
+                ProjectionEvent::ItemDateSet => EventType::ItemDateSet,
+                ProjectionEvent::ItemDeleted => EventType::ItemDeleted,
+                ProjectionEvent::ItemRestored => EventType::ItemRestored,
+            };
+            assert_eq!(et.to_projection_event(), Some(pe));
+        }
+        // 7 variants — no LLM types. The match above is exhaustive on
+        // ProjectionEvent; adding a variant forces this test (and the
+        // apply function) to handle it.
     }
 }

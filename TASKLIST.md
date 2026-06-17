@@ -71,14 +71,16 @@ items:
     notes: "4 golden files: projection (7 cases), swap (6), caps (12), rank (42, mirrors scripts/rank-fixtures.json). All _status:proposed (operator freezes on review). scripts/check-golden.py CI check passes: verifies every critical module has >=1 case + no frozen-file edit without SPEC: tag. contracts/golden/README.md documents the JOINT_WRONG detector + lifecycle."
   - id: P2d
     description: "Type-level LLM firewall: ProjectionEvent sealed enum"
-    status: NOT_STARTED
+    status: DONE
     dependency: [P0]
     blocks: [P2e]
     fan_out: 1
     verifiability: AUTONOMOUSLY_VERIFIABLE
     cost_estimate: 2h
+    cost_actual: 0.4h
     critical: true
     oracle: [property, golden]
+    notes: "Added ProjectionEvent enum (7 item-event variants only) + EventType::to_projection_event() returning Option<ProjectionEvent> (None for LLM events). apply_event_to_projection now dispatches on ProjectionEvent, not EventType — LLM events structurally cannot reach the projection match arms. 3 new tests pin the firewall. cargo test 113/113, cargo build warning-clean. The LLM firewall is now 'type system wont let you' not 'match arm returns Ok(())'."
   - id: P2e
     description: "Two-pass verification on all 6 critical modules (cold-context verifier subagent + non-LLM oracle gate)"
     status: NOT_STARTED
