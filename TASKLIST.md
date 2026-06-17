@@ -59,14 +59,16 @@ items:
     notes: "Migration 002 adds events_no_update + events_no_delete triggers (append-only now runtime-enforced, not just prose) + items CHECK constraints (deleted IN (0,1), content 1..4096, rank non-empty, blocked=>reason). 4 new tests prove the trigger blocks UPDATE/DELETE and allows INSERT, and CHECKs reject invalid rows. user_version=2. verify-schema.py updated to load all migrations + expect v2. cargo test 110/110."
   - id: P2c
     description: "Operator golden cases: contracts/golden/{projection,swap,rank,caps}.json + CI/hook check"
-    status: NOT_STARTED
+    status: DONE
     dependency: [P0]
     blocks: [P2e]
     fan_out: 1
     verifiability: REQUIRES_HUMAN_REVIEW  # operator freezes them
     cost_estimate: 2h
+    cost_actual: 0.4h
     critical: true
     oracle: [golden]
+    notes: "4 golden files: projection (7 cases), swap (6), caps (12), rank (42, mirrors scripts/rank-fixtures.json). All _status:proposed (operator freezes on review). scripts/check-golden.py CI check passes: verifies every critical module has >=1 case + no frozen-file edit without SPEC: tag. contracts/golden/README.md documents the JOINT_WRONG detector + lifecycle."
   - id: P2d
     description: "Type-level LLM firewall: ProjectionEvent sealed enum"
     status: NOT_STARTED

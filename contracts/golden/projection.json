@@ -1,0 +1,104 @@
+{
+  "_comment": "GOLDEN CASES — operator-authored ground truth for apply_event_to_projection + rebuild_projection. PROPOSED (not yet frozen). Once frozen, editing requires SPEC: tag + operator action per AUTONOMY_CHARTER §12. These are the cheapest true externality: assertions the agent did NOT author. If implementation passes contract tests but fails a golden case, that's a JOINT_WRONG finding — the most dangerous class (everything else looked green).",
+  "module": "db::items::apply_event_to_projection + commands::events::rebuild_projection_inner",
+  "version": 1,
+  "_status": "proposed",
+  "cases": [
+    {
+      "name": "create then edit round-trip: projection matches rebuild",
+      "description": "Create an inbox item, edit its content. After both ops, rebuild_projection must reproduce the items table exactly.",
+      "ops": [
+        { "type": "create", "tier": "inbox", "content": "first", "rank": "m" },
+        { "type": "edit", "item_index": 0, "content": "first-edited" }
+      ],
+      "expect_items_non_deleted": [
+        { "content": "first-edited", "tier": "inbox", "state": "active", "deleted": false }
+      ],
+      "expect_rebuild_matches": true
+    },
+    {
+      "name": "create-move-state-date-delete-restore round-trip",
+      "description": "Full lifecycle: create in inbox, move to A, mark blocked (with reason), set due date, mark done, soft-delete, restore. Rebuild must reproduce.",
+      "ops": [
+        { "type": "create", "tier": "inbox", "content": "lifecycle", "rank": "m" },
+        { "type": "move", "item_index": 0, "to_tier": "A", "to_rank": "n" },
+        { "type": "set_state", "item_index": 0, "state": "blocked", "blocked_reason": "waiting on X" },
+        { "type": "set_state", "item_index": 0, "state": "active" },
+        { "type": "set_date", "item_index": 0, "field": "due", "value_ms": 1714608000000 },
+        { "type": "set_state", "item_index": 0, "state": "done" },
+        { "type": "delete", "item_index": 0 },
+        { "type": "restore", "item_index": 0 }
+      ],
+      "expect_items_non_deleted": [
+        { "content": "lifecycle", "tier": "A", "state": "done", "deleted": false, "due_at": 1714608000000 }
+      ],
+      "expect_rebuild_matches": true
+    },
+    {
+      "name": "swap at cap: A full, swap incoming inbox item with an A item",
+      "description": "Fill A to 5 active, create an inbox item, swap_move the inbox item into A (demoting one A item to B). After swap: A still 5 active, B +1 active, rebuild reproduces.",
+      "ops": [
+        { "type": "create", "tier": "A", "content": "a0", "rank": "m" },
+        { "type": "create", "tier": "A", "content": "a1", "rank": "n" },
+        { "type": "create", "tier": "A", "content": "a2", "rank": "o" },
+        { "type": "create", "tier": "A", "content": "a3", "rank": "p" },
+        { "type": "create", "tier": "A", "content": "a4", "rank": "q" },
+        { "type": "create", "tier": "inbox", "content": "incoming", "rank": "m" },
+        { "type": "swap", "leaving_item_index": 4, "leaving_dest": "B", "entering_item_index": 5, "entering_tier": "A" }
+      ],
+      "expect_active_counts": { "A": 5, "B": 1, "inbox": 0, "C": 0 },
+      "expect_rebuild_matches": true
+    },
+    {
+      "name": "concurrent-shaped creates into empty tier: all land, rebuild reproduces",
+      "description": "Three creates into an empty C tier in sequence (simulating rapid capture). All land; rebuild reproduces.",
+      "ops": [
+        { "type": "create", "tier": "C", "content": "c0", "rank": "m" },
+        { "type": "create", "tier": "C", "content": "c1", "rank": "n" },
+        { "type": "create", "tier": "C", "content": "c2", "rank": "o" }
+      ],
+      "expect_items_non_deleted_count": 3,
+      "expect_rebuild_matches": true
+    },
+    {
+      "name": "blocked-then-unblock at cap: unblock refuses when A is full",
+      "description": "Fill A to 5 active. Block one (frees a slot). Fill the slot with a 6th active. Try to unblock the blocked one -> CAP_EXCEEDED. Rebuild reproduces the blocked state.",
+      "ops": [
+        { "type": "create", "tier": "A", "content": "a0", "rank": "m" },
+        { "type": "create", "tier": "A", "content": "a1", "rank": "n" },
+        { "type": "create", "tier": "A", "content": "a2", "rank": "o" },
+        { "type": "create", "tier": "A", "content": "a3", "rank": "p" },
+        { "type": "create", "tier": "A", "content": "a4", "rank": "q" },
+        { "type": "set_state", "item_index": 0, "state": "blocked", "blocked_reason": "blocked" },
+        { "type": "create", "tier": "A", "content": "a5-fills-slot", "rank": "r" },
+        { "type": "set_state", "item_index": 0, "state": "active", "expect_error": "CAP_EXCEEDED" }
+      ],
+      "expect_active_counts": { "A": 5 },
+      "expect_items_non_deleted_count": 6,
+      "expect_rebuild_matches": true
+    },
+    {
+      "name": "delete then re-delete: second delete is NO_ITEM_TO_DELETE or ITEM_NOT_FOUND",
+      "description": "Create, delete, try to delete again. The second delete must error (item already soft-deleted). Rebuild reproduces the single soft-deleted state.",
+      "ops": [
+        { "type": "create", "tier": "inbox", "content": "doomed", "rank": "m" },
+        { "type": "delete", "item_index": 0 },
+        { "type": "delete", "item_index": 0, "expect_error": "ITEM_NOT_FOUND" }
+      ],
+      "expect_items_non_deleted_count": 0,
+      "expect_items_deleted_count": 1,
+      "expect_rebuild_matches": true
+    },
+    {
+      "name": "LLM_SUGGESTION_GENERATED does not touch projection",
+      "description": "Append an LLM_SUGGESTION_GENERATED event directly. The projection must be unchanged — the LLM firewall holds (advisory only, no mutations). Rebuild reproduces.",
+      "ops": [
+        { "type": "create", "tier": "inbox", "content": "untouched", "rank": "m" },
+        { "type": "append_llm_suggestion_generated", "observations": [{ "severity": "warn", "text": "A is inflated", "affected_item_ids": [] }] }
+      ],
+      "expect_items_non_deleted_count": 1,
+      "expect_rebuild_matches": true,
+      "expect_projection_unchanged_by_llm_event": true
+    }
+  ]
+}

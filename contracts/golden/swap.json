@@ -1,0 +1,123 @@
+{
+  "_comment": "GOLDEN CASES — operator-authored ground truth for swap_move_inner. PROPOSED (not yet frozen). Once frozen, editing requires SPEC: tag + operator action per AUTONOMY_CHARTER §12. These pin the atomicity and cap-math invariants that swap_move depends on. Each case asserts the exact events emitted (adjacent ids, shared ts) and the resulting active counts.",
+  "module": "commands::items::swap_move_inner",
+  "version": 1,
+  "_status": "proposed",
+  "cases": [
+    {
+      "name": "happy path: A full, swap incoming inbox item with last A item, demote to B",
+      "description": "Fill A to 5 active. Create inbox item. swap_move(incoming -> A, last A -> B). Two ITEM_MOVED events with adjacent ids + shared ts. A active count unchanged (5), B +1 (1).",
+      "setup": {
+        "a_items": 5,
+        "inbox_items": 1,
+        "leaving_dest": "B"
+      },
+      "input": {
+        "leaving_item": "last A item",
+        "leaving_dest": "B",
+        "entering_item": "inbox item",
+        "entering_tier": "A",
+        "reason": "swap-reason"
+      },
+      "expect_success": true,
+      "expect_events_emitted": 2,
+      "expect_events_adjacent_ids": true,
+      "expect_events_shared_ts": true,
+      "expect_event_types": ["ITEM_MOVED", "ITEM_MOVED"],
+      "expect_active_counts_after": { "A": 5, "B": 1, "inbox": 0 },
+      "expect_leaving_item_tier_after": "B",
+      "expect_entering_item_tier_after": "A"
+    },
+    {
+      "name": "happy path: B full, swap incoming inbox item with last B item, demote to C",
+      "description": "Fill B to 12 active. Create inbox item. swap_move(incoming -> B, last B -> C). B active unchanged (12), C +1.",
+      "setup": {
+        "b_items": 12,
+        "inbox_items": 1,
+        "leaving_dest": "C"
+      },
+      "input": {
+        "leaving_item": "last B item",
+        "leaving_dest": "C",
+        "entering_item": "inbox item",
+        "entering_tier": "B",
+        "reason": null
+      },
+      "expect_success": true,
+      "expect_events_emitted": 2,
+      "expect_active_counts_after": { "B": 12, "C": 1, "inbox": 0 }
+    },
+    {
+      "name": "rejects when target tier not at cap (NO_SWAP_NEEDED)",
+      "description": "A has only 4 active (under cap). swap_move into A must refuse with NO_SWAP_NEEDED — swap is only meaningful at cap.",
+      "setup": {
+        "a_items": 4,
+        "inbox_items": 1
+      },
+      "input": {
+        "leaving_item": "an A item",
+        "leaving_dest": "B",
+        "entering_item": "inbox item",
+        "entering_tier": "A"
+      },
+      "expect_success": false,
+      "expect_error": "NO_SWAP_NEEDED",
+      "expect_events_emitted": 0
+    },
+    {
+      "name": "rejects when leaving_dest also at cap (CAP_EXCEEDED: leaving_dest)",
+      "description": "A full (5), B full (12). swap_move into A, demoting to B must refuse with CAP_EXCEEDED: leaving_dest. v1 doesn't cascade.",
+      "setup": {
+        "a_items": 5,
+        "b_items": 12,
+        "inbox_items": 1,
+        "leaving_dest": "B"
+      },
+      "input": {
+        "leaving_item": "an A item",
+        "leaving_dest": "B",
+        "entering_item": "inbox item",
+        "entering_tier": "A"
+      },
+      "expect_success": false,
+      "expect_error": "CAP_EXCEEDED: leaving_dest",
+      "expect_events_emitted": 0
+    },
+    {
+      "name": "rejects self-swap (leaving == entering)",
+      "description": "swap_move where leaving_id == entering_id must refuse. An item can't be both the demoted and the incoming.",
+      "setup": {
+        "a_items": 5,
+        "inbox_items": 0
+      },
+      "input": {
+        "leaving_item": "an A item",
+        "leaving_dest": "B",
+        "entering_item": "SAME A item",
+        "entering_tier": "A"
+      },
+      "expect_success": false,
+      "expect_error": "BAD_ARGS",
+      "expect_events_emitted": 0
+    },
+    {
+      "name": "blocked item in target tier excluded from active count",
+      "description": "A has 4 active + 1 blocked (5 total, but active count 4). swap_move into A is NOT triggered (active < cap). The blocked item doesn't count.",
+      "setup": {
+        "a_active": 4,
+        "a_blocked": 1,
+        "inbox_items": 1
+      },
+      "input": {
+        "leaving_item": "n/a (swap not triggered)",
+        "leaving_dest": "B",
+        "entering_item": "inbox item",
+        "entering_tier": "A"
+      },
+      "expect_success": false,
+      "expect_error": "NO_SWAP_NEEDED",
+      "expect_events_emitted": 0,
+      "expect_active_counts_after": { "A_active": 4, "A_blocked": 1 }
+    }
+  ]
+}

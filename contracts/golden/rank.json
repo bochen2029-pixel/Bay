@@ -1,0 +1,8 @@
+{
+  "_comment": "GOLDEN CASES — operator-authored ground truth for rank_between. PROMOTED from scripts/rank-fixtures.json (the existing operator-owned parity fixture, in place since v1.1). This file is the canonical home for the rank golden cases going forward; the rank-parity tests (Rust domain::rank::tests::matches_committed_fixture + TS src/rank.parity.test.ts) read scripts/rank-fixtures.json directly. Phase 3 will update both tests to read contracts/golden/rank.json. Until then, this file is a copy for organizational clarity; the frozen source of truth remains scripts/rank-fixtures.json. Editing requires SPEC: tag + operator action per AUTONOMY_CHARTER §12.",
+  "module": "domain::rank::rank_between",
+  "version": 1,
+  "_status": "frozen (mirrors scripts/rank-fixtures.json; do not edit independently)",
+  "_canonical_source": "scripts/rank-fixtures.json",
+  "note": "See scripts/rank-fixtures.json for the 42 committed cases (a, b, expected triples covering: null/null, null/bound, bound/null, single-char midpoints, adjacent-digit extensions, multi-char, prefix-stripping, asymmetric lengths, deeply-nested adjacent). The Rust + TS parity tests both verify against that file. This golden file exists to bring rank under the contracts/golden/ umbrella for organizational consistency with projection.json/swap.json/caps.json; the actual frozen cases live in scripts/rank-fixtures.json until Phase 3 consolidates the paths."
+}

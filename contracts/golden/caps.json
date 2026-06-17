@@ -1,0 +1,68 @@
+{
+  "_comment": "GOLDEN CASES — operator-authored ground truth for cap enforcement (create_item, move_item, set_item_state, swap_move). PROPOSED (not yet frozen). Once frozen, editing requires SPEC: tag + operator action per AUTONOMY_CHARTER §12. These pin the doctrine: A=5, B=12, caps apply to active-only (blocked/done exempt), Inbox/C unbounded.",
+  "module": "commands::items::{create_item_inner, move_item_inner, set_item_state_inner, swap_move_inner}",
+  "version": 1,
+  "_status": "proposed",
+  "cases": [
+    {
+      "name": "A cap: 5 active allowed, 6th rejected with CAP_EXCEEDED",
+      "input": { "ops": ["create A x5", "create A x1"] },
+      "expect": { "first_5_succeed": true, "6th_error": "CAP_EXCEEDED", "a_active_after": 5 }
+    },
+    {
+      "name": "B cap: 12 active allowed, 13th rejected with CAP_EXCEEDED",
+      "input": { "ops": ["create B x12", "create B x1"] },
+      "expect": { "first_12_succeed": true, "13th_error": "CAP_EXCEEDED", "b_active_after": 12 }
+    },
+    {
+      "name": "Inbox unbounded: 20 creates all succeed",
+      "input": { "ops": ["create inbox x20"] },
+      "expect": { "all_succeed": true, "inbox_active_after": 20 }
+    },
+    {
+      "name": "C unbounded: 20 creates all succeed",
+      "input": { "ops": ["create C x20"] },
+      "expect": { "all_succeed": true, "c_active_after": 20 }
+    },
+    {
+      "name": "blocked item doesn't count: 5 active + 1 blocked in A, 6th active create rejected",
+      "input": { "ops": ["create A x5", "set_state a0 blocked 'reason'", "create A x1"] },
+      "expect": { "6th_active_create_error": "CAP_EXCEEDED", "a_active_after": 4, "a_blocked_after": 1, "a_total_after": 5 }
+    },
+    {
+      "name": "done item doesn't count: 5 active + 1 done in A, 6th active create rejected",
+      "input": { "ops": ["create A x5", "set_state a0 done", "create A x1"] },
+      "expect": { "6th_active_create_error": "CAP_EXCEEDED", "a_active_after": 4, "a_done_after": 1 }
+    },
+    {
+      "name": "done->active undo at cap rejected: A full of active, mark one done, mark another done, undo the first -> still at cap",
+      "input": { "ops": ["create A x5", "set_state a0 done", "set_state a1 done", "set_state a0 active"] },
+      "expect": { "undo_a0_active_succeeds": true, "a_active_after": 4, "a_done_after": 1 }
+    },
+    {
+      "name": "done->active undo refills slot: A full, mark one done (frees slot), create 6th (fills slot), undo the done -> CAP_EXCEEDED",
+      "input": { "ops": ["create A x5", "set_state a0 done", "create A x1", "set_state a0 active"] },
+      "expect": { "undo_a0_active_error": "CAP_EXCEEDED", "a_active_after": 5, "a_done_after": 0 }
+    },
+    {
+      "name": "cross-tier move into full A rejected: 5 active in A, move active B item to A -> CAP_EXCEEDED",
+      "input": { "ops": ["create A x5", "create B x1", "move b0 -> A"] },
+      "expect": { "move_error": "CAP_EXCEEDED", "a_active_after": 5, "b_active_after": 1 }
+    },
+    {
+      "name": "cross-tier move of blocked item into full A allowed: blocked doesn't count",
+      "input": { "ops": ["create A x5", "create B x1", "set_state b0 blocked 'r'", "move b0 -> A"] },
+      "expect": { "move_succeeds": true, "a_active_after": 5, "a_blocked_after": 1 }
+    },
+    {
+      "name": "swap into full A: one in one out, active count preserved",
+      "input": { "ops": ["create A x5", "create inbox x1", "swap incoming->A, a0->B"] },
+      "expect": { "swap_succeeds": true, "a_active_after": 5, "b_active_after": 1, "inbox_active_after": 0 }
+    },
+    {
+      "name": "restore into full A rejected: soft-deleted A item, A refilled, restore -> CAP_EXCEEDED",
+      "input": { "ops": ["create A x5", "delete a0", "create A x1", "restore a0"] },
+      "expect": { "restore_error": "CAP_EXCEEDED", "a_active_after": 5, "a_deleted_after": 1 }
+    }
+  ]
+}
