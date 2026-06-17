@@ -5,6 +5,7 @@
 use std::fmt::Write;
 
 use super::compression::AnalyzeContext;
+use crate::domain::{A_CAP, B_CAP};
 
 pub const SYSTEM_PROMPT: &str = "You are an analyst observing a single user's task management event log.\n\
 Your job: identify patterns the user would benefit from seeing.\n\
@@ -77,7 +78,7 @@ pub fn format_user_prompt(ctx: &AnalyzeContext) -> String {
         )
         .unwrap();
     }
-    writeln!(&mut out, "A ({} / 5 active):", active_of(&ctx.a_list)).unwrap();
+    writeln!(&mut out, "A ({} / {} active):", active_of(&ctx.a_list), A_CAP).unwrap();
     for s in &ctx.a_list {
         writeln!(
             &mut out,
@@ -86,7 +87,7 @@ pub fn format_user_prompt(ctx: &AnalyzeContext) -> String {
         )
         .unwrap();
     }
-    writeln!(&mut out, "B ({} / 12 active):", active_of(&ctx.b_list)).unwrap();
+    writeln!(&mut out, "B ({} / {} active):", active_of(&ctx.b_list), B_CAP).unwrap();
     for s in &ctx.b_list {
         writeln!(
             &mut out,

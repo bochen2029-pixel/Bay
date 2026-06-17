@@ -23,17 +23,19 @@ items:
     notes: "Baseline all-green: cargo build clean, cargo test 91/91, pnpm build clean, pnpm test 85/85, store-logic 55/55. Tag autonomous-run-2026-06-17-start placed."
   - id: P1
     description: "Bug-fix pass: restore_item event semantics, prompt.rs hardcoded caps, bootstrap return shape, set_item_state at cap, sweep"
-    status: IN_PROGRESS
+    status: DONE
     dependency: [P0]
     blocks: []
     fan_out: 0
     verifiability: AUTONOMOUSLY_VERIFIABLE
     cost_estimate: 3h
+    cost_actual: 0.25h
     critical: false
     oracle: [characterization]
+    notes: "1 real bug fixed (prompt.rs magic numbers -> A_CAP/B_CAP). 4 confirmed-not-bugs (documented design choices / correct behavior). 1 deferred to Phase 3 (SPEC drift). Sweep clean. cargo test 91/91."
   - id: P2a
     description: "Property tests: proptest for rank_between, projection determinism, swap atomicity, write_events rollback, get_items_at"
-    status: NOT_STARTED
+    status: IN_PROGRESS
     dependency: [P0]
     blocks: [P2e]
     fan_out: 1

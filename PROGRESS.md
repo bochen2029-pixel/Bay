@@ -41,3 +41,22 @@
   verify-schema.py deferred (needs live bay.db; Phase 2b).
 - Phase 0 save point: committing spine + tagging
   autonomous-run-2026-06-17-start. Next: Phase 1 (bug-fix pass).
+
+## 2026-06-17T00:45:00Z — Phase 1 close (1 real bug fixed)
+
+- Phase 1 audit: of 8 candidate "bugs" in the plan, only 1 was a real
+  code bug. v0.1.1's cleanup pass was thorough.
+- FIXED: llm/prompt.rs hardcoded `/ 5` and `/ 12` replaced with
+  A_CAP/B_CAP constants. cargo build clean; cargo test llm 18/18.
+- Confirmed NOT bugs (documented design choices / correct behavior):
+  restore_item reusing item_created (documented at items.rs:462-466),
+  set_item_state done-to-active at cap (correct; items.rs:329-343),
+  store onItemUpdated idempotency (correct; same-ms double-edit
+  structurally impossible), HotkeyInput listener cleanup (correct React).
+- Deferred to Phase 3 (SPEC drift, not code bug): bootstrap return
+  shape {items, settings} vs SPEC 5.1 {items, settings, lanCapture}.
+- Sweep clean: no dbg!/println! debug / console.log / TODO/FIXME/XXX/
+  HACK in src. The eprintln!/console.error calls are operational
+  diagnostics (correct idiom).
+- Phase 1 save point: committing the prompt.rs fix. Next: Phase 2a
+  (property tests — the load-bearing correctness layer).
