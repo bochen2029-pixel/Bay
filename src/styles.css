@@ -1378,11 +1378,55 @@ button:hover {
   cursor: pointer;
 }
 
+/* I-20 LLM re-org proposals: a selectable diff the user accepts/rejects. */
+.analyze-reorg {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+}
+.analyze-reorg-head {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.analyze-reorg-note {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+.analyze-reorg-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.analyze-reorg-label {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+.analyze-reorg-desc {
+  font-size: 13px;
+}
+.analyze-reorg-why {
+  margin-left: 24px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.analyze-apply-error {
+  margin-top: 10px;
+}
+
 .analyze-actions {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
   padding-top: 8px;
+  margin-top: 12px;
   border-top: 1px solid var(--border);
 }
 

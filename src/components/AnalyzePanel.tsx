@@ -9,6 +9,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
 import { useStore } from "../store";
+import { Item } from "../domain";
 
 type Severity = "info" | "warn";
 
@@ -18,9 +19,22 @@ type Observation = {
   affected_item_ids: string[];
 };
 
+type ProposalAction = "move" | "done" | "active";
+
+// A re-org the LLM proposed (I-20). Advisory until the user accepts it;
+// shape matches the Rust ReorgProposal (snake_case) so it can be passed
+// straight back to accept_suggestion as `ops`.
+type Proposal = {
+  item_id: string;
+  action: ProposalAction;
+  to_tier: string | null;
+  rationale: string | null;
+};
+
 type AnalyzeResult = {
   suggestion_event_id: number;
   observations: Observation[];
+  proposals: Proposal[];
   scope: {
     since_ts: number;
     until_ts: number;
@@ -45,6 +59,20 @@ export function AnalyzePanel({
 }) {
   const [state, setState] = useState<Stage>({ kind: "idle" });
   const setSelectedItemId = useStore((s) => s.setSelectedItemId);
+  const items = useStore((s) => s.items);
+  const [selectedProposals, setSelectedProposals] = useState<Set<number>>(
+    new Set(),
+  );
+  const [applyError, setApplyError] = useState<string | null>(null);
+
+  // When a result arrives, pre-select every proposal and clear any prior
+  // apply error.
+  useEffect(() => {
+    if (state.kind === "ok") {
+      setSelectedProposals(new Set(state.result.proposals.map((_, i) => i)));
+      setApplyError(null);
+    }
+  }, [state]);
 
   // Reset on open; subscribe to progress events while mounted.
   useEffect(() => {
@@ -96,6 +124,33 @@ export function AnalyzePanel({
     } catch (err) {
       console.error("reject_suggestion failed:", err);
     }
+  }
+
+  // Apply the user-selected subset of the LLM's proposed re-org. The
+  // backend re-validates and writes atomically under cap enforcement
+  // (firewall: LLM proposed, human accepted, deterministic tier writes).
+  async function applyReorg(id: number, ops: Proposal[]) {
+    setApplyError(null);
+    try {
+      await invoke("accept_suggestion", { suggestionEventId: id, ops });
+      onClose();
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      setApplyError(
+        msg.includes("CAP_EXCEEDED")
+          ? "That re-org would exceed an A/B cap. Deselect a promotion or free a slot first."
+          : `Couldn't apply re-org: ${msg}`,
+      );
+    }
+  }
+
+  function toggleProposal(i: number) {
+    setSelectedProposals((prev) => {
+      const next = new Set(prev);
+      if (next.has(i)) next.delete(i);
+      else next.add(i);
+      return next;
+    });
   }
 
   if (!open) return null;
@@ -186,6 +241,42 @@ export function AnalyzePanel({
                 ))}
               </ul>
             )}
+            {state.result.proposals.length > 0 ? (
+              <div className="analyze-reorg">
+                <div className="analyze-reorg-head">
+                  Suggested re-org{" "}
+                  <span className="analyze-reorg-note">
+                    (you choose what to apply — nothing happens until you do)
+                  </span>
+                </div>
+                <ul className="analyze-reorg-list">
+                  {state.result.proposals.map((p, i) => (
+                    <li key={i} className="analyze-reorg-item">
+                      <label className="analyze-reorg-label">
+                        <input
+                          type="checkbox"
+                          checked={selectedProposals.has(i)}
+                          onChange={() => toggleProposal(i)}
+                        />
+                        <span className="analyze-reorg-desc">
+                          {describeProposal(p, items)}
+                        </span>
+                      </label>
+                      {p.rationale ? (
+                        <div className="analyze-reorg-why">{p.rationale}</div>
+                      ) : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
+            {applyError ? (
+              <div className="analyze-error analyze-apply-error">
+                {applyError}
+              </div>
+            ) : null}
+
             <div className="analyze-actions">
               <button
                 type="button"
@@ -193,19 +284,51 @@ export function AnalyzePanel({
               >
                 Dismiss
               </button>
-              <button
-                type="button"
-                className="is-primary"
-                onClick={() => markReviewed(state.result.suggestion_event_id)}
-              >
-                Mark reviewed
-              </button>
+              {state.result.proposals.length > 0 &&
+              selectedProposals.size > 0 ? (
+                <button
+                  type="button"
+                  className="is-primary"
+                  onClick={() =>
+                    applyReorg(
+                      state.result.suggestion_event_id,
+                      state.result.proposals.filter((_, i) =>
+                        selectedProposals.has(i),
+                      ),
+                    )
+                  }
+                >
+                  Apply {selectedProposals.size} change
+                  {selectedProposals.size === 1 ? "" : "s"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="is-primary"
+                  onClick={() => markReviewed(state.result.suggestion_event_id)}
+                >
+                  Mark reviewed
+                </button>
+              )}
             </div>
           </>
         ) : null}
       </div>
     </aside>
   );
+}
+
+function describeProposal(p: Proposal, items: Record<string, Item>): string {
+  const raw = items[p.item_id]?.content ?? p.item_id.slice(0, 8);
+  const short = raw.length > 44 ? `${raw.slice(0, 44)}…` : raw;
+  switch (p.action) {
+    case "move":
+      return `Move “${short}” → ${p.to_tier}`;
+    case "done":
+      return `Mark “${short}” done`;
+    case "active":
+      return `Mark “${short}” active`;
+  }
 }
 
 function humanStage(s: string): string {

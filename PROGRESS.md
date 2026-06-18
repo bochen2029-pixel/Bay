@@ -260,3 +260,34 @@
 - cargo 143/143 (+4), warning-clean; vitest 90/90; builds clean.
 - P2e save point: committing. P2e DONE. Next: Phase 5 (I-20 LLM re-org
   accept-path, I-21 recurring tasks, I-22 LLM streaming).
+
+## 2026-06-17T20:00:00Z — Phase 5 I-20 LLM re-org accept-path (doctrine capstone)
+
+- The schema field LLM_SUGGESTION_ACCEPTED.resulting_event_ids has been
+  [] since v1; the doctrine preserved it for exactly this. Now wired.
+- Backend:
+  - parse.rs: parse_analysis extracts an optional `proposals` array
+    (move / done / active) alongside observations; validates item_ids ∈
+    known + valid to_tier (drops bad ones). 4 parse tests.
+  - llm.rs analyze: returns + logs proposals in the suggestion event.
+  - llm.rs accept_suggestion(ops): with ops, apply_reorg_inner applies
+    the human-accepted diff as ONE atomic write_events tx — ITEM_MOVED /
+    ITEM_STATE_CHANGED events + the LLM_SUGGESTION_ACCEPTED event with
+    resulting_event_ids populated. Cap enforced on FINAL A/B active
+    counts (so a net-zero demote+promote swap is allowed; a true
+    overflow rolls back). resulting_event_ids predicted via MAX(id)+k
+    (safe: events is append-only, no id gaps). 5 accept-reorg tests
+    (atomic apply, resulting_event_ids match actual events, cap rollback,
+    net-zero swap succeeds, unknown suggestion → EVENT_NOT_FOUND).
+  - prompt.rs: SYSTEM_PROMPT now invites optional proposals (the v2
+    surface) while keeping the firewall framing (suggestions only).
+- Frontend: AnalyzePanel renders proposals as a selectable diff
+  (checkboxes, per-op rationale); adaptive primary button — "Apply N
+  changes" (accept with selected ops) when any selected, else "Mark
+  reviewed" (observations-only accept); CAP_EXCEEDED surfaced inline.
+  3 AnalyzePanel vitest specs.
+- Firewall INTACT: LLM proposes (parsed, never applied), human selects +
+  accepts, deterministic tier writes under cap enforcement. ProjectionEvent
+  firewall still blocks LLM events from the projection.
+- cargo 152/152 (+9), warning-clean; vitest 93/93 (+3); builds clean.
+- I-20 save point: committing. Next: I-21 (recurring tasks).

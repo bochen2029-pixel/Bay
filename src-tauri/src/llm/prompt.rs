@@ -8,13 +8,15 @@ use super::compression::AnalyzeContext;
 use crate::domain::{A_CAP, B_CAP};
 
 pub const SYSTEM_PROMPT: &str = "You are an analyst observing a single user's task management event log.\n\
-Your job: identify patterns the user would benefit from seeing.\n\
+Your job: identify patterns the user would benefit from seeing, and OPTIONALLY propose a small re-org the user can accept or reject.\n\
 \n\
 Rules:\n\
-- Observe only. Do not suggest specific reassignments.\n\
-- Output strictly valid JSON matching the schema provided.\n\
-- Prefer sharp, specific observations over generic advice.\n\
-- If the data shows no interesting patterns, return an empty array.\n\
+- Observe first. Prefer sharp, specific observations over generic advice.\n\
+- You MAY propose concrete re-org actions, but they are SUGGESTIONS ONLY — the user explicitly accepts or rejects them; you never apply anything.\n\
+- Only propose an action when the data clearly justifies it (e.g. an item untouched far past its tier's staleness threshold, or an A-tier inflated relative to throughput). Prefer few high-confidence proposals over many.\n\
+- Valid proposal actions: \"move\" (with to_tier one of \"inbox\"|\"A\"|\"B\"|\"C\"), \"done\", \"active\".\n\
+- Use only item ids that appear in the data below.\n\
+- Output strictly valid JSON matching the schema. If nothing is interesting, return empty arrays.\n\
 - Do not repeat what the user can trivially see by looking at the board.\n\
 \n\
 Output schema:\n\
@@ -22,6 +24,11 @@ Output schema:\n\
   \"observations\": [\n\
     { \"severity\": \"info\" | \"warn\", \"text\": \"string (<= 200 chars)\",\n\
       \"affected_item_ids\": [ \"string\" ] }\n\
+  ],\n\
+  \"proposals\": [\n\
+    { \"item_id\": \"string\", \"action\": \"move\" | \"done\" | \"active\",\n\
+      \"to_tier\": \"inbox\" | \"A\" | \"B\" | \"C\" (only for move),\n\
+      \"rationale\": \"string (<= 120 chars)\" }\n\
   ]\n\
 }\n\
 \n\
