@@ -141,6 +141,107 @@ pub fn list_archived_items_inner(
     db::items::list_deleted_items(&conn)
 }
 
+// ── search_events (I-18) ──────────────────────────────────────────
+//
+// Full-text search across the event log. Surfaces the event log as a
+// first-class product surface (per CLAUDE.md "Event log is the product"
+// — undo, time-travel, and analysis are all queries against the log;
+// search is the fourth).
+//
+// v1: pure-Rust filter. The query is a case-insensitive substring match
+// against the event's payload JSON (which includes content, reasons,
+// before/after values — the human-meaningful text). Optional filters:
+// event_type (e.g. "ITEM_MOVED"), item_id (restrict to one item's
+// history), since_ts/until_ts (date range), limit.
+//
+// FTS5 virtual table is a heavier migration (would need a trigger to
+// keep the FTS index in sync with events). Deferred per ADR; the
+// pure-Rust filter is O(n) over the event log, which is fine for
+// single-user local-first usage (event logs in the thousands, not
+// millions). Revisit FTS5 if search becomes a perf concern.
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SearchEventsParams {
+    /// Case-insensitive substring match against the payload JSON.
+    /// None or empty = no text filter (return all matching the other
+    /// filters).
+    pub query: Option<String>,
+    /// Filter by event type (e.g. "ITEM_MOVED"). None = all types.
+    pub event_type: Option<String>,
+    /// Restrict to one item's history. None = all items.
+    pub item_id: Option<String>,
+    pub since_ts: Option<i64>,
+    pub until_ts: Option<i64>,
+    pub limit: Option<i64>,
+}
+
+#[tauri::command]
+pub fn search_events(
+    pool: State<'_, SqlitePool>,
+    query: Option<String>,
+    event_type: Option<String>,
+    item_id: Option<String>,
+    since_ts: Option<i64>,
+    until_ts: Option<i64>,
+    limit: Option<i64>,
+) -> Result<Vec<Event>, String> {
+    search_events_inner(
+        &pool,
+        SearchEventsParams {
+            query,
+            event_type,
+            item_id,
+            since_ts,
+            until_ts,
+            limit,
+        },
+    )
+}
+
+pub fn search_events_inner(
+    pool: &SqlitePool,
+    params: SearchEventsParams,
+) -> Result<Vec<Event>, String> {
+    // Fetch events filtered by item_id/ts (the indexed columns) via the
+    // existing get_events_inner, then filter by event_type + query text
+    // in Rust. This keeps the SQL simple (uses the existing prepared
+    // statement) and the text filter is O(n) over the result set.
+    let mut events = get_events_inner(
+        pool,
+        params.item_id.clone(),
+        params.since_ts,
+        params.until_ts,
+        // Fetch more than the limit so the post-filter set can reach
+        // the limit. Cap at 10000 to bound work.
+        Some(10000),
+    )?;
+
+    // Filter by event_type.
+    if let Some(et) = &params.event_type {
+        events.retain(|e| e.event_type.as_sql() == et);
+    }
+
+    // Filter by query (case-insensitive substring on payload JSON).
+    if let Some(q) = &params.query {
+        let q_lower = q.to_lowercase();
+        if !q_lower.is_empty() {
+            events.retain(|e| {
+                let payload_str = e.payload.to_string();
+                payload_str.to_lowercase().contains(&q_lower)
+            });
+        }
+    }
+
+    // Apply the user's limit (after filtering).
+    if let Some(limit) = params.limit {
+        if limit >= 0 {
+            events.truncate(limit as usize);
+        }
+    }
+
+    Ok(events)
+}
+
 // ── rebuild_projection ────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -1072,5 +1173,152 @@ mod tests {
         let _ = undo_last_action_inner(&pool).unwrap();
         let events_after = get_events_inner(&pool, None, None, None, None).unwrap().len();
         assert_eq!(events_after, 2, "undo must append a compensating event to the log");
+    }
+
+    // ── search_events tests (I-18) ─────────────────────────────────
+
+    #[test]
+    fn search_events_finds_by_content_substring() {
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::Inbox, "buy groceries".into(), None, None).unwrap();
+        create_item_inner(&pool, Tier::A, "review quarterly report".into(), None, None).unwrap();
+
+        let results = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: Some("grocer".into()),
+                event_type: None,
+                item_id: None,
+                since_ts: None,
+                until_ts: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1, "should find the 'buy groceries' ITEM_CREATED");
+        assert_eq!(results[0].event_type, EventType::ItemCreated);
+    }
+
+    #[test]
+    fn search_events_filters_by_event_type() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "searchable".into(), None, None).unwrap();
+        edit_item_inner(&pool, item.id.clone(), "edited".into()).unwrap();
+
+        let created_only = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: None,
+                event_type: Some("ITEM_CREATED".into()),
+                item_id: None,
+                since_ts: None,
+                until_ts: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(created_only.len(), 1);
+        assert_eq!(created_only[0].event_type, EventType::ItemCreated);
+
+        let edited_only = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: None,
+                event_type: Some("ITEM_EDITED".into()),
+                item_id: None,
+                since_ts: None,
+                until_ts: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(edited_only.len(), 1);
+        assert_eq!(edited_only[0].event_type, EventType::ItemEdited);
+    }
+
+    #[test]
+    fn search_events_filters_by_item_id() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::Inbox, "item a".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::Inbox, "item b".into(), None, None).unwrap();
+        edit_item_inner(&pool, a.id.clone(), "a v2".into()).unwrap();
+
+        let only_a = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: None,
+                event_type: None,
+                item_id: Some(a.id.clone()),
+                since_ts: None,
+                until_ts: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(only_a.len(), 2, "item a has create + edit = 2 events");
+        assert!(only_a.iter().all(|e| e.item_id.as_deref() == Some(a.id.as_str())));
+    }
+
+    #[test]
+    fn search_events_is_case_insensitive() {
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::Inbox, "Buy Groceries".into(), None, None).unwrap();
+
+        let results = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: Some("buy groceries".into()),
+                event_type: None,
+                item_id: None,
+                since_ts: None,
+                until_ts: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(results.len(), 1, "case-insensitive match should find 'Buy Groceries'");
+    }
+
+    #[test]
+    fn search_events_empty_query_returns_all_matching_filters() {
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::Inbox, "one".into(), None, None).unwrap();
+        create_item_inner(&pool, Tier::A, "two".into(), None, None).unwrap();
+
+        let all = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: None,
+                event_type: None,
+                item_id: None,
+                since_ts: None,
+                until_ts: None,
+                limit: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(all.len(), 2, "empty query + no filters = all events");
+    }
+
+    #[test]
+    fn search_events_respects_limit() {
+        let pool = fresh_pool();
+        for i in 0..10 {
+            create_item_inner(&pool, Tier::Inbox, format!("item {i}"), None, None).unwrap();
+        }
+
+        let limited = search_events_inner(
+            &pool,
+            SearchEventsParams {
+                query: Some("item".into()),
+                event_type: None,
+                item_id: None,
+                since_ts: None,
+                until_ts: None,
+                limit: Some(3),
+            },
+        )
+        .unwrap();
+        assert_eq!(limited.len(), 3, "limit should cap the result set");
     }
 }

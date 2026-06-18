@@ -1571,3 +1571,126 @@ button:hover {
 .palette-trigger:hover {
   opacity: 1;
 }
+
+/* ── Audit log view (I-18) ──────────────────────────────────────── */
+.audit-log {
+  max-width: 960px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.audit-log-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.audit-log-header h2 {
+  margin: 0;
+  font-size: 18px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.audit-log-count {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.audit-log-filters {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.audit-log-search-input {
+  flex: 1;
+  min-width: 240px;
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+.audit-log-type-select,
+.audit-log-item-input {
+  padding: 6px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+.audit-log-item-input {
+  min-width: 160px;
+}
+.audit-log-run-button {
+  padding: 6px 16px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+.audit-log-run-button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.audit-log-error {
+  color: #c0392b;
+  font-size: 13px;
+  padding: 8px 12px;
+  background: rgba(192, 57, 43, 0.08);
+  border-radius: 4px;
+}
+.audit-log-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.audit-log-row {
+  display: grid;
+  grid-template-columns: 48px 160px 180px 100px 1fr;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--border);
+  align-items: baseline;
+}
+.audit-log-row:hover {
+  background: var(--bg);
+}
+.audit-log-id {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.audit-log-ts {
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.audit-log-type {
+  font-weight: 600;
+  font-size: 11px;
+}
+.audit-log-item {
+  color: var(--fg-muted);
+  font-family: monospace;
+  font-size: 11px;
+}
+.audit-log-payload {
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.audit-log-empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--fg-muted);
+  list-style: none;
+}

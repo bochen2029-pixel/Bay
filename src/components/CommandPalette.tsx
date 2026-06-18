@@ -22,7 +22,7 @@ import { useStore } from "../store";
  * not a button.
  */
 
-type View = "board" | "calendar" | "timetravel" | "archive" | "settings";
+type View = "board" | "calendar" | "timetravel" | "archive" | "audit" | "settings";
 
 interface Command {
   id: string;
@@ -37,6 +37,7 @@ const VIEW_LABELS: Record<View, string> = {
   calendar: "Calendar",
   timetravel: "Time-travel",
   archive: "Archive",
+  audit: "Audit log",
   settings: "Settings",
 };
 

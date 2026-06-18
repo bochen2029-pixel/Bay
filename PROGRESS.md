@@ -177,3 +177,18 @@
   nothing-to-undo). cargo test 121/121. pnpm build clean. pnpm test
   85/85.
 - I-17 save point: committing. Next: I-18 (audit-log search).
+
+## 2026-06-17T05:15:00Z — Phase 4 I-18 audit-log search
+
+- New backend command: search_events (commands/events.rs). Pure-Rust
+  filter: case-insensitive substring on payload JSON + event_type/item/
+  date/limit filters. FTS5 deferred (heavier migration; pure-Rust fine
+  for single-user local-first logs in the thousands).
+- New frontend view: AuditLogView. Search input (Enter to search),
+  event-type select, item-id input, result list (id/ts/type/item/
+  payload summary). Wired into App.tsx as the "audit" view + view
+  switcher + command palette.
+- 6 new search tests (substring/event-type/item-id/case-insensitive/
+  empty-query/limit). cargo test 127/127. pnpm build clean. pnpm test
+  85/85.
+- I-18 save point: committing. Next: I-19 (batch operations).
