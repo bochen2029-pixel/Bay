@@ -345,8 +345,18 @@ pub fn set_item_state_inner(
         let payload = json!({
             "state_before": current.state,
             "state_after": target_state,
+            // Carry a blocked_reason whenever blocked is on EITHER side of
+            // the transition. Entering blocked: the new reason. Leaving
+            // blocked: the reason being cleared, preserved so an undo of
+            // this transition can restore the blocked state WITH its
+            // reason (the migration-002 CHECK rejects a blocked row with a
+            // null reason). apply_item_state_changed only consumes this
+            // field when state_after is Blocked, so the forward path is
+            // unaffected.
             "blocked_reason": if target_state == ItemState::Blocked {
                 blocked_reason.clone()
+            } else if current.state == ItemState::Blocked {
+                current.blocked_reason.clone()
             } else {
                 None
             },
@@ -476,6 +486,29 @@ pub fn restore_item_inner(pool: &SqlitePool, id: &str) -> Result<Item, String> {
         if !current.deleted {
             return Err("NOT_DELETED".into());
         }
+        // Cap enforcement on the restore door (CLAUDE.md §1 — caps apply
+        // on EVERY entry path). A restored item re-enters with its prior
+        // state, so a restored ACTIVE item into a full A/B would exceed
+        // the cap and is refused; a restored blocked/done item doesn't
+        // count and is always allowed. (Undo-of-delete is cap-safe by
+        // construction — it reverses only the most recent action, so the
+        // slot the delete just freed is still free — and it appends
+        // ITEM_RESTORED via write_events directly, not through here.)
+        if current.state == ItemState::Active {
+            match current.tier {
+                Tier::A => {
+                    if db::items::count_active_in_tier(tx, Tier::A)? >= A_CAP as i64 {
+                        return Err("CAP_EXCEEDED".into());
+                    }
+                }
+                Tier::B => {
+                    if db::items::count_active_in_tier(tx, Tier::B)? >= B_CAP as i64 {
+                        return Err("CAP_EXCEEDED".into());
+                    }
+                }
+                Tier::Inbox | Tier::C => {}
+            }
+        }
         Ok(EventDraft {
             event_type: EventType::ItemRestored,
             item_id: Some(id.to_string()),
@@ -489,6 +522,12 @@ pub fn restore_item_inner(pool: &SqlitePool, id: &str) -> Result<Item, String> {
         .into_iter()
         .find(|i| i.id == id)
         .ok_or_else(|| "restored item not found in projection".to_string())
+}
+
+/// Remove duplicate ids while preserving first-seen order.
+fn dedup_preserving_order(ids: Vec<String>) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    ids.into_iter().filter(|id| seen.insert(id.clone())).collect()
 }
 
 // ── batch operations (I-19) ───────────────────────────────────────
@@ -550,6 +589,11 @@ pub fn batch_set_state_inner(
         }
     }
 
+    // De-dup at the boundary: the frontend selection is a Set, but a
+    // repeated id must not emit a redundant event or be double-counted
+    // against a cap.
+    let ids = dedup_preserving_order(ids);
+
     // Build all drafts in one tx; write_events appends + applies them
     // atomically. Per-item validation (existence, no-op, cap) happens
     // inside the build closure so a failure rolls back the whole batch.
@@ -602,8 +646,13 @@ pub fn batch_set_state_inner(
             let payload = json!({
                 "state_before": current.state,
                 "state_after": target_state,
+                // See set_item_state_inner: preserve the reason when
+                // blocked is on either side so undo can restore a blocked
+                // row with its reason (migration-002 CHECK).
                 "blocked_reason": if target_state == ItemState::Blocked {
                     blocked_reason.clone()
+                } else if current.state == ItemState::Blocked {
+                    current.blocked_reason.clone()
                 } else {
                     None
                 },
@@ -639,6 +688,7 @@ pub fn batch_delete(
 }
 
 pub fn batch_delete_inner(pool: &SqlitePool, ids: Vec<String>) -> Result<BatchResult, String> {
+    let ids = dedup_preserving_order(ids);
     let events = db::write_events(pool, |tx, _ts| {
         let mut drafts = Vec::with_capacity(ids.len());
         for id in &ids {
@@ -2068,5 +2118,82 @@ mod tests {
             .query_row("SELECT deleted FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
             .unwrap();
         assert_eq!(deleted, 0);
+    }
+
+    // ── restore cap enforcement (P2e verifier BLOCKING-2; caps.json #12) ──
+
+    #[test]
+    fn restore_active_item_into_full_a_is_cap_exceeded() {
+        // caps.json case 12: caps apply on the restore door too. Fill A to
+        // 5 active, delete one (A→4), create another (A→5), then restore
+        // the deleted one → would be 6 active → CAP_EXCEEDED.
+        let pool = fresh_pool();
+        let mut ids = Vec::new();
+        for i in 0..5 {
+            ids.push(create_item_inner(&pool, Tier::A, format!("a-{i}"), None, None).unwrap().id);
+        }
+        delete_item_inner(&pool, &ids[0]).unwrap();
+        assert_eq!(count_active(&pool, Tier::A), 4);
+        create_item_inner(&pool, Tier::A, "filler".into(), None, None).unwrap();
+        assert_eq!(count_active(&pool, Tier::A), 5);
+
+        let err = restore_item_inner(&pool, &ids[0]).unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED", "restore into a full A must be refused");
+        // The item stays deleted; A stays at 5.
+        assert_eq!(count_active(&pool, Tier::A), 5);
+    }
+
+    #[test]
+    fn restore_blocked_item_into_full_a_succeeds() {
+        // A restored blocked/done item doesn't count toward the cap, so a
+        // full A must still accept it.
+        let pool = fresh_pool();
+        // 4 active + 1 blocked in A (5 items, 4 active).
+        for i in 0..4 {
+            create_item_inner(&pool, Tier::A, format!("act-{i}"), None, None).unwrap();
+        }
+        let blocked = create_item_inner(&pool, Tier::A, "blk".into(), None, None).unwrap();
+        set_item_state_inner(&pool, blocked.id.clone(), ItemState::Blocked, Some("hold".into())).unwrap();
+        // Fill the 5th active slot, then delete the blocked item.
+        create_item_inner(&pool, Tier::A, "act-4".into(), None, None).unwrap();
+        assert_eq!(count_active(&pool, Tier::A), 5);
+        delete_item_inner(&pool, &blocked.id).unwrap();
+
+        // Restoring the blocked item is allowed even though A is at cap.
+        let restored = restore_item_inner(&pool, &blocked.id).unwrap();
+        assert_eq!(restored.state, ItemState::Blocked);
+        assert_eq!(count_active(&pool, Tier::A), 5, "blocked restore doesn't consume an active slot");
+    }
+
+    // ── unblock event preserves its reason for undo (P2e BLOCKING-1) ──
+
+    #[test]
+    fn leaving_blocked_records_outgoing_reason_in_event_payload() {
+        // Regression: a blocked→active (or blocked→done) event must carry
+        // the reason being cleared so an undo can restore the blocked row
+        // WITH a reason (the migration-002 CHECK rejects a null reason on
+        // a blocked row). Before the fix the payload's blocked_reason was
+        // null for any transition whose target wasn't Blocked.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "task".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Blocked, Some("waiting on Bob".into())).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Active, None).unwrap();
+
+        let conn = pool.get().unwrap();
+        let reason: Option<String> = conn
+            .query_row(
+                "SELECT json_extract(payload, '$.blocked_reason') FROM events \
+                 WHERE type = 'ITEM_STATE_CHANGED' \
+                   AND json_extract(payload, '$.state_after') = 'active' \
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            reason.as_deref(),
+            Some("waiting on Bob"),
+            "the unblock event must preserve the outgoing blocked reason"
+        );
     }
 }

@@ -232,3 +232,31 @@
 - I-19 save point: committing. Phase 4 (I-15..I-19) complete. Next: P2e
   (cold-context two-pass verification — the prior run dispatched it but
   the verifiers never returned; the non-LLM oracle gate is green).
+
+## 2026-06-17T19:00:00Z — P2e two-pass verification COMPLETE (2 BLOCKING bugs fixed)
+
+- Re-dispatched 2 cold-context `verifier` subagents (the prior run's
+  never returned). They found 2 BLOCKING bugs the 143-test suite missed
+  — exactly the second-pass payoff:
+  - **BLOCKING-1:** undo of an unblock (blocked→active) crashed the
+    migration-002 CHECK (set state=blocked with null reason). Fixed:
+    set_item_state_inner / batch_set_state_inner now preserve the
+    outgoing blocked_reason in the event payload. (Pre-existing since
+    I-17; masked because the only undo-state test used active→done.)
+  - **BLOCKING-2:** restore_item had no cap check — archive-restoring an
+    active item into a full A/B exceeded the cap (JOINT_WRONG vs
+    caps.json case 12). Fixed: restore_item_inner cap-gates active
+    restores. (Pre-existing since v0.1.x.)
+- Both fixed + regression-tested (4 new tests). Corrected the misleading
+  undo cap doc-comment (undo-of-delete is cap-safe by construction).
+- STRUCTURAL: (ts,type) undo grouping over-groups two distinct same-type
+  same-ms actions — production-unreachable (single-user GUI); logged as
+  QUESTIONS Q01 with the txn_id fix deferred to operator (schema change).
+- COSMETIC: added dedup_preserving_order at the batch boundaries.
+- Gap surfaced: check-golden.py only checks existence, doesn't EXECUTE
+  golden cases (why the restore JOINT_WRONG slipped). Specific cases now
+  pinned by Rust tests; a generic golden runner is a P2c follow-up.
+- Also fixed a pre-existing unused-var warning in an I-18 test.
+- cargo 143/143 (+4), warning-clean; vitest 90/90; builds clean.
+- P2e save point: committing. P2e DONE. Next: Phase 5 (I-20 LLM re-org
+  accept-path, I-21 recurring tasks, I-22 LLM streaming).

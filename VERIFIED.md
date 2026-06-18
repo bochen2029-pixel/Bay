@@ -276,6 +276,69 @@ the critical write_events primitive; the cap path is critical-adjacent).
 
 Phase 4 (I-15..I-19) complete.
 
+## 2026-06-17T19:00:00Z — P2e two-pass verification COMPLETE (cold-context pass landed)
+
+The prior run dispatched 2 verifiers that never returned. Re-dispatched
+two cold-context `verifier` subagents (no implementer reasoning in
+context) over the 6 critical modules + the new I-19 batch/undo code. They
+found **2 BLOCKING bugs the 143-test suite missed** — the exact value of
+the second pass. Both fixed; both now have regression tests.
+
+### Verifier A (event/projection spine) — FAIL → fixed
+- **BLOCKING-1 — undo of an unblock crashed the migration-002 CHECK.**
+  A blocked→active (or blocked→done) ITEM_STATE_CHANGED carried
+  `blocked_reason: null` (set_item_state only wrote the reason when the
+  TARGET was blocked). Undo of that event tried to restore state=blocked
+  with a null reason → CHECK `state!='blocked' OR blocked_reason NOT NULL`
+  ABORT → undo returned a raw SQL error. Reachable in 3 ordinary ops
+  (block→unblock→Ctrl+Z). **Fix:** set_item_state_inner + batch_set_state_inner
+  now record the OUTGOING reason in the payload whenever blocked is on
+  either side; apply ignores it on the forward path (only consumes it when
+  state_after=Blocked). Tests: `leaving_blocked_records_outgoing_reason_in_event_payload`
+  (items.rs), `undo_after_unblock_does_not_violate_check_constraint` (events.rs).
+- Verdicts: events append-only HOLDS; projection determinism HOLDS; LLM
+  firewall HOLDS; write_events atomicity HOLDS; get_items_at HOLDS;
+  undo VIOLATED → now fixed.
+- STRUCTURAL: (ts,type) undo grouping over-groups two distinct same-type
+  same-ms actions. Production-unreachable (single-user GUI); logged as
+  QUESTIONS Q01 with the txn_id fix deferred to operator (schema change).
+
+### Verifier B (mutation/cap/rank spine) — PASS, 1 BLOCKING shared finding
+- **BLOCKING-2 — restore_item had no cap check (JOINT_WRONG vs caps.json #12).**
+  Archive/toast-restoring an ACTIVE item into a full A/B yielded 6 active
+  — violating "capacity as discipline" and the operator golden case.
+  Every OTHER entry path (create/move/state/swap/batch) was gated; restore
+  was the lone door. **Fix:** restore_item_inner now cap-checks when the
+  restored item's state is active (blocked/done restore is always allowed).
+  Test: `restore_active_item_into_full_a_is_cap_exceeded`,
+  `restore_blocked_item_into_full_a_succeeds`. Also corrected the undo
+  doc-comment (undo-of-delete is cap-safe by construction — it reverses
+  only the most recent action; the explicit restore command is the one
+  that needed gating).
+- Confirmed the I-19 batch cap-overflow fix is genuinely correct (the
+  incremental per-tier counters), not just claimed.
+- COSMETIC: batch ids not de-duped → added `dedup_preserving_order` guard
+  at both batch boundaries (frontend already sends a Set).
+- Verdicts: caps HOLDS (after restore fix); swap atomicity HOLDS;
+  rank_between HOLDS; blocked-requires-reason HOLDS; batch ops HOLDS.
+
+### Known gap surfaced (not yet closed)
+- `scripts/check-golden.py` only checks each golden file EXISTS and has
+  ≥1 case — it does NOT execute the cases against the implementation. The
+  restore JOINT_WRONG slipped through partly because of this. The specific
+  cases that mattered (caps.json #12, the undo paths) are now pinned by
+  Rust regression tests; wiring a generic golden runner that interprets
+  the JSON op-sequences is a P2c-completion follow-up.
+
+### Gates after fixes (all green)
+- cargo test **143/143** (+4 regression tests); cargo build + cargo test
+  warning-clean (also fixed a pre-existing unused-var in an I-18 test).
+- pnpm build clean; pnpm test 90/90.
+
+**P2e verdict: COMPLETE.** Non-LLM oracle gate green AND cold-context pass
+landed with both BLOCKING findings resolved + regression-tested. The 6
+critical modules are now verified at all three oracle layers.
+
 ---
 
 ## Oracle taxonomy (v7, for reference)

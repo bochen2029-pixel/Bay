@@ -83,15 +83,16 @@ items:
     notes: "Added ProjectionEvent enum (7 item-event variants only) + EventType::to_projection_event() returning Option<ProjectionEvent> (None for LLM events). apply_event_to_projection now dispatches on ProjectionEvent, not EventType — LLM events structurally cannot reach the projection match arms. 3 new tests pin the firewall. cargo test 113/113, cargo build warning-clean. The LLM firewall is now 'type system wont let you' not 'match arm returns Ok(())'."
   - id: P2e
     description: "Two-pass verification on all 6 critical modules (cold-context verifier subagent + non-LLM oracle gate)"
-    status: IN_PROGRESS
+    status: DONE
     dependency: [P2a, P2b, P2c, P2d]
     blocks: [P3]
     fan_out: 1
     verifiability: REQUIRES_HUMAN_REVIEW
     cost_estimate: 2h
+    cost_actual: 0.7h
     critical: true
     oracle: [golden, property, runtime]
-    notes: "Non-LLM oracle gate GREEN (property + golden, all pass). Prior run dispatched 2 cold-context verifiers but they never returned (substrate hit quota). Re-dispatching after I-19. P3/P4 already landed ahead of P2e (the oracle gate is the authority; cold-context is defense-in-depth)."
+    notes: "Re-dispatched 2 cold-context verifiers (prior ones never returned). Found 2 BLOCKING bugs the 143-test suite missed: (1) undo-of-unblock crashed the migration-002 blocked_reason CHECK; (2) restore_item had no cap check (JOINT_WRONG vs caps.json #12). Both fixed + regression-tested. STRUCTURAL: (ts,type) undo over-grouping → QUESTIONS Q01 (production-safe; txn_id fix operator-gated). Gap: check-golden.py doesn't execute cases (P2c follow-up). cargo 143/143, warning-clean."
   - id: P3
     description: "Doctrine reconciliation: archive v1.6/v1.5/v1.3, bump to v1.7/v1.6/v1.4, reconcile SPEC §5.1/§6/§6.2/§10.12 drift, add I-15..I-27 prompts"
     status: DONE

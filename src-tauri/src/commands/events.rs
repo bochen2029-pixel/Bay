@@ -320,11 +320,14 @@ pub fn rebuild_projection_inner(pool: &SqlitePool) -> Result<RebuildResult, Stri
 //                       never touched the projection, so there's
 //                       nothing to undo.
 //
-// Cap enforcement: the compensating events route through the normal
-// projection handlers, so e.g. undoing a move into A (which would move
-// the item back out) doesn't hit caps; but undoing a delete (restore)
-// into a now-full A returns CAP_EXCEEDED. This is correct — the undo
-// is a real mutation subject to real invariants.
+// Cap enforcement: undo only ever reverses the MOST RECENT action, and
+// every action's cap effect is reversible into the slot it just touched
+// (a delete frees a slot, so undoing it refills exactly that slot; a
+// move/activate that was admitted under the cap reverses cleanly). Since
+// nothing has happened since the action being undone, the compensating
+// events never exceed a cap. (The explicit restore_item command — archive
+// / undo-toast — is different: arbitrary time may have passed and the
+// tier may have refilled, so THAT path is cap-gated in restore_item_inner.)
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UndoResult {
@@ -1268,6 +1271,31 @@ mod tests {
         assert_eq!(inbox_tier, "inbox", "the entering item must return to Inbox");
     }
 
+    #[test]
+    fn undo_after_unblock_does_not_violate_check_constraint() {
+        // Regression (P2e verifier BLOCKING-1): before the fix, undoing an
+        // unblock (blocked→active) tried to set state='blocked' with a
+        // null blocked_reason, violating the migration-002 CHECK and
+        // aborting the undo with a raw SQL error. After the fix the unblock
+        // event carries the outgoing reason, so undo succeeds and the
+        // restored blocked row has its reason.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "task".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Blocked, Some("reason".into()))
+            .unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Active, None).unwrap();
+
+        // Must not error (previously aborted on the CHECK constraint). In a
+        // same-millisecond test sequence the (ts,type) grouping may revert
+        // both the block and the unblock together; the load-bearing
+        // assertion is simply that the undo does not crash.
+        let result = undo_last_action_inner(&pool);
+        assert!(
+            result.is_ok(),
+            "undo after unblock must not crash on the blocked-reason CHECK: {result:?}",
+        );
+    }
+
     // ── search_events tests (I-18) ─────────────────────────────────
 
     #[test]
@@ -1333,7 +1361,8 @@ mod tests {
     fn search_events_filters_by_item_id() {
         let pool = fresh_pool();
         let a = create_item_inner(&pool, Tier::Inbox, "item a".into(), None, None).unwrap();
-        let b = create_item_inner(&pool, Tier::Inbox, "item b".into(), None, None).unwrap();
+        // `b` is a decoy whose events must be excluded by the item_id filter.
+        let _b = create_item_inner(&pool, Tier::Inbox, "item b".into(), None, None).unwrap();
         edit_item_inner(&pool, a.id.clone(), "a v2".into()).unwrap();
 
         let only_a = search_events_inner(
