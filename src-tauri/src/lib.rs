@@ -123,6 +123,8 @@ pub fn run() {
             commands::items::set_item_date,
             commands::items::delete_item,
             commands::items::restore_item,
+            commands::items::batch_set_state,
+            commands::items::batch_delete,
             commands::events::get_events,
             commands::events::get_items_at,
             commands::events::list_archived_items,

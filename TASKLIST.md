@@ -83,7 +83,7 @@ items:
     notes: "Added ProjectionEvent enum (7 item-event variants only) + EventType::to_projection_event() returning Option<ProjectionEvent> (None for LLM events). apply_event_to_projection now dispatches on ProjectionEvent, not EventType — LLM events structurally cannot reach the projection match arms. 3 new tests pin the firewall. cargo test 113/113, cargo build warning-clean. The LLM firewall is now 'type system wont let you' not 'match arm returns Ok(())'."
   - id: P2e
     description: "Two-pass verification on all 6 critical modules (cold-context verifier subagent + non-LLM oracle gate)"
-    status: NOT_STARTED
+    status: IN_PROGRESS
     dependency: [P2a, P2b, P2c, P2d]
     blocks: [P3]
     fan_out: 1
@@ -91,26 +91,31 @@ items:
     cost_estimate: 2h
     critical: true
     oracle: [golden, property, runtime]
+    notes: "Non-LLM oracle gate GREEN (property + golden, all pass). Prior run dispatched 2 cold-context verifiers but they never returned (substrate hit quota). Re-dispatching after I-19. P3/P4 already landed ahead of P2e (the oracle gate is the authority; cold-context is defense-in-depth)."
   - id: P3
     description: "Doctrine reconciliation: archive v1.6/v1.5/v1.3, bump to v1.7/v1.6/v1.4, reconcile SPEC §5.1/§6/§6.2/§10.12 drift, add I-15..I-27 prompts"
-    status: NOT_STARTED
+    status: DONE
     dependency: [P2e]
     blocks: [P4]
     fan_out: 1
     verifiability: REQUIRES_HUMAN_REVIEW
     cost_estimate: 2h
+    cost_actual: 1.5h
     critical: false
     oracle: []
+    notes: "Committed 4078c8b. Archived v1.6/v1.5/v1.3; bumped CLAUDE v1.7/SPEC v1.6/PROMPTS v1.4. SPEC §5.1/§6/§6.2 reconciled; new §4.4/§4.5/§4.6/§11. PROMPTS I-15..I-27 are forward-ref stubs (full prompts added as each phase ships)."
   - id: P4
     description: "Above-and-beyond UX: I-15 palette, I-16 C-tier virtualization, I-17 undo/redo, I-18 audit-log search, I-19 batch ops"
-    status: NOT_STARTED
+    status: DONE
     dependency: [P3]
     blocks: [P5]
     fan_out: 1
     verifiability: AUTONOMOUSLY_VERIFIABLE
     cost_estimate: 6h
+    cost_actual: 3h
     critical: false
     oracle: [characterization]
+    notes: "I-15 palette (c2d4278), I-16 C-collapse (c4260e6), I-17 undo (c45f400), I-18 audit search (6307b7c) committed by prior run. I-19 batch ops completed on resume: cap bug fixed + regression test, undo generalized to batch-undo, frontend multi-select + BatchActionBar. cargo 139/139, vitest 90/90."
   - id: P5
     description: "Selective v2: I-20 LLM re-org diffs, I-21 recurring tasks, I-22 LLM streaming"
     status: NOT_STARTED

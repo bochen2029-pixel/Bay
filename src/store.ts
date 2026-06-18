@@ -80,6 +80,13 @@ type State = {
    *  reveals them. */
   sessionDoneIds: Set<string>;
   doneRevealed: DoneRevealed;
+
+  /** Multi-selected item ids for batch operations (I-19). The batch
+   *  action bar appears when this is non-empty. Selection is UI-only;
+   *  every batch action still routes through a backend command. */
+  selectedIds: Set<string>;
+  /** Anchor id for shift-click range selection. */
+  lastSelectedId: string | null;
 };
 
 type Actions = {
@@ -107,6 +114,10 @@ type Actions = {
   toggleDoneRevealed: (tier: Tier) => void;
 
   setLanCaptureFlash: (flash: LanCaptureFlash | null) => void;
+
+  toggleSelected: (id: string) => void;
+  selectRangeTo: (tier: Tier, toId: string) => void;
+  clearSelected: () => void;
 };
 
 type Store = State & Actions;
@@ -141,6 +152,8 @@ export const useStore = create<Store>((set, get) => ({
   lanCaptureFlash: null,
   sessionDoneIds: new Set<string>(),
   doneRevealed: EMPTY_DONE_REVEALED,
+  selectedIds: new Set<string>(),
+  lastSelectedId: null,
 
   bootstrap: (items, settings) => {
     const itemsMap: Record<string, Item> = {};
@@ -167,6 +180,8 @@ export const useStore = create<Store>((set, get) => ({
       bootstrapped: true,
       sessionDoneIds: new Set<string>(),
       doneRevealed: EMPTY_DONE_REVEALED,
+      selectedIds: new Set<string>(),
+      lastSelectedId: null,
     });
   },
 
@@ -241,11 +256,22 @@ export const useStore = create<Store>((set, get) => ({
       newSessionDone.delete(id);
     }
 
+    // Drop the id from any active multi-selection so the batch bar's
+    // count never references a gone item.
+    const { selectedIds, lastSelectedId } = get();
+    let newSelected = selectedIds;
+    if (selectedIds.has(id)) {
+      newSelected = new Set(selectedIds);
+      newSelected.delete(id);
+    }
+
     set({
       items: newItems,
       itemsByTier: newByTier,
       sessionDoneIds: newSessionDone,
       deletedPending: { snapshot: existing, deletedAt: Date.now() },
+      selectedIds: newSelected,
+      lastSelectedId: lastSelectedId === id ? null : lastSelectedId,
     });
   },
 
@@ -271,6 +297,44 @@ export const useStore = create<Store>((set, get) => ({
     })),
 
   setLanCaptureFlash: (flash) => set({ lanCaptureFlash: flash }),
+
+  toggleSelected: (id) =>
+    set((s) => {
+      const next = new Set(s.selectedIds);
+      if (next.has(id)) {
+        next.delete(id);
+        return {
+          selectedIds: next,
+          lastSelectedId: s.lastSelectedId === id ? null : s.lastSelectedId,
+        };
+      }
+      next.add(id);
+      return { selectedIds: next, lastSelectedId: id };
+    }),
+
+  // Shift-click range select within a single tier: extends the
+  // selection from the anchor (lastSelectedId) to `toId` over the tier's
+  // rank order. Additive — other selections are preserved. If the anchor
+  // isn't in this tier, just selects `toId`.
+  selectRangeTo: (tier, toId) =>
+    set((s) => {
+      const order = s.itemsByTier[tier];
+      const toIdx = order.indexOf(toId);
+      if (toIdx < 0) return {};
+      const next = new Set(s.selectedIds);
+      const anchorIdx =
+        s.lastSelectedId != null ? order.indexOf(s.lastSelectedId) : -1;
+      if (anchorIdx < 0) {
+        next.add(toId);
+        return { selectedIds: next, lastSelectedId: toId };
+      }
+      const [lo, hi] =
+        anchorIdx <= toIdx ? [anchorIdx, toIdx] : [toIdx, anchorIdx];
+      for (let i = lo; i <= hi; i++) next.add(order[i]);
+      return { selectedIds: next, lastSelectedId: toId };
+    }),
+
+  clearSelected: () => set({ selectedIds: new Set<string>(), lastSelectedId: null }),
 }));
 
 function compareRank(a: string, b: string): number {

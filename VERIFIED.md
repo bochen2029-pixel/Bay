@@ -239,6 +239,43 @@ logged for operator review; COSMETIC noted.
 warning-clean. The non-LLM oracle gate is the authority; the cold-
 context pass is defense-in-depth against rationalization drift.
 
+## 2026-06-17T18:30:00Z — I-19 batch operations (resumed run)
+
+Backend completed and corrected after the substrate handoff. Oracle:
+characterization + regression tests (batch ops are command-layer over
+the critical write_events primitive; the cap path is critical-adjacent).
+
+### Backend (commands/items.rs, commands/events.rs)
+- batch_set_state_inner / batch_delete_inner: atomic via write_events
+  (whole batch lands or none). affected_ids derived from returned
+  events (NO_OP excluded).
+- **Cap bug fixed:** incremental projected counters close the
+  build-before-apply gap. Regression test
+  `batch_set_state_to_active_rolls_back_on_cap_overflow` (A: 3 active +
+  3 blocked → unblock all 3 → CAP_EXCEEDED, full rollback, still 3
+  active, all 3 still blocked).
+- 9 batch tests in items.rs: mark-done, NO_OP skip, blocked-requires-
+  reason, shared-reason, cap-overflow rollback, within-cap success,
+  missing-item rollback, batch-delete-all, batch-delete missing-item
+  rollback.
+- undo_last_action generalized to (ts, type) grouping → batch-undo.
+  3 undo tests in events.rs: undo_batch_delete (restores all 3),
+  undo_batch_set_state (reverts both), undo_swap (the swap-undo path,
+  previously untested).
+
+### Frontend (store.ts, Strip.tsx, BatchActionBar.tsx)
+- Multi-select store state + actions; per-strip checkbox + shift-click
+  range; BatchActionBar with cap-error surfacing + two-step delete.
+- 5 BatchActionBar vitest specs (empty render, count+actions, mark-done
+  clears selection, cap error keeps selection, two-step delete).
+
+### Gates (all green)
+- cargo test **139/139** (+12 from 127 at I-18); cargo build warning-clean.
+- pnpm build clean (387 modules); pnpm test **90/90** (+5).
+- node scripts/test-store-logic.mjs green.
+
+Phase 4 (I-15..I-19) complete.
+
 ---
 
 ## Oracle taxonomy (v7, for reference)

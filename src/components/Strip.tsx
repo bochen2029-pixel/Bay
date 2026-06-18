@@ -29,6 +29,9 @@ export function Strip({ itemId }: { itemId: string }) {
   const openBlockModal = useStore((s) => s.openBlockModal);
   const setSelectedItemId = useStore((s) => s.setSelectedItemId);
   const onItemUpdated = useStore((s) => s.onItemUpdated);
+  const isSelected = useStore((s) => s.selectedIds.has(itemId));
+  const toggleSelected = useStore((s) => s.toggleSelected);
+  const selectRangeTo = useStore((s) => s.selectRangeTo);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: itemId, disabled: isEditing || dateField !== null });
@@ -54,12 +57,30 @@ export function Strip({ itemId }: { itemId: string }) {
         "strip" +
         (isDragging ? " is-dragging" : "") +
         (item.state === "done" ? " is-done" : "") +
-        (item.state === "blocked" ? " is-blocked" : "")
+        (item.state === "blocked" ? " is-blocked" : "") +
+        (isSelected ? " is-selected" : "")
       }
       data-item-id={item.id}
       data-state={item.state}
       {...attributes}
     >
+      <input
+        type="checkbox"
+        className="strip-select"
+        checked={isSelected}
+        aria-label={isSelected ? "Deselect item" : "Select item"}
+        onClick={(e) => {
+          e.stopPropagation();
+          // Shift-click extends the selection over the tier's order.
+          // Plain click falls through to onChange for a simple toggle.
+          if (e.shiftKey) {
+            e.preventDefault();
+            selectRangeTo(item.tier, item.id);
+          }
+        }}
+        onChange={() => toggleSelected(item.id)}
+      />
+
       <span
         className="strip-handle"
         aria-label="Drag handle"

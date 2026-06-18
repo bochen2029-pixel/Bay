@@ -396,21 +396,26 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
     use crate::domain::EventType;
     use serde_json::json;
 
-    // Find the most recent user-action event. Skip LLM_SUGGESTION_*
-    // events (advisory only — nothing to undo).
+    // Find the most recent user action and undo it atomically. Skip
+    // LLM_SUGGESTION_* events (advisory only — nothing to undo).
     //
-    // "Action" = the single most recent non-LLM event, PLUS — if it's
-    // an ITEM_MOVED — the event immediately before it (by id) IF that
-    // event shares its ts AND is also ITEM_MOVED. The only command
-    // that produces two same-ts ITEM_MOVED events is swap_move (the
-    // two-event atomic swap). All other commands use write_event
-    // (singular), so even if two separate calls happen to share a ms
-    // timestamp, they're separate actions and undo handles one at a
-    // time. This avoids the over-grouping bug where a fast create+edit
-    // sharing a ms would be undone together.
-    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
-    // Read the most recent non-LLM event (by id desc, limit 1).
-    let last_event: Option<Event> = {
+    // "Action" = the set of most-recent events that share the latest
+    // event's timestamp AND type. Every atomic operation in Bay writes
+    // its events in one `write_events` transaction stamped with a single
+    // shared ts and a single event type:
+    //   - swap_move       → 2 ITEM_MOVED
+    //   - batch_set_state → N ITEM_STATE_CHANGED
+    //   - batch_delete    → N ITEM_DELETED
+    //   - every single-item command → 1 event
+    // Grouping by (ts, type) therefore undoes a swap or a batch as one
+    // action, while a single command undoes exactly one event.
+    //
+    // Keying on TYPE as well as ts is what prevents over-grouping: two
+    // fast single-item commands (e.g. create then edit) can share a ms
+    // timestamp, but they carry different types, so they stay distinct
+    // actions — only the latest is undone.
+    let last = {
+        let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
         let mut stmt = conn
             .prepare(
                 "SELECT id, ts, type, item_id, payload FROM events \
@@ -421,42 +426,41 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
         let mut rows = stmt
             .query_map([], parse_event_row)
             .map_err(|e| format!("query last event: {e}"))?;
-        rows.next().transpose().map_err(|e| format!("last event row: {e}"))?
-    };
-    drop(conn);
-
-    let last = match last_event {
-        Some(e) => e,
-        None => return Err("NOTHING_TO_UNDO".into()),
-    };
-
-    // If last is ITEM_MOVED, check whether the event before it (by id)
-    // is also ITEM_MOVED with the same ts. If so, they're a swap pair.
-    let mut action_events: Vec<Event> = vec![last.clone()];
-    if last.event_type == EventType::ItemMoved {
-        let prev_events = get_events_inner(pool, None, None, None, None)?;
-        // Find the event with the largest id < last.id.
-        let prev = prev_events
-            .iter()
-            .filter(|e| e.id < last.id)
-            .max_by_key(|e| e.id);
-        if let Some(prev) = prev {
-            if prev.event_type == EventType::ItemMoved && prev.ts == last.ts {
-                // Swap pair: undo both, in reverse (LIFO) order.
-                action_events = vec![last.clone(), prev.clone()];
-            }
+        match rows.next().transpose().map_err(|e| format!("last event row: {e}"))? {
+            Some(e) => e,
+            None => return Err("NOTHING_TO_UNDO".into()),
         }
-    }
+    };
 
-    // Build compensating drafts. Iterate in REVERSE order (LIFO) so
-    // that, e.g., a swap's two ITEM_MOVED events unwind correctly.
-    // For single-event actions, reverse is a no-op.
+    // Gather every event of this action (same ts + same type), newest
+    // first so the compensating events unwind in LIFO order.
+    let action_events: Vec<Event> = {
+        let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, ts, type, item_id, payload FROM events \
+                 WHERE ts = ?1 AND type = ?2 ORDER BY id DESC",
+            )
+            .map_err(|e| format!("prepare action events: {e}"))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::params![last.ts, last.event_type.as_sql()],
+                parse_event_row,
+            )
+            .map_err(|e| format!("query action events: {e}"))?;
+        rows.collect::<rusqlite::Result<Vec<Event>>>()
+            .map_err(|e| format!("action event row: {e}"))?
+    };
+
+    // Build compensating drafts in LIFO order (the query above is
+    // already newest-first), e.g. a swap's two ITEM_MOVED events unwind
+    // correctly. For single-event actions there is just one draft.
     let mut drafts: Vec<EventDraft> = Vec::new();
     let mut undone_types: Vec<String> = Vec::new();
     let mut affected_ids: Vec<String> = Vec::new();
     let mut descriptions: Vec<String> = Vec::new();
 
-    for event in action_events.iter().rev() {
+    for event in &action_events {
         let item_id = match &event.item_id {
             Some(id) => id.clone(),
             None => continue, // non-item event; skip
@@ -585,8 +589,9 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
         return Err("NOTHING_TO_UNDO".into());
     }
 
-    // drafts is already in reverse (LIFO) order from the .rev() loop
-    // above. Append all compensating drafts in one atomic tx.
+    // drafts is in LIFO order (the action-events query is newest-first).
+    // Append all compensating drafts in one atomic tx — the undo of a
+    // batch is itself a single atomic action.
     let _ = db::write_events(pool, |_tx, _ts| Ok(drafts))?;
 
     Ok(UndoResult {
@@ -628,8 +633,9 @@ fn parse_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
 mod tests {
     use super::*;
     use crate::commands::items::{
-        create_item_inner, delete_item_inner, edit_item_inner, move_item_inner,
-        restore_item_inner, set_item_state_inner,
+        batch_delete_inner, batch_set_state_inner, create_item_inner, delete_item_inner,
+        edit_item_inner, move_item_inner, restore_item_inner, set_item_state_inner,
+        swap_move_inner,
     };
     use crate::domain::{ItemState, Tier};
     use r2d2::Pool;
@@ -1173,6 +1179,93 @@ mod tests {
         let _ = undo_last_action_inner(&pool).unwrap();
         let events_after = get_events_inner(&pool, None, None, None, None).unwrap().len();
         assert_eq!(events_after, 2, "undo must append a compensating event to the log");
+    }
+
+    #[test]
+    fn undo_batch_delete_restores_every_item() {
+        // A batch_delete writes N ITEM_DELETED events in one tx (shared
+        // ts). Undo must group them by (ts, type) and restore ALL of
+        // them, not just the most recent — the batch-undo property.
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::Inbox, "a".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::Inbox, "b".into(), None, None).unwrap();
+        let c = create_item_inner(&pool, Tier::Inbox, "c".into(), None, None).unwrap();
+        batch_delete_inner(&pool, vec![a.id.clone(), b.id.clone(), c.id.clone()]).unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types.len(), 3, "all three deletes must be undone");
+        assert!(result.undone_event_types.iter().all(|t| t == "ITEM_DELETED"));
+
+        let conn = pool.get().unwrap();
+        let live: i64 = conn
+            .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live, 3, "undo of a batch delete must restore every item");
+    }
+
+    #[test]
+    fn undo_batch_set_state_reverts_every_item() {
+        // batch_set_state writes N ITEM_STATE_CHANGED in one tx. Undo
+        // reverts all of them.
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "a".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::A, "b".into(), None, None).unwrap();
+        batch_set_state_inner(&pool, vec![a.id.clone(), b.id.clone()], ItemState::Done, None).unwrap();
+
+        // Both are done now.
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types.len(), 2);
+
+        let conn = pool.get().unwrap();
+        let active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE tier='A' AND state='active' AND deleted=0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active, 2, "undo of a batch mark-done must restore both to active");
+    }
+
+    #[test]
+    fn undo_swap_reverses_both_moves() {
+        // swap_move writes two ITEM_MOVED in one tx. Undo (grouping by
+        // ts+type) must reverse both — the entering item leaves A and
+        // the demoted item returns to A.
+        let pool = fresh_pool();
+        // Fill A to cap (5 active).
+        let mut a_items = Vec::new();
+        for i in 0..5 {
+            a_items.push(create_item_inner(&pool, Tier::A, format!("a-{i}"), None, None).unwrap());
+        }
+        let inbox = create_item_inner(&pool, Tier::Inbox, "incoming".into(), None, None).unwrap();
+        let demoted = a_items.last().unwrap().clone();
+        let entering_rank = crate::domain::rank_between(None, Some(a_items[0].rank.as_str()));
+
+        swap_move_inner(
+            &pool,
+            demoted.id.clone(),
+            Tier::B,
+            inbox.id.clone(),
+            Tier::A,
+            entering_rank,
+            None,
+        )
+        .unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types.len(), 2, "both swap moves must be undone");
+
+        // Post-undo: demoted back in A, incoming back in Inbox.
+        let conn = pool.get().unwrap();
+        let demoted_tier: String = conn
+            .query_row("SELECT tier FROM items WHERE id = ?1", [&demoted.id], |r| r.get(0))
+            .unwrap();
+        let inbox_tier: String = conn
+            .query_row("SELECT tier FROM items WHERE id = ?1", [&inbox.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(demoted_tier, "A", "the demoted item must return to A");
+        assert_eq!(inbox_tier, "inbox", "the entering item must return to Inbox");
     }
 
     // ── search_events tests (I-18) ─────────────────────────────────

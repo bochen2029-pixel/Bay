@@ -192,3 +192,43 @@
   empty-query/limit). cargo test 127/127. pnpm build clean. pnpm test
   85/85.
 - I-18 save point: committing. Next: I-19 (batch operations).
+
+## 2026-06-17T18:30:00Z — Run resumed (substrate handoff) + I-19 close
+
+- **Substrate handoff:** the prior substrate (GLM-5.2) exhausted its
+  quota mid-I-19, having written the batch backend (batch_set_state /
+  batch_delete in commands/items.rs) but leaving it uncommitted,
+  unregistered, untested, and with no frontend. Run resumed by Claude
+  (Opus). Charter honored as operator intent; this entry is the audit
+  trail of the handoff.
+- **Bug found + fixed (batch cap enforcement):** the uncommitted
+  batch_set_state_inner checked count_active_in_tier inside the
+  write_events build closure, but write_events builds ALL drafts before
+  applying any — so every item saw the pre-batch count and a batch that
+  activates more items than free slots would overflow the cap. Fixed
+  with incremental projected counters (active_a/active_b). Regression
+  test batch_set_state_to_active_rolls_back_on_cap_overflow pins it.
+- **affected_ids accuracy:** both inner fns now derive affected_ids from
+  the returned events (NO_OP items produce no event → excluded), rather
+  than echoing the raw input list.
+- **Commands registered** in lib.rs invoke_handler (batch_set_state,
+  batch_delete).
+- **Undo generalized for batch-undo:** undo_last_action grouped only a
+  single event or a swap-pair (two same-ts ITEM_MOVED), so a batch of N
+  same-ts events would undo only one. Generalized to group the
+  most-recent events sharing (ts, type) — subsumes the swap-pair special
+  case, delivers batch-undo, and avoids over-grouping create+edit (those
+  differ in type). Added undo_batch_delete / undo_batch_set_state /
+  undo_swap tests (the swap-undo path was previously untested).
+- **Frontend:** multi-select in the store (selectedIds + lastSelectedId,
+  toggleSelected/selectRangeTo/clearSelected, cleanup on delete);
+  per-strip checkbox with shift-click range; BatchActionBar (mark done /
+  mark active / two-step-confirm delete; CAP_EXCEEDED surfaced; Esc
+  clears). Wired into Board. New CSS (.strip-select, .strip.is-selected,
+  .batch-bar*). Batch-delete suppresses the single-item undo toast (the
+  whole batch is Ctrl+Z-undoable).
+- Tests: cargo 139/139 (+12), vitest 90/90 (+5 BatchActionBar), build
+  clean both sides, store-logic smoke green.
+- I-19 save point: committing. Phase 4 (I-15..I-19) complete. Next: P2e
+  (cold-context two-pass verification — the prior run dispatched it but
+  the verifiers never returned; the non-LLM oracle gate is green).

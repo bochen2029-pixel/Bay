@@ -2,27 +2,31 @@
 
 > Postcard to future-self. Kept current enough to BE the compaction
 > brief. If this file is stale, the run is lost. Updated every save
-> point. Last updated: 2026-06-17T00:45:00Z (Phase 1 close).
+> point. Last updated: 2026-06-17T18:30:00Z (I-19 close, run resumed).
+
+## Run resumed (substrate handoff)
+
+The prior substrate (GLM-5.2) hit its quota mid-I-19. Run resumed by
+Claude (Opus). Phases P0–P3 + I-15..I-18 were committed by the prior
+run; I-19 was uncommitted/incomplete. I-19 is now complete (see below).
+Charter is honored as operator intent (not edited).
 
 ## Current task
 
-**Phase 2a: Property tests.** Add `proptest` Cargo dev-dep and write
-property tests for the 6 critical modules: `rank_between` (strictly-
-between, monotone), `apply_event_to_projection` (projection
-determinism = rebuild reproduces items), `swap_move_inner` (atomicity
-+ cap math), `write_events` (rollback on apply failure), cap
-enforcement (invariant under random event ordering), `get_items_at`
-(monotone; now==list_active_items). These are the non-LLM oracles for
-the Externality Principle.
+**Phase 4 complete (I-15..I-19).** I-19 batch operations just landed:
+backend cap bug fixed (+ regression test), undo generalized to
+batch-undo via (ts,type) grouping, frontend multi-select + BatchActionBar.
+cargo 139/139, vitest 90/90, builds clean.
 
 ## Next concrete action
 
-Add `proptest = "1"` to `src-tauri/Cargo.toml` `[dev-dependencies]`.
-Then write `src-tauri/src/domain/rank.rs` property tests (start with
-the simplest: `rank_between(a,b)` strictly between for all valid
-inputs). Then `db/items.rs` projection-determinism property test (the
-single most important property in the system). Then swap atomicity,
-write_events rollback, get_items_at. Run `cargo test` after each.
+**P2e — cold-context two-pass verification.** The prior run dispatched
+2 verifier subagents but they never returned (quota). The non-LLM oracle
+gate (property + golden) is GREEN, which is the authority per charter §9.
+Re-dispatch cold-context `verifier` subagents over the 6 critical
+modules + the new batch/undo code; record findings in VERIFIED.md; fix
+any BLOCKING drift. Then Phase 5 (I-20 LLM re-org accept-path populating
+resulting_event_ids; I-21 recurring tasks; I-22 LLM streaming).
 
 ## Blocking issues
 
@@ -73,14 +77,15 @@ None yet. Phase 2e (two-pass verification) will dispatch the
 
 ## Last save point
 
-Phase 1 close: `fix(I-15): prompt.rs use A_CAP/B_CAP constants not
-magic numbers` (about to commit). Baseline still green.
+I-19 close: `feat(I-19): batch operations` (about to commit). All gates
+green: cargo 139/139, vitest 90/90, builds clean, store-logic smoke OK.
 
 ## Runway snapshot
 
-Elapsed: ~0.75h. Attention probe: not yet run. `rework_rate` this run:
-0.0 (no rework). Speculations: 0/25. Blockers: 0. Phase 1 found fewer
-bugs than planned — v0.1.1 was thorough. Time freed for Phase 2.
+Resumed run. Speculations: 0/25. Blockers: 0. One real bug found+fixed
+on resume (batch cap enforcement). rework on prior-run code: corrected
+the uncommitted batch backend before landing it (not counted as own
+rework). Phase 4 done. Next: P2e verification, then P5.
 
 ## Pointer back
 

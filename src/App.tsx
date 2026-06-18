@@ -36,6 +36,7 @@ import { AnalyzePanel } from "./components/AnalyzePanel";
 import { ArchiveView } from "./components/ArchiveView";
 import { AuditLogView } from "./components/AuditLogView";
 import { CommandPalette } from "./components/CommandPalette";
+import { BatchActionBar } from "./components/BatchActionBar";
 
 type View = "board" | "calendar" | "timetravel" | "archive" | "audit" | "settings";
 
@@ -336,14 +337,17 @@ function Board() {
   }
 
   return (
-    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
-      <div className="board">
-        <BayColumn tier="inbox" label="Inbox" />
-        <BayColumn tier="A" label="A" />
-        <BayColumn tier="B" label="B" />
-        <BayColumn tier="C" label="C" />
-      </div>
-    </DndContext>
+    <>
+      <BatchActionBar />
+      <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+        <div className="board">
+          <BayColumn tier="inbox" label="Inbox" />
+          <BayColumn tier="A" label="A" />
+          <BayColumn tier="B" label="B" />
+          <BayColumn tier="C" label="C" />
+        </div>
+      </DndContext>
+    </>
   );
 }
 

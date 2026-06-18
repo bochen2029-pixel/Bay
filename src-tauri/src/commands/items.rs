@@ -491,6 +491,175 @@ pub fn restore_item_inner(pool: &SqlitePool, id: &str) -> Result<Item, String> {
         .ok_or_else(|| "restored item not found in projection".to_string())
 }
 
+// ── batch operations (I-19) ───────────────────────────────────────
+//
+// Multi-item atomic operations. Each batch is a single write_events tx
+// — either all items in the batch are affected or none. No new
+// ITEM_BATCH_* event types: batch is a command-layer concept; each
+// item in the batch emits its own event (ITEM_STATE_CHANGED or
+// ITEM_DELETED) sharing one ts. The event schema stays clean.
+//
+// Cap enforcement: batch_set_state to Active in A/B respects the cap
+// across the whole batch. `write_events` builds the entire draft vector
+// BEFORE applying any draft to the projection, so `count_active_in_tier`
+// returns the pre-batch count on every iteration — the batch must
+// account for the items it is itself activating (see the incremental
+// counters in batch_set_state_inner). A batch that would overflow
+// returns CAP_EXCEEDED and the whole tx rolls back — atomic.
+// batch_delete has no cap concern (deleting frees slots).
+
+#[derive(Debug, Serialize)]
+pub struct BatchResult {
+    /// The item ids that actually changed. NO_OP items (already in the
+    /// target state) produce no event and are excluded.
+    pub affected_ids: Vec<String>,
+}
+
+#[tauri::command]
+pub fn batch_set_state(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    ids: Vec<String>,
+    state: ItemState,
+    blocked_reason: Option<String>,
+) -> Result<BatchResult, String> {
+    let result = batch_set_state_inner(&pool, ids, state, blocked_reason)?;
+    // Emit item_updated for each affected item (idempotent store
+    // handler). Read post-batch projection state for each.
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let live_items = db::items::list_active_items(&conn)?;
+    for id in &result.affected_ids {
+        if let Some(item) = live_items.iter().find(|i| &i.id == id) {
+            let _ = app.emit(ITEM_UPDATED_EVENT, item);
+        }
+    }
+    Ok(result)
+}
+
+pub fn batch_set_state_inner(
+    pool: &SqlitePool,
+    ids: Vec<String>,
+    target_state: ItemState,
+    blocked_reason: Option<String>,
+) -> Result<BatchResult, String> {
+    let blocked_reason = blocked_reason.map(|s| s.trim().to_string());
+    if target_state == ItemState::Blocked {
+        let reason = blocked_reason.as_deref().unwrap_or("");
+        if reason.is_empty() {
+            return Err("REASON_REQUIRED".into());
+        }
+    }
+
+    // Build all drafts in one tx; write_events appends + applies them
+    // atomically. Per-item validation (existence, no-op, cap) happens
+    // inside the build closure so a failure rolls back the whole batch.
+    let events = db::write_events(pool, |tx, _ts| {
+        // Track projected active counts as we go. write_events applies
+        // drafts only AFTER this closure returns the full vector, so
+        // count_active_in_tier reports the pre-batch count every time;
+        // we must add the activations this batch is itself making, or a
+        // batch that activates more items than the free slots would slip
+        // past. Only transitions INTO active in the capped tiers (A, B)
+        // matter — and batch_set_state never changes tier, so each
+        // item's tier is fixed across its state change.
+        let mut active_a: Option<i64> = None;
+        let mut active_b: Option<i64> = None;
+        let mut drafts = Vec::with_capacity(ids.len());
+        for id in &ids {
+            let current = db::items::read_item_by_id_tx(tx, id)?
+                .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+            if current.state == target_state {
+                // NO_OP for this item — skip it (don't error the whole
+                // batch; just exclude from drafts so its id is not
+                // reported as affected).
+                continue;
+            }
+            if target_state == ItemState::Active && current.state != ItemState::Active {
+                match current.tier {
+                    Tier::A => {
+                        let n = match active_a {
+                            Some(n) => n,
+                            None => db::items::count_active_in_tier(tx, Tier::A)?,
+                        };
+                        if n >= A_CAP as i64 {
+                            return Err("CAP_EXCEEDED".into());
+                        }
+                        active_a = Some(n + 1);
+                    }
+                    Tier::B => {
+                        let n = match active_b {
+                            Some(n) => n,
+                            None => db::items::count_active_in_tier(tx, Tier::B)?,
+                        };
+                        if n >= B_CAP as i64 {
+                            return Err("CAP_EXCEEDED".into());
+                        }
+                        active_b = Some(n + 1);
+                    }
+                    Tier::Inbox | Tier::C => {}
+                }
+            }
+            let payload = json!({
+                "state_before": current.state,
+                "state_after": target_state,
+                "blocked_reason": if target_state == ItemState::Blocked {
+                    blocked_reason.clone()
+                } else {
+                    None
+                },
+            });
+            drafts.push(EventDraft {
+                event_type: EventType::ItemStateChanged,
+                item_id: Some(id.clone()),
+                payload,
+            });
+        }
+        Ok(drafts)
+    })?;
+
+    // affected_ids = items that actually changed. NO_OP items produced
+    // no event, so they fall out here.
+    let affected_ids = events.into_iter().filter_map(|e| e.item_id).collect();
+    Ok(BatchResult { affected_ids })
+}
+
+#[tauri::command]
+pub fn batch_delete(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    ids: Vec<String>,
+) -> Result<BatchResult, String> {
+    let result = batch_delete_inner(&pool, ids)?;
+    // Emit item_deleted for each affected item (idempotent store
+    // handler removes from itemsByTier).
+    for id in &result.affected_ids {
+        let _ = app.emit(ITEM_DELETED_EVENT, DeletedIdPayload { id: id.clone() });
+    }
+    Ok(result)
+}
+
+pub fn batch_delete_inner(pool: &SqlitePool, ids: Vec<String>) -> Result<BatchResult, String> {
+    let events = db::write_events(pool, |tx, _ts| {
+        let mut drafts = Vec::with_capacity(ids.len());
+        for id in &ids {
+            // Confirm the item exists (non-deleted). A missing or
+            // already-deleted item errors the whole batch (atomic — the
+            // frontend only sends live, selected ids, so this is a guard
+            // not a routine path).
+            let _current = db::items::read_item_by_id_tx(tx, id)?
+                .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+            drafts.push(EventDraft {
+                event_type: EventType::ItemDeleted,
+                item_id: Some(id.clone()),
+                payload: json!({ "soft": true }),
+            });
+        }
+        Ok(drafts)
+    })?;
+    let affected_ids = events.into_iter().filter_map(|e| e.item_id).collect();
+    Ok(BatchResult { affected_ids })
+}
+
 /// Result of a successful swap — both items in their post-swap state.
 #[derive(Debug, Serialize)]
 pub struct SwapResult {
@@ -1728,5 +1897,176 @@ mod tests {
             prop_assert_eq!(result.leaving.tier, leaving_dest);
             prop_assert_eq!(result.entering.tier, Tier::A);
         });
+    }
+
+    // ── batch operations (I-19) ────────────────────────────────────
+
+    #[test]
+    fn batch_mark_done_marks_all_and_reports_affected() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "one".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::A, "two".into(), None, None).unwrap();
+        let c = create_item_inner(&pool, Tier::A, "three".into(), None, None).unwrap();
+
+        let result =
+            batch_set_state_inner(&pool, vec![a.id.clone(), b.id.clone(), c.id.clone()], ItemState::Done, None)
+                .unwrap();
+        assert_eq!(result.affected_ids.len(), 3);
+
+        // All three are done; none counts as active.
+        assert_eq!(count_active(&pool, Tier::A), 0);
+    }
+
+    #[test]
+    fn batch_set_state_skips_no_ops() {
+        // An item already in the target state produces no event and is
+        // not reported as affected.
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "active".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::A, "already-done".into(), None, None).unwrap();
+        set_item_state_inner(&pool, b.id.clone(), ItemState::Done, None).unwrap();
+
+        let result =
+            batch_set_state_inner(&pool, vec![a.id.clone(), b.id.clone()], ItemState::Done, None).unwrap();
+        // Only `a` actually changed.
+        assert_eq!(result.affected_ids, vec![a.id.clone()]);
+    }
+
+    #[test]
+    fn batch_set_state_blocked_requires_reason() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let err = batch_set_state_inner(&pool, vec![a.id.clone()], ItemState::Blocked, Some("  ".into()))
+            .unwrap_err();
+        assert_eq!(err, "REASON_REQUIRED");
+        // Nothing changed.
+        assert_eq!(count_active(&pool, Tier::A), 1);
+    }
+
+    #[test]
+    fn batch_set_state_blocked_applies_shared_reason() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::A, "y".into(), None, None).unwrap();
+        let result = batch_set_state_inner(
+            &pool,
+            vec![a.id.clone(), b.id.clone()],
+            ItemState::Blocked,
+            Some("waiting on review".into()),
+        )
+        .unwrap();
+        assert_eq!(result.affected_ids.len(), 2);
+        // Check the active count before holding a connection — the test
+        // pool is max_size=1, so count_active (which acquires its own
+        // connection) must not run while another is checked out.
+        assert_eq!(count_active(&pool, Tier::A), 0);
+        let conn = pool.get().unwrap();
+        let reason: String = conn
+            .query_row("SELECT blocked_reason FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(reason, "waiting on review");
+    }
+
+    #[test]
+    fn batch_set_state_to_active_rolls_back_on_cap_overflow() {
+        // Regression test for the batch cap-enforcement bug: write_events
+        // builds ALL drafts before applying any, so a naive per-item
+        // count_active check sees the same pre-batch count for every item
+        // and lets a batch overflow the cap. The fix tracks the
+        // projected count incrementally.
+        //
+        // Setup: A holds 3 active + 3 blocked. Unblocking all 3 blocked
+        // would make 6 active (cap is 5) — must fail atomically.
+        let pool = fresh_pool();
+        let mut blocked_ids = Vec::new();
+        for i in 0..3 {
+            let it = create_item_inner(&pool, Tier::A, format!("blk-{i}"), None, None).unwrap();
+            set_item_state_inner(&pool, it.id.clone(), ItemState::Blocked, Some("hold".into())).unwrap();
+            blocked_ids.push(it.id);
+        }
+        for i in 0..3 {
+            create_item_inner(&pool, Tier::A, format!("act-{i}"), None, None).unwrap();
+        }
+        assert_eq!(count_active(&pool, Tier::A), 3);
+
+        let err = batch_set_state_inner(&pool, blocked_ids.clone(), ItemState::Active, None)
+            .unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED");
+
+        // Atomic rollback: still exactly 3 active, all 3 still blocked.
+        assert_eq!(count_active(&pool, Tier::A), 3, "the batch must roll back entirely");
+        let conn = pool.get().unwrap();
+        for id in &blocked_ids {
+            let state: String = conn
+                .query_row("SELECT state FROM items WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(state, "blocked", "no item should have been unblocked");
+        }
+    }
+
+    #[test]
+    fn batch_set_state_to_active_within_cap_succeeds() {
+        // A holds 2 active + 2 blocked. Unblocking both → 4 active ≤ cap.
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::A, "act-0".into(), None, None).unwrap();
+        create_item_inner(&pool, Tier::A, "act-1".into(), None, None).unwrap();
+        let mut blocked_ids = Vec::new();
+        for i in 0..2 {
+            let it = create_item_inner(&pool, Tier::A, format!("blk-{i}"), None, None).unwrap();
+            set_item_state_inner(&pool, it.id.clone(), ItemState::Blocked, Some("hold".into())).unwrap();
+            blocked_ids.push(it.id);
+        }
+        assert_eq!(count_active(&pool, Tier::A), 2);
+
+        let result = batch_set_state_inner(&pool, blocked_ids, ItemState::Active, None).unwrap();
+        assert_eq!(result.affected_ids.len(), 2);
+        assert_eq!(count_active(&pool, Tier::A), 4);
+    }
+
+    #[test]
+    fn batch_set_state_missing_item_rolls_back() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "real".into(), None, None).unwrap();
+        let err = batch_set_state_inner(
+            &pool,
+            vec![a.id.clone(), "ghost-id".into()],
+            ItemState::Done,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
+        // `a` was not changed — the batch is atomic.
+        assert_eq!(count_active(&pool, Tier::A), 1);
+    }
+
+    #[test]
+    fn batch_delete_soft_deletes_all() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::Inbox, "a".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::Inbox, "b".into(), None, None).unwrap();
+        let c = create_item_inner(&pool, Tier::Inbox, "c".into(), None, None).unwrap();
+
+        let result = batch_delete_inner(&pool, vec![a.id.clone(), b.id.clone(), c.id.clone()]).unwrap();
+        assert_eq!(result.affected_ids.len(), 3);
+
+        let conn = pool.get().unwrap();
+        let live: i64 = conn
+            .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live, 0, "all three must be soft-deleted");
+    }
+
+    #[test]
+    fn batch_delete_missing_item_rolls_back() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::Inbox, "a".into(), None, None).unwrap();
+        let err = batch_delete_inner(&pool, vec![a.id.clone(), "ghost".into()]).unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
+        // `a` must still be live (atomic rollback).
+        let conn = pool.get().unwrap();
+        let deleted: i64 = conn
+            .query_row("SELECT deleted FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(deleted, 0);
     }
 }
