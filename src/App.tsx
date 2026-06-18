@@ -75,6 +75,42 @@ export default function App() {
       });
   }, [bootstrap]);
 
+  // I-17: Ctrl/Cmd+Z triggers undo_last_action. The backend emits
+  // item_updated/item_deleted for each affected item; the
+  // TauriEventBridge handlers refresh the store. Shift+Ctrl/Cmd+Z is
+  // reserved for a future redo (the undo itself appends a compensating
+  // event, so redo = undo the undo — not yet wired as a separate
+  // command, but the event log supports it).
+  useEffect(() => {
+    function handler(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        // Don't intercept when the user is typing in an input/textarea
+        // (e.g. editing a strip or the quick-capture modal) — they may
+        // want native undo. Only trigger on the board surface.
+        const target = e.target as HTMLElement | null;
+        if (target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)) {
+          return;
+        }
+        e.preventDefault();
+        invoke<unknown>("undo_last_action")
+          .then(() => {
+            // The backend emits item_updated/item_deleted events;
+            // TauriEventBridge handles store refresh. Nothing to do here.
+          })
+          .catch((err) => {
+            // NOTHING_TO_UNDO is expected when there's nothing to undo;
+            // surface other errors.
+            const msg = typeof err === "string" ? err : String(err);
+            if (msg !== "NOTHING_TO_UNDO") {
+              console.error("undo_last_action failed:", err);
+            }
+          });
+      }
+    }
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
+
   function handleView(v: View) {
     setView(v);
   }

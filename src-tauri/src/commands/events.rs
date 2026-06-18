@@ -192,6 +192,309 @@ pub fn rebuild_projection_inner(pool: &SqlitePool) -> Result<RebuildResult, Stri
     Ok(RebuildResult { items_affected })
 }
 
+// ── undo_last_action (I-17) ───────────────────────────────────────
+//
+// The event-sourcing payoff v1 underdelivered: a full undo over the
+// event log. Undo = append a compensating event (or events, for a
+// multi-event action like swap) in a single write_events tx. The undo
+// is itself an event — it lands in the append-only log, so it's
+// auditable and reversible (redo = undo the undo, or re-apply).
+//
+// "Action" = one or more events sharing a ts (a single write_events
+// tx). The most recent action is the one with the highest ts; if
+// multiple events share that ts (swap_move's two ITEM_MOVED events),
+// they're undone together.
+//
+// Compensation logic per event type:
+//   ITEM_CREATED     -> ITEM_DELETED (soft-delete)
+//   ITEM_EDITED      -> ITEM_EDITED (content_after -> content_before)
+//   ITEM_MOVED       -> ITEM_MOVED (tier/rank after -> before)
+//   ITEM_STATE_CHANGED -> ITEM_STATE_CHANGED (state_after -> before;
+//                       blocked_reason restored if before was blocked)
+//   ITEM_DATE_SET    -> ITEM_DATE_SET (value_after -> before)
+//   ITEM_DELETED     -> ITEM_RESTORED
+//   ITEM_RESTORED    -> ITEM_DELETED (re-soft-delete)
+//   LLM_SUGGESTION_* -> NOT undoable (advisory only; skip and look
+//                       further back). The LLM firewall holds: these
+//                       never touched the projection, so there's
+//                       nothing to undo.
+//
+// Cap enforcement: the compensating events route through the normal
+// projection handlers, so e.g. undoing a move into A (which would move
+// the item back out) doesn't hit caps; but undoing a delete (restore)
+// into a now-full A returns CAP_EXCEEDED. This is correct — the undo
+// is a real mutation subject to real invariants.
+
+#[derive(Debug, Clone, Serialize)]
+pub struct UndoResult {
+    /// "Undone ITEM_EDITED on item X" — human-readable.
+    pub description: String,
+    /// The event types that were compensated (one per undone event).
+    pub undone_event_types: Vec<String>,
+    /// The item ids affected by the compensating events.
+    pub affected_item_ids: Vec<String>,
+}
+
+#[tauri::command]
+pub fn undo_last_action(
+    app: tauri::AppHandle,
+    pool: State<'_, SqlitePool>,
+) -> Result<UndoResult, String> {
+    let result = undo_last_action_inner(&pool)?;
+    // Emit the appropriate frontend event per affected item so the
+    // store's idempotent onItemCreated/onItemUpdated/onItemDeleted
+    // handlers refresh the UI. We read the post-undo projection state
+    // to decide which event to emit: if the item is now deleted, emit
+    // item_deleted; if it was just restored (re-created from deleted),
+    // emit item_created; otherwise item_updated.
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    use tauri::Emitter;
+    for id in &result.affected_item_ids {
+        // Read the item's current projection state (including deleted).
+        // Column order: deleted, blocked_reason, content, tier, rank,
+        // state, start_at, due_at, created_at, updated_at.
+        let row: Option<(i64, Option<String>, String, String, String, String, Option<i64>, Option<i64>, i64, i64)> = conn
+            .query_row(
+                "SELECT deleted, blocked_reason, content, tier, rank, state, start_at, due_at, created_at, updated_at \
+                 FROM items WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
+            )
+            .ok();
+        if let Some((deleted, blocked_reason, content, tier, rank, state, start_at, due_at, created_at, updated_at)) = row {
+            let item = crate::domain::Item {
+                id: id.clone(),
+                content,
+                tier: crate::domain::Tier::from_sql(tier.as_str()).unwrap_or(crate::domain::Tier::Inbox),
+                rank,
+                state: crate::domain::ItemState::from_sql(state.as_str()).unwrap_or(crate::domain::ItemState::Active),
+                blocked_reason,
+                start_at,
+                due_at,
+                created_at,
+                updated_at,
+                deleted: deleted != 0,
+            };
+            // If the item is now deleted, emit item_deleted so the
+            // store removes it. Otherwise emit item_updated; the store's
+            // onItemUpdated re-inserts into the correct tier (handles
+            // restore-into-tier too, since the item moves from deleted
+            // to alive with a tier).
+            if deleted != 0 {
+                let _ = app.emit("item_deleted", serde_json::json!({ "id": id }));
+            } else {
+                let _ = app.emit("item_updated", &item);
+            }
+        }
+    }
+    Ok(result)
+}
+
+pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
+    use crate::db::EventDraft;
+    use crate::domain::EventType;
+    use serde_json::json;
+
+    // Find the most recent user-action event. Skip LLM_SUGGESTION_*
+    // events (advisory only — nothing to undo).
+    //
+    // "Action" = the single most recent non-LLM event, PLUS — if it's
+    // an ITEM_MOVED — the event immediately before it (by id) IF that
+    // event shares its ts AND is also ITEM_MOVED. The only command
+    // that produces two same-ts ITEM_MOVED events is swap_move (the
+    // two-event atomic swap). All other commands use write_event
+    // (singular), so even if two separate calls happen to share a ms
+    // timestamp, they're separate actions and undo handles one at a
+    // time. This avoids the over-grouping bug where a fast create+edit
+    // sharing a ms would be undone together.
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    // Read the most recent non-LLM event (by id desc, limit 1).
+    let last_event: Option<Event> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, ts, type, item_id, payload FROM events \
+                 WHERE type NOT IN ('LLM_SUGGESTION_GENERATED','LLM_SUGGESTION_ACCEPTED','LLM_SUGGESTION_REJECTED') \
+                 ORDER BY id DESC LIMIT 1",
+            )
+            .map_err(|e| format!("prepare last event: {e}"))?;
+        let mut rows = stmt
+            .query_map([], parse_event_row)
+            .map_err(|e| format!("query last event: {e}"))?;
+        rows.next().transpose().map_err(|e| format!("last event row: {e}"))?
+    };
+    drop(conn);
+
+    let last = match last_event {
+        Some(e) => e,
+        None => return Err("NOTHING_TO_UNDO".into()),
+    };
+
+    // If last is ITEM_MOVED, check whether the event before it (by id)
+    // is also ITEM_MOVED with the same ts. If so, they're a swap pair.
+    let mut action_events: Vec<Event> = vec![last.clone()];
+    if last.event_type == EventType::ItemMoved {
+        let prev_events = get_events_inner(pool, None, None, None, None)?;
+        // Find the event with the largest id < last.id.
+        let prev = prev_events
+            .iter()
+            .filter(|e| e.id < last.id)
+            .max_by_key(|e| e.id);
+        if let Some(prev) = prev {
+            if prev.event_type == EventType::ItemMoved && prev.ts == last.ts {
+                // Swap pair: undo both, in reverse (LIFO) order.
+                action_events = vec![last.clone(), prev.clone()];
+            }
+        }
+    }
+
+    // Build compensating drafts. Iterate in REVERSE order (LIFO) so
+    // that, e.g., a swap's two ITEM_MOVED events unwind correctly.
+    // For single-event actions, reverse is a no-op.
+    let mut drafts: Vec<EventDraft> = Vec::new();
+    let mut undone_types: Vec<String> = Vec::new();
+    let mut affected_ids: Vec<String> = Vec::new();
+    let mut descriptions: Vec<String> = Vec::new();
+
+    for event in action_events.iter().rev() {
+        let item_id = match &event.item_id {
+            Some(id) => id.clone(),
+            None => continue, // non-item event; skip
+        };
+        let draft = match event.event_type {
+            EventType::ItemCreated => {
+                descriptions.push(format!("Undone ITEM_CREATED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemDeleted,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "soft": true }),
+                }
+            }
+            EventType::ItemEdited => {
+                let content_before = event.payload["content_before"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_EDITED payload missing content_before: {}", event.id))?;
+                let content_after = event.payload["content_after"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_EDITED payload missing content_after: {}", event.id))?;
+                descriptions.push(format!("Undone ITEM_EDITED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemEdited,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({
+                        "content_before": content_after,
+                        "content_after": content_before,
+                    }),
+                }
+            }
+            EventType::ItemMoved => {
+                let tier_before = event.payload["tier_before"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_MOVED payload missing tier_before: {}", event.id))?;
+                let rank_before = event.payload["rank_before"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_MOVED payload missing rank_before: {}", event.id))?;
+                let tier_after = event.payload["tier_after"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_MOVED payload missing tier_after: {}", event.id))?;
+                let rank_after = event.payload["rank_after"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_MOVED payload missing rank_after: {}", event.id))?;
+                descriptions.push(format!("Undone ITEM_MOVED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemMoved,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({
+                        "tier_before": tier_after,
+                        "rank_before": rank_after,
+                        "tier_after": tier_before,
+                        "rank_after": rank_before,
+                        "reason": "undo",
+                    }),
+                }
+            }
+            EventType::ItemStateChanged => {
+                let state_before = event.payload["state_before"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_STATE_CHANGED payload missing state_before: {}", event.id))?;
+                let state_after = event.payload["state_after"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_STATE_CHANGED payload missing state_after: {}", event.id))?;
+                let blocked_reason = if state_before == "blocked" {
+                    event.payload["blocked_reason"].as_str().map(|s| s.to_string())
+                } else {
+                    None
+                };
+                descriptions.push(format!("Undone ITEM_STATE_CHANGED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemStateChanged,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({
+                        "state_before": state_after,
+                        "state_after": state_before,
+                        "blocked_reason": blocked_reason,
+                    }),
+                }
+            }
+            EventType::ItemDateSet => {
+                let field = event.payload["field"]
+                    .as_str()
+                    .ok_or_else(|| format!("ITEM_DATE_SET payload missing field: {}", event.id))?;
+                let value_before = &event.payload["value_before"];
+                let value_after = &event.payload["value_after"];
+                descriptions.push(format!("Undone ITEM_DATE_SET on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemDateSet,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({
+                        "field": field,
+                        "value_before": value_after,
+                        "value_after": value_before,
+                    }),
+                }
+            }
+            EventType::ItemDeleted => {
+                descriptions.push(format!("Undone ITEM_DELETED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemRestored,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({}),
+                }
+            }
+            EventType::ItemRestored => {
+                descriptions.push(format!("Undone ITEM_RESTORED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemDeleted,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "soft": true }),
+                }
+            }
+            // LLM events are advisory-only; nothing to undo. This
+            // branch is unreachable because the query filtered them
+            // out, but the match must be exhaustive.
+            EventType::LlmSuggestionGenerated
+            | EventType::LlmSuggestionAccepted
+            | EventType::LlmSuggestionRejected => continue,
+        };
+        undone_types.push(event.event_type.as_sql().to_string());
+        affected_ids.push(item_id);
+        drafts.push(draft);
+    }
+
+    if drafts.is_empty() {
+        return Err("NOTHING_TO_UNDO".into());
+    }
+
+    // drafts is already in reverse (LIFO) order from the .rev() loop
+    // above. Append all compensating drafts in one atomic tx.
+    let _ = db::write_events(pool, |_tx, _ts| Ok(drafts))?;
+
+    Ok(UndoResult {
+        description: descriptions.join("; "),
+        undone_event_types: undone_types,
+        affected_item_ids: affected_ids,
+    })
+}
+
 // ── helper ────────────────────────────────────────────────────────
 
 fn parse_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
@@ -596,5 +899,178 @@ mod tests {
             })
             .unwrap();
         rows.collect::<Result<_, _>>().unwrap()
+    }
+
+    // ── undo_last_action tests (I-17) ──────────────────────────────
+
+    #[test]
+    fn undo_nothing_returns_nothing_to_undo() {
+        let pool = fresh_pool();
+        let err = undo_last_action_inner(&pool).unwrap_err();
+        assert_eq!(err, "NOTHING_TO_UNDO");
+    }
+
+    #[test]
+    fn undo_create_soft_deletes_the_item() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "created".into(), None, None).unwrap();
+        assert!(!item.deleted);
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types, vec!["ITEM_CREATED"]);
+        assert_eq!(result.affected_item_ids, vec![item.id.clone()]);
+
+        // The item is now soft-deleted in the projection.
+        let conn = pool.get().unwrap();
+        let deleted: i64 = conn
+            .query_row(
+                "SELECT deleted FROM items WHERE id = ?1",
+                [&item.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(deleted, 1, "undo of create must soft-delete the item");
+    }
+
+    #[test]
+    fn undo_edit_restores_previous_content() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "original".into(), None, None).unwrap();
+        edit_item_inner(&pool, item.id.clone(), "edited".into()).unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types, vec!["ITEM_EDITED"]);
+
+        // Content restored to "original".
+        let conn = pool.get().unwrap();
+        let content: String = conn
+            .query_row(
+                "SELECT content FROM items WHERE id = ?1",
+                [&item.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(content, "original", "undo of edit must restore content_before");
+    }
+
+    #[test]
+    fn undo_move_restores_previous_tier_and_rank() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "mover".into(), None, None).unwrap();
+        let original_rank = item.rank.clone();
+        move_item_inner(&pool, item.id.clone(), Tier::A, None, Some("to A".into())).unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types, vec!["ITEM_MOVED"]);
+
+        // Item back in Inbox with original rank.
+        let conn = pool.get().unwrap();
+        let (tier, rank): (String, String) = conn
+            .query_row(
+                "SELECT tier, rank FROM items WHERE id = ?1",
+                [&item.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(tier, "inbox", "undo of move must restore tier_before");
+        assert_eq!(rank, original_rank, "undo of move must restore rank_before");
+    }
+
+    #[test]
+    fn undo_state_change_restores_previous_state() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "stated".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types, vec!["ITEM_STATE_CHANGED"]);
+
+        let conn = pool.get().unwrap();
+        let state: String = conn
+            .query_row(
+                "SELECT state FROM items WHERE id = ?1",
+                [&item.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "active", "undo of state change must restore state_before");
+    }
+
+    #[test]
+    fn undo_delete_restores_the_item() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "doomed".into(), None, None).unwrap();
+        delete_item_inner(&pool, &item.id).unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types, vec!["ITEM_DELETED"]);
+
+        let conn = pool.get().unwrap();
+        let deleted: i64 = conn
+            .query_row(
+                "SELECT deleted FROM items WHERE id = ?1",
+                [&item.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(deleted, 0, "undo of delete must restore the item");
+    }
+
+    #[test]
+    fn undo_skips_llm_events_and_undoes_the_real_action_before() {
+        // LLM_SUGGESTION_GENERATED is advisory-only; undo must skip it
+        // and undo the real user action before it (the create).
+        use crate::db::{write_event, EventDraft};
+        use crate::domain::EventType;
+        use serde_json::json;
+
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::Inbox, "real".into(), None, None).unwrap();
+
+        // Append an LLM event after the create (simulating an analyze run).
+        let _ = write_event(&pool, |_tx, _ts| {
+            Ok(EventDraft {
+                event_type: EventType::LlmSuggestionGenerated,
+                item_id: None,
+                payload: json!({
+                    "kind": "analyze",
+                    "scope": { "since_ts": 0, "until_ts": 0, "event_count": 1 },
+                    "model": "test",
+                    "observations": []
+                }),
+            })
+        })
+        .unwrap();
+
+        // Undo must skip the LLM event and undo the create.
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(
+            result.undone_event_types,
+            vec!["ITEM_CREATED"],
+            "undo must skip LLM events and undo the real action before"
+        );
+
+        let conn = pool.get().unwrap();
+        let deleted: i64 = conn
+            .query_row(
+                "SELECT deleted FROM items WHERE id = ?1",
+                [&item.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(deleted, 1, "the create must be undone (item soft-deleted)");
+    }
+
+    #[test]
+    fn undo_is_itself_an_event_in_the_log() {
+        // The undo appends a compensating event; it's auditable.
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::Inbox, "auditable".into(), None, None).unwrap();
+        let events_before = get_events_inner(&pool, None, None, None, None).unwrap().len();
+        assert_eq!(events_before, 1);
+
+        let _ = undo_last_action_inner(&pool).unwrap();
+        let events_after = get_events_inner(&pool, None, None, None, None).unwrap().len();
+        assert_eq!(events_after, 2, "undo must append a compensating event to the log");
     }
 }

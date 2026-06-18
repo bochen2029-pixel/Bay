@@ -127,6 +127,7 @@ pub fn run() {
             commands::events::get_items_at,
             commands::events::list_archived_items,
             commands::events::rebuild_projection,
+            commands::events::undo_last_action,
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::set_llm_api_key,

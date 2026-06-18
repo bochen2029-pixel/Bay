@@ -151,3 +151,29 @@
 - .bay-show-all CSS added (dashed border, matches .bay-show-done style).
 - pnpm build clean (385 modules); pnpm test 85/85.
 - I-16 save point: committing. Next: I-17 (undo/redo stack).
+
+## 2026-06-17T04:45:00Z — Phase 4 I-17 undo (Ctrl+Z)
+
+- New backend command: undo_last_action (commands/events.rs). Finds the
+  most recent non-LLM event; if it's an ITEM_MOVED and the event before
+  it shares ts + is also ITEM_MOVED, treats them as a swap pair (undo
+  both). Otherwise undoes the single most-recent event. Compensation
+  per type: CREATED->DELETED, EDITED->edit-back, MOVED->move-back,
+  STATE_CHANGED->state-back, DATE_SET->date-back, DELETED->RESTORED,
+  RESTORED->DELETED. LLM events skipped (advisory-only).
+- Compensating drafts appended in one write_events tx (atomic). LIFO
+  order so swap pairs unwind correctly.
+- The undo IS itself an event in the log (auditable; redo = undo the
+  undo, not yet wired as separate command).
+- Frontend: Ctrl/Cmd+Z triggers undo_last_action. Doesn't intercept
+  when typing in input/textarea (native undo preserved). Backend emits
+  item_updated/item_deleted; TauriEventBridge refreshes store.
+- Design subtlety resolved: "action" = single event OR swap pair (two
+  same-ts ITEM_MOVED). NOT "all same-ts events" — that over-grouped
+  fast create+edit sharing a ms. The swap-pair detection (ITEM_MOVED
+  preceded by same-ts ITEM_MOVED) is the only legitimate multi-event
+  action; all other commands use write_event (singular).
+- 8 new undo tests (create/edit/move/state/delete/LLM-skip/audit/
+  nothing-to-undo). cargo test 121/121. pnpm build clean. pnpm test
+  85/85.
+- I-17 save point: committing. Next: I-18 (audit-log search).
