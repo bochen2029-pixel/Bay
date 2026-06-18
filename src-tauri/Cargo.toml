@@ -4,6 +4,12 @@ version = "0.1.0"
 description = "Bay — single-user desktop task manager with capacity caps"
 edition = "2021"
 rust-version = "1.77"
+# The crate ships two binaries — `bay` (the Tauri app) and the
+# `rank_fixture_gen` dev tool in src/bin/. `tauri dev` runs a bare
+# `cargo run`, which is ambiguous with >1 bin; pin the app as the default
+# so `cargo run` / `tauri dev` launches `bay`. (`cargo run --bin
+# rank_fixture_gen` still works explicitly.)
+default-run = "bay"
 
 [lib]
 name = "bay_lib"

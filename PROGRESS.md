@@ -320,3 +320,17 @@
   This is a session checkpoint + handoff, not a release.
 - Final gates: cargo 152/152 warning-clean, vitest 93/93, pnpm build
   clean, store-logic smoke green.
+
+## 2026-06-17T21:00:00Z — Hotfix: `tauri dev` couldn't pick a binary
+
+- Operator ran `pnpm tauri dev` → exit 101: "`cargo run` could not
+  determine which binary to run. available binaries: bay,
+  rank_fixture_gen." Root cause: the crate has 2 bins (the `bay` app +
+  the `rank_fixture_gen` dev tool from src/bin/, added in the v0.1.1
+  cleanup) and no `default-run`, so `tauri dev`'s bare `cargo run` is
+  ambiguous. Latent since the 2nd bin landed; surfaced on first GUI run.
+- Fix: `default-run = "bay"` in `[package]` (src-tauri/Cargo.toml) — the
+  exact key cargo's error recommends. `cargo run --bin rank_fixture_gen`
+  still works explicitly.
+- Verified: `cargo metadata` → `default_run: "bay"`; `cargo build --bin
+  bay` clean. The ambiguity is now structurally impossible.
