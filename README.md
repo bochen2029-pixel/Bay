@@ -92,11 +92,31 @@ month. Click a day for the list; click an item to jump back to the board.
 **Time-travel.** Scrubber replays the event log to a point in time. Board
 renders read-only. Useful for "what was this bay like Tuesday?"
 
+**Command palette.** `Cmd/Ctrl+K` opens a fuzzy palette: jump to any item,
+create in a tier, switch views, run Analyze, open Settings, or restore from
+the archive — all from the keyboard.
+
+**Undo.** `Ctrl/Cmd+Z` undoes your last action by appending a compensating
+event (the event log is the product, so undo is just a query against it).
+Works across creates, edits, moves, state changes, deletes, swaps — and
+whole batches as one step.
+
+**Batch operations.** Tick the checkbox on any strip (Shift-click for a
+range) to multi-select, then mark done, mark active, or delete the whole
+selection at once. Each batch is one atomic transaction and one undo step.
+
+**Audit log.** The Audit view is full-text search over the event log —
+filter by type, item, or date. The log is a first-class surface, not a
+hidden implementation detail.
+
 **Analyze (optional).** If you've configured an LLM endpoint (OpenAI,
 Ollama, LM Studio, etc.), the Analyze button compresses the last N days of
-activity into aggregates, asks the LLM for pattern observations, and shows
-them. The LLM never touches your items — only the event log, via Mark
-reviewed / Dismiss, records what it said and what you did with it.
+activity into aggregates and asks the LLM for pattern observations. The LLM
+may also propose a small re-org — move or complete a few items — shown as a
+diff you accept or reject per item. Nothing is applied until you accept, and
+even then the deterministic core does the write under the same cap rules.
+The LLM never touches your items directly; the event log records what it
+said and what you did with it.
 
 **LAN capture (optional).** Enable in Settings → Capture. A tiny HTTP
 server binds on your LAN port (default 47821). Scan the QR on your phone to
@@ -108,10 +128,13 @@ hardening for coffee-shop WiFi.
 | Shortcut | Effect |
 |---|---|
 | `Ctrl+Alt+N` (configurable) | Open quick-capture modal |
+| `Cmd/Ctrl+K` | Open the command palette |
+| `Ctrl/Cmd+Z` | Undo the last action (incl. batches) |
 | `Enter` in modal | Commit to Inbox |
 | `Ctrl+Enter` in modal | Commit + open inspector |
-| `Esc` in any modal | Cancel |
+| `Esc` in any modal / clears a selection | Cancel |
 | `Shift+Enter` in textareas | Newline |
+| Strip checkbox (`Shift`-click) | Multi-select for batch ops |
 | Drag grip `≡` | Reorder / move |
 
 ## Architecture

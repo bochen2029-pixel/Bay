@@ -77,3 +77,45 @@
 
 Each increment prompt added when its phase ships, with the same
 scope/out-of-scope/demo/verify structure as I-01..I-14.
+
+---
+
+## Second pass (v1.8 / v1.7 / v1.5) — Phase 4 + P2e + I-20
+
+> Appended at the session-end consolidation after the run resumed
+> (prior substrate hit quota). Reconciles the docs with what shipped
+> AFTER the Phase 3 bump. Full operator accept/reject queue is in
+> `REVIEW_QUEUE.md`.
+
+### What changed (now reflected in the docs)
+- **Phase 4 (I-15..I-19)** shipped: command palette, C-tier collapse
+  (>50), undo (Ctrl+Z, batch-aware via `(ts,type)` action grouping),
+  audit-log search, batch operations (atomic `batch_set_state` /
+  `batch_delete`; no new event types).
+- **P2e** fixed two BLOCKING bugs: undo-of-unblock now preserves the
+  outgoing `blocked_reason` (ITEM_STATE_CHANGED payload semantics
+  clarified — reason carried when `blocked` is on either side);
+  `restore_item` is now cap-gated (JOINT_WRONG vs `caps.json` #12).
+- **I-20** LLM re-org proposals: `analyze` may return `proposals`;
+  `accept_suggestion(ops)` applies a human-accepted diff atomically and
+  populates `LLM_SUGGESTION_ACCEPTED.resulting_event_ids`. The system
+  prompt evolved "observe only" → "observe + optionally propose." The
+  firewall is unchanged (LLM never writes).
+
+### Doc edits made this pass
+- CLAUDE.md → v1.8 (Current state rewritten).
+- SPEC.md → v1.7 (§2.10, §3.5 batch ops, §3.6 undo, §4.3
+  resulting_event_ids + ITEM_STATE_CHANGED blocked_reason, §5.1 IPC
+  table + ReorgOp, §8.2 prompt, §8.7 re-org accept path, §9 delivered,
+  §10.5/§10.12 amendment notes).
+- PROMPTS.md → v1.5 (full I-15..I-20 increment prompts; I-21..I-27 stay
+  a forward-reference to `FUTURE_WORK.md`).
+
+### Operator decisions to ratify (see REVIEW_QUEUE.md)
+- System prompt "observe → observe+propose" reads as the doctrine's
+  preserved v2 re-org surface, not a firewall change. Confirm.
+- I-21 (recurring) + the `events.txn_id` schema change (QUESTIONS Q01)
+  were DEFERRED to operator review rather than self-authorized.
+
+Remove this file once the operator has reviewed both passes (Phase 3 +
+this one).

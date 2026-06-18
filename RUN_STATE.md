@@ -2,7 +2,7 @@
 
 > Postcard to future-self. Kept current enough to BE the compaction
 > brief. If this file is stale, the run is lost. Updated every save
-> point. Last updated: 2026-06-17T18:30:00Z (I-19 close, run resumed).
+> point. Last updated: 2026-06-17T20:30:00Z (session-end consolidation).
 
 ## Run resumed (substrate handoff)
 
@@ -13,20 +13,26 @@ Charter is honored as operator intent (not edited).
 
 ## Current task
 
-**Phase 4 complete (I-15..I-19).** I-19 batch operations just landed:
-backend cap bug fixed (+ regression test), undo generalized to
-batch-undo via (ts,type) grouping, frontend multi-select + BatchActionBar.
-cargo 139/139, vitest 90/90, builds clean.
+**Session-end consolidation (clean checkpoint).** Phase 4 (I-15..I-19),
+P2e (2 BLOCKING bugs fixed), and Phase 5 I-20 (LLM re-org accept-path)
+are all DONE and committed. Doctrine reconciled to v1.8/v1.7/v1.5;
+README, FUTURE_WORK.md, REVIEW_QUEUE.md, and memory updated. Gates:
+cargo 152/152, vitest 93/93, warning-clean.
 
-## Next concrete action
+## Next concrete action (next session)
 
-**P2e — cold-context two-pass verification.** The prior run dispatched
-2 verifier subagents but they never returned (quota). The non-LLM oracle
-gate (property + golden) is GREEN, which is the authority per charter §9.
-Re-dispatch cold-context `verifier` subagents over the 6 critical
-modules + the new batch/undo code; record findings in VERIFIED.md; fix
-any BLOCKING drift. Then Phase 5 (I-20 LLM re-org accept-path populating
-resulting_event_ids; I-21 recurring tasks; I-22 LLM streaming).
+**Do txn_id first, then I-21.** Per QUESTIONS Q01 + FUTURE_WORK.md:
+recurring-task completion is a mixed-type atomic action whose correct
+undo requires a transaction-id column on `events` (migration 003) — a
+schema change to the append-only core that was deferred to operator
+review rather than self-authorized at the tail of this run. With txn_id
+in place, the (ts,type) undo limitation (Q01) is also resolved. Then
+build I-21 (recurrence design fully specced in FUTURE_WORK.md), then
+I-22 streaming, then Phase 6 (operator sign-off recommended — several
+items re-litigate the "Cut from v1" list). Highest-value standalone
+follow-up: a generic golden-case runner (check-golden.py only checks
+existence, not execution — why the P2e JOINT_WRONG slipped past green
+tests).
 
 ## Blocking issues
 
@@ -77,15 +83,18 @@ None yet. Phase 2e (two-pass verification) will dispatch the
 
 ## Last save point
 
-I-19 close: `feat(I-19): batch operations` (about to commit). All gates
-green: cargo 139/139, vitest 90/90, builds clean, store-logic smoke OK.
+I-20 close: `feat(I-20): LLM re-org proposals` (cbad5b2). Then P2e fixes
+(fa77ebb) and the consolidation docs commit. All gates green: cargo
+152/152, vitest 93/93, builds clean, store-logic smoke OK.
 
 ## Runway snapshot
 
-Resumed run. Speculations: 0/25. Blockers: 0. One real bug found+fixed
-on resume (batch cap enforcement). rework on prior-run code: corrected
-the uncommitted batch backend before landing it (not counted as own
-rework). Phase 4 done. Next: P2e verification, then P5.
+Resumed run, session ending. Speculations: 1 (Q01, default applied).
+Blockers: 0. Bugs found+fixed: 3 (batch cap enforcement on resume; +2
+BLOCKING from P2e cold-context verification — undo-unblock CHECK,
+restore cap gap). Shipped: Phase 4 (I-15..I-19) completion of I-19, P2e,
+I-20. Deferred (clean foundational-blocker stop): I-21 (needs txn_id),
+I-22, Phase 6. See REVIEW_QUEUE.md for the operator accept/reject queue.
 
 ## Pointer back
 

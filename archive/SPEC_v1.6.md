@@ -1,30 +1,29 @@
 # SPEC.md — Bay
 
-> v1.7 — 2026-06-17. v0.2.0 revamp in progress. Reconciles the spec
-> with Phase 4 (I-15..I-19), the P2e cold-context fixes, and Phase 5
-> I-20 (LLM re-org proposals). All committed and green (cargo 152/152,
-> vitest 93/93). Changes:
->   - §3 gains a batch-operations note (I-19: multi-select → atomic
->     batch state-change/delete; command-layer, no new event types; one
->     tx = one undoable action).
->   - §4.3 `LLM_SUGGESTION_ACCEPTED.resulting_event_ids` is no longer
->     "always empty" — populated by a human-accepted re-org via
->     `accept_suggestion(ops)` since I-20; empty for an observations-only
->     acknowledgement.
->   - §4.3 `ITEM_STATE_CHANGED.blocked_reason` is carried whenever
->     `blocked` is on EITHER side of the transition (P2e fix (a)); apply
->     only consumes it when `state_after == blocked`.
->   - §8 LLM scope: "observe only" → the LLM may now OPTIONALLY propose a
->     re-org (move/done/active) presented as a human-accepted/rejected
->     diff. Firewall unchanged: LLM never writes; deterministic tier
->     applies on accept.
->   - §9 gains "Post-v0.2.0-correctness delivered (Phase 4 + Phase 5
->     I-20)" — I-15..I-20 + the two P2e fixes (restore cap gate;
->     unblock-reason preservation).
-> No payload schema changes that break existing event logs (new fields
-> are populated, not renamed/removed). Co-pass with CLAUDE.md v1.7 →
-> v1.8 and PROMPTS.md v1.4 → v1.5. Prior versions through
-> archive/SPEC_v1.6.md.
+> v1.6 — 2026-06-17. v0.2.0 revamp in progress. Reconciles spec with
+> the v0.2.0 Phase 2 correctness layer and fixes accumulated drift:
+>   - §5.1 `bootstrap` return shape corrected to match code
+>     (`{items, settings}` — the `lanCapture` field was never
+>     implemented; the frontend calls `get_lan_capture_status`
+>     separately when needed).
+>   - §6 module layout reconciled with the actual flatter tree
+>     (bootstrap in lib.rs; swap in commands/items.rs; capture as one
+>     capture/mod.rs + capture.html; settings in settings.rs; no
+>     separate error.rs/tracing.rs/db/projection.rs).
+>   - §6.2 frontend deps: removed `@tauri-apps/plugin-global-shortcut`
+>     (hotkey is Rust-side; surfaces to JS only as
+>     `quick_capture_requested`).
+>   - §4.4 DB-enforced invariants (migration 002: append-only trigger
+>     on `events` + items CHECK constraints).
+>   - §4.5 Golden cases (operator-owned ground truth; contracts/golden/).
+>   - §4.6 ProjectionEvent — type-level LLM firewall.
+>   - §11 Property tests (proptest; the non-LLM oracle).
+>   - §9 gains a "Post-v1.1 delivered (v0.2.0 correctness layer)"
+>     subsection.
+> No payload schema changes that break existing event logs. The new
+> `ProjectionEvent` type is internal (Rust-only); the JSON event
+> payload schema (§4.3) is unchanged. Co-pass with CLAUDE.md v1.6 →
+> v1.7. Prior versions in archive/.
 
 > Implementation specification. Scope-locked by `CLAUDE.md`. All design decisions in `CLAUDE.md` are authoritative; this document translates them into buildable detail without introducing new scope.
 
@@ -387,7 +386,7 @@ Single HTML page. Mobile-optimized. Rendered at `GET /`.
 └─────────────────────────────────────────────────────┘
 ```
 
-`Mark reviewed` (observations-only, no accepted ops) emits `LLM_SUGGESTION_ACCEPTED` with empty `resulting_event_ids` — the acknowledgement case (§10.5). When the analysis includes proposals (I-20), the panel additionally renders an accept/reject diff; accepting a subset routes through `accept_suggestion(ops)`, which populates `resulting_event_ids` (§8.7). `Dismiss` emits `LLM_SUGGESTION_REJECTED`.
+`Mark reviewed` emits `LLM_SUGGESTION_ACCEPTED` (with empty `resulting_event_ids` in v1 — advisory-only; see §10). `Dismiss` emits `LLM_SUGGESTION_REJECTED`.
 
 ---
 
@@ -493,38 +492,6 @@ else:
 
 Intra-tier drag skips the modal entirely. One `ITEM_MOVED` event, no reason.
 
-### 3.5 Batch operations (I-19)
-
-Strips are multi-selectable (shift-click extends a range). A multi-select
-acts on all selected items at once via two command-layer batch ops:
-`batch_set_state` and `batch_delete`. These add **no new event types** —
-each selected item emits its own `ITEM_STATE_CHANGED` / `ITEM_DELETED`,
-and the whole set is written in **one** `write_events` transaction
-sharing a single `ts`. Consequences:
-
-- **Atomic**: the batch commits whole or rolls back whole (the §11
-  `write_events` atomicity property covers it).
-- **One undoable action**: undo (§3.6 / I-17) treats the most-recent
-  events sharing `(ts, type)` as a single action, so one Ctrl+Z reverses
-  the entire batch (Q01 in `QUESTIONS.md` documents the known limitation
-  — coincident-`ts` actions of the same type are grouped; the
-  transaction-id fix is deferred).
-- **Cap-enforced across the whole batch**: a batch state-change that
-  would activate items into A/B is checked against the cap using
-  incremental projected counters, so a batch cannot smuggle a tier over
-  its cap.
-
-### 3.6 Undo (I-17)
-
-Ctrl+Z appends **compensating events** over the log — never deletes or
-rewrites history (CLAUDE.md §3). Per event type: `ITEM_CREATED` →
-`ITEM_DELETED`; `ITEM_EDITED` → edit-back; `ITEM_MOVED` → move-back;
-`ITEM_STATE_CHANGED` → state-back (restoring the prior `blocked_reason`
-where applicable — see §4.3); `ITEM_DATE_SET` → date-back;
-`ITEM_DELETED` → `ITEM_RESTORED`; `ITEM_RESTORED` → `ITEM_DELETED`. An
-"action" is the most-recent run of events sharing `(ts, type)`, so undo
-generalizes to batch-undo (§3.5).
-
 ---
 
 ## 4. Event payload schemas
@@ -594,17 +561,7 @@ Invariant: `tier_before != tier_after` OR `rank_before != rank_after`. (No-op mo
   "blocked_reason": "string | null"
 }
 ```
-`blocked_reason` is carried whenever `blocked` is on **either** side of
-the transition: entering blocked (`state_after == "blocked"`) carries
-the new reason (required, non-empty); leaving blocked
-(`state_before == "blocked"`) carries the reason being cleared,
-preserved so undo can restore it (P2e fix (a) — without this, undoing an
-unblock wrote `state == "blocked"` with a null reason and tripped the
-migration-002 `blocked ⇒ reason` CHECK). `apply_event_to_projection`
-only **consumes** `blocked_reason` when `state_after == "blocked"`
-(otherwise the projected `blocked_reason` is cleared to null); the
-outgoing reason on a leave-blocked event is informational, read back
-only by undo.
+`blocked_reason` required when `state_after == "blocked"`, otherwise null.
 
 **ITEM_DATE_SET**
 ```json
@@ -652,12 +609,7 @@ Clears `items.deleted` (sets to 0). Emitted only via the undo-delete toast path 
   "resulting_event_ids": ["number"]
 }
 ```
-`resulting_event_ids` is populated by a human-accepted re-org via
-`accept_suggestion(ops)` (since I-20 — the ids of the `ITEM_MOVED` /
-`ITEM_STATE_CHANGED` events the accepted ops produced in one atomic tx;
-see §8.7). Empty for an observations-only acknowledgement ("Mark
-reviewed" with no accepted ops; see §10.5). The LLM never writes these
-events — the deterministic tier does, on the user's accept.
+In v1 `resulting_event_ids` is always empty (advisory-only; see §10).
 
 **LLM_SUGGESTION_REJECTED**
 ```json
@@ -761,12 +713,9 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `set_item_state` | `{ id, state, blocked_reason? }` | `Item` | `ITEM_NOT_FOUND`, `INVALID_TRANSITION`, `REASON_REQUIRED` |
 | `set_item_date` | `{ id, field, value }` | `Item` | `ITEM_NOT_FOUND` |
 | `delete_item` | `{ id }` | `void` | `ITEM_NOT_FOUND` |
-| `restore_item` | `{ id }` | `Item` | `ITEM_NOT_FOUND`, `NOT_DELETED`, `CAP_EXCEEDED` |
-| `batch_set_state` | `{ ids: string[], state, blocked_reason? }` | `Item[]` | `ITEM_NOT_FOUND`, `INVALID_TRANSITION`, `REASON_REQUIRED`, `CAP_EXCEEDED` |
-| `batch_delete` | `{ ids: string[] }` | `void` | `ITEM_NOT_FOUND` |
+| `restore_item` | `{ id }` | `Item` | `ITEM_NOT_FOUND`, `NOT_DELETED` |
 | `list_archived_items` | — | `Item[]` | — |
 | `get_events` | `{ item_id?, since_ts?, until_ts?, limit? }` | `Event[]` | — |
-| `search_events` | `{ query?, type?, item_id?, since_ts?, until_ts?, limit? }` | `Event[]` | — |
 | `get_items_at` | `{ ts }` | `Item[]` | `TS_BEFORE_EPOCH` |
 | `rebuild_projection` | — | `{ items_affected: number }` | `DB_ERROR` |
 | `export_events` | `{ path }` | `{ events_written: number, path: string }` | `IO_ERROR` |
@@ -776,14 +725,12 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `set_llm_config` | `{ base_url, model, api_key?, timeout_ms }` | `void` | `KEYCHAIN_ERROR` |
 | `test_llm_connection` | — | `{ ok, latency_ms, model_echoed }` | `LLM_UNREACHABLE`, `LLM_AUTH_FAILED`, `LLM_TIMEOUT` |
 | `analyze` | `{ window_days? }` | `{ suggestion_event_id, observations: Observation[] }` | `LLM_UNREACHABLE`, `LLM_PARSE_ERROR`, `LLM_TIMEOUT` |
-| `accept_suggestion` | `{ suggestion_event_id, ops?: ReorgOp[] }` | `{ resulting_event_ids: number[] }` | `EVENT_NOT_FOUND`, `ITEM_NOT_FOUND`, `CAP_EXCEEDED` |
+| `accept_suggestion` | `{ suggestion_event_id }` | `void` | `EVENT_NOT_FOUND` |
 | `reject_suggestion` | `{ suggestion_event_id, reason? }` | `void` | `EVENT_NOT_FOUND` |
 
-**Capacity enforcement**: `create_item` and `move_item` both check caps server-side. Frontend also checks for responsive UI, but backend is the authority. `swap_move` skips the cap check on `entering_tier` since it's paired with an outgoing move in the same transaction. `restore_item` is cap-gated when the restored item is `active` (P2e fix (b)). `batch_set_state` and `accept_suggestion(ops)` enforce caps across the whole batch using incremental projected counters (§3.5), so neither can push a tier over cap; the whole batch is one transaction (one undoable action).
+**Capacity enforcement**: `create_item` and `move_item` both check caps server-side. Frontend also checks for responsive UI, but backend is the authority. `swap_move` skips the cap check on `entering_tier` since it's paired with an outgoing move in the same transaction.
 
 **Rank resolution**: when `to_rank` is omitted, backend places item at end of `to_tier`. Client may precompute rank via `rank_between` and pass explicitly for drag-drop precision.
-
-**`ReorgOp`** (`accept_suggestion`, I-20): `{ item_id: string; action: "move" | "done" | "active"; to_tier?: "A" | "B" | "C" }` — `to_tier` required when `action == "move"`. Each op maps to one deterministic event (`ITEM_MOVED` / `ITEM_STATE_CHANGED`); the returned `resulting_event_ids` are those events' ids. See §8.7.
 
 ### 5.2 Events (backend → frontend)
 
@@ -1067,18 +1014,13 @@ System prompt (const string in `prompt.rs`):
 
 ```
 You are an analyst observing a single user's task management event log.
-Your job: identify patterns the user would benefit from seeing, and
-OPTIONALLY propose a re-org the user accepts or rejects.
+Your job: identify patterns the user would benefit from seeing.
 
 Rules:
-- Observe first. Surface patterns the user would not trivially see.
-- You MAY propose specific re-org actions (move a stale A to C, mark a
-  done-in-fact item done, reactivate a resolved blocker), but you never
-  apply them: every proposal is presented to the user as an accept/reject
-  diff. Propose only what you can justify from the data.
+- Observe only. Do not suggest specific reassignments.
 - Output strictly valid JSON matching the schema provided.
 - Prefer sharp, specific observations over generic advice.
-- If the data shows no interesting patterns, return empty arrays.
+- If the data shows no interesting patterns, return an empty array.
 - Do not repeat what the user can trivially see by looking at the board.
 
 Output schema:
@@ -1086,17 +1028,9 @@ Output schema:
   "observations": [
     { "severity": "info" | "warn", "text": "string (<= 200 chars)",
       "affected_item_ids": [ "string" ] }
-  ],
-  "proposals": [
-    { "item_id": "string",
-      "action": "move" | "done" | "active",
-      "to_tier": "A" | "B" | "C" | null,   // required when action == "move"
-      "rationale": "string (<= 200 chars)" }
   ]
 }
 ```
-`proposals` is optional and may be omitted or empty. It is advisory:
-nothing the LLM emits mutates state. See §8.7 for the accept path.
 
 User prompt template:
 
@@ -1159,33 +1093,7 @@ All surfaced in `AnalyzePanel` inline, not as blocking modals.
 
 ### 8.6 No streaming in v1
 
-`chat/completions` called with `stream: false`. Single response. Progress indicator uses backend `analyze_progress` events (`compressing` / `calling_llm` / `parsing`). Streaming is a v2 nicety (Phase 5 I-22).
-
-### 8.7 Re-org proposals + accept path (I-20)
-
-The v2 re-org surface CLAUDE.md §2 always preserved ("Re-org proposals
-(v2+) must be presented as an atomic accept/reject diff — never
-incremental silent edits"). The firewall is **unchanged**: the LLM
-proposes, the human accepts, the deterministic tier writes.
-
-- `analyze` parses the optional `proposals` array (§8.2) alongside
-  observations and returns it to the frontend; the full set is recorded
-  in the `LLM_SUGGESTION_GENERATED` payload.
-- `AnalyzePanel` renders proposals as a reviewable diff. The user
-  selects a subset (none, some, or all) and accepts.
-- `accept_suggestion(ops)` applies the **accepted** ops in **one**
-  atomic, cap-enforced `write_events` transaction (`action: "move"` →
-  `ITEM_MOVED`; `"done"`/`"active"` → `ITEM_STATE_CHANGED`), and writes
-  `LLM_SUGGESTION_ACCEPTED` with `resulting_event_ids` set to the ids of
-  the events those ops produced (§4.3 — previously always empty). An
-  empty `ops` (observations-only acknowledgement) yields the empty-array
-  case unchanged.
-- Caps are enforced across the whole accepted batch (incremental
-  projected counters, as in §3.5); a re-org cannot push A/B over cap.
-- This is **not** a firewall change: still no LLM write path, still no
-  auto-apply, still no silent edits. The prohibitions in §8 / CLAUDE.md
-  (auto-tiering, silent re-org, capture-time tier suggestions) all hold —
-  the LLM cannot act, only propose.
+`chat/completions` called with `stream: false`. Single response. Progress indicator uses backend `analyze_progress` events (`compressing` / `calling_llm` / `parsing`). Streaming is a v2 nicety.
 
 ---
 
@@ -1399,62 +1307,19 @@ tests, DB triggers + CHECKs).
 
 Test count: 113/113 (up from 91 at v0.1.1). `cargo build` warning-clean.
 
-### Post-v0.2.0-correctness delivered (Phase 4 + Phase 5 I-20)
-
-Phase 4 shipped the above-and-beyond UX layer; the P2e cold-context
-two-pass verification caught and fixed two correctness bugs along the
-way; Phase 5 opened with I-20 (the LLM re-org accept path). All
-committed and green: cargo 152/152, vitest 93/93.
-
-- **I-15 — command palette** (Cmd/Ctrl+K). Fuzzy search across
-  navigate / create / jump-to-item / actions. Pure UI over existing
-  commands; no new write paths, no new event types.
-- **I-16 — C-tier collapse** (§10.12 resolution). Tier C with >50 items
-  collapses to the first 50 with a "Show all" button. Session-scoped
-  local UI state; no virtualization library.
-- **I-17 — undo (Ctrl+Z)** (§3.6). Appends compensating events over the
-  log (CREATED→DELETED, EDITED→edit-back, MOVED→move-back,
-  STATE_CHANGED→state-back, DATE_SET→date-back, DELETED→RESTORED,
-  RESTORED→DELETED). Generalized to batch-undo: an action = the most-
-  recent events sharing `(ts, type)`. Known limitation in `QUESTIONS.md`
-  Q01 (transaction-id fix deferred).
-- **I-18 — audit-log search** (§5.1). `search_events` command (pure-Rust
-  case-insensitive substring over `events.payload` + type / item / date /
-  limit filters) and an `AuditLogView`. Read-only.
-- **I-19 — batch operations** (§3.5). Multi-select strips (shift-click
-  range) + atomic `batch_set_state` / `batch_delete`. Each batch is ONE
-  `write_events` tx; no new event types (each item emits its own
-  `ITEM_STATE_CHANGED` / `ITEM_DELETED` sharing one `ts`); the whole
-  batch is one undoable action; cap enforced across the batch via
-  incremental projected counters.
-- **P2e fix (a) — unblock-reason preservation** (§4.3). Undo of an
-  unblock previously set `state == "blocked"` with a null reason →
-  migration-002 CHECK abort. Fix: `ITEM_STATE_CHANGED` now carries the
-  outgoing `blocked_reason` whenever `blocked` is on either side of the
-  transition, so undo can restore it.
-- **P2e fix (b) — restore cap gate** (§5.1 `restore_item`). `restore_item`
-  had no cap check → archive-restore could exceed A/B. Fix: `restore_item`
-  is now cap-gated when the restored item's state is active (the
-  `JOINT_WRONG` case 12 in `contracts/golden/caps.json`).
-- **I-20 — LLM re-org proposals** (§8.7, §4.3). `analyze` may now return
-  a `proposals` array (`move` with `to_tier` / `done` / `active`); the
-  user reviews the diff in `AnalyzePanel` and accepts a subset;
-  `accept_suggestion(ops)` applies them in one atomic, cap-enforced
-  `write_events` tx and populates `LLM_SUGGESTION_ACCEPTED.resulting_event_ids`
-  (previously always empty). Firewall unchanged — the LLM proposes, the
-  human accepts, the deterministic tier writes.
-
-### Still deferred (post-I-20)
+### Still deferred (post-v0.1.1)
 
 - Rank rebalance implementation (helper exists; no trigger per §10.4).
-- Recurring tasks (CLAUDE.md "Cut from v1"; v2 candidate — Phase 5
-  I-21). Blocked on the undo transaction-id decision (see
-  `FUTURE_WORK.md` / `QUESTIONS.md` Q01): recurrence spawns coincident
-  events that the `(ts, type)` undo-grouping heuristic would mis-batch.
-- LLM response streaming (§8.6 — single response today; v2 nicety —
+- LLM re-org proposals with accept/reject resulting in real events
+  (the §10.5 schema is preserved for this; the wiring is v2 scope —
+  Phase 5 I-20 will finally populate `resulting_event_ids`).
+- Recurring tasks (CLAUDE.md "Cut from v1"; v2 candidate — Phase 5 I-21).
+- LLM response streaming (§8.6 — single response in v1; v2 nicety —
   Phase 5 I-22).
 - React DevTools Profiler sibling-render automated check (still
   empirical — caught manually if at all).
+- Above-and-beyond UX (command palette, C-tier virtualization,
+  undo/redo, audit-log search, batch ops) — Phase 4 I-15..I-19.
 - Full v2 modernization (sync, multi-profile, theming, plugin surface,
   mobile companion) — Phase 6 I-23..I-27.
 
@@ -1506,7 +1371,7 @@ All decisions from v1.0 §10 are resolved. Below is the resolved state for audit
 
 ### 10.5 `LLM_SUGGESTION_ACCEPTED.resulting_events`
 
-**RESOLVED (default, extended at I-20):** "Mark reviewed" (observations-only acknowledgement) emits `LLM_SUGGESTION_ACCEPTED` with `resulting_event_ids: []`. *(I-20 amendment: when the analysis carries proposals and the user accepts a subset, `accept_suggestion(ops)` applies them in one atomic, cap-enforced transaction and populates `resulting_event_ids` with the produced event ids — see §8.7. The schema field was preserved unchanged precisely for this; the empty-array acknowledgement case is unchanged.)*
+**RESOLVED (default):** "Mark reviewed" emits `LLM_SUGGESTION_ACCEPTED` with `resulting_event_ids: []`. Schema preserved unchanged for v2.
 
 **Ambiguity**: schema includes `resulting_event_ids`, but v1 LLM scope is advisory-only with no mutations. So what does "accept" mean in v1?
 
@@ -1576,7 +1441,7 @@ All decisions from v1.0 §10 are resolved. Below is the resolved state for audit
 
 ### 10.12 C virtualization threshold
 
-**RESOLVED (default, implemented at I-16):** No virtualization. C default-collapses to the first 50 items with a "Show all" button. *(I-16 amendment: the collapse trigger as built is **>50** items — i.e. C shows the first 50 whenever it holds more than 50 — rather than the originally-floated 100+. Tighter, and still no virtualization library. Session-scoped local UI state.)*
+**RESOLVED (default):** No virtualization in v1. At 100+ items, C default-collapses to "show first 50, click to expand." Virtualization deferred.
 
 **Ambiguity**: C is unbounded. At 500+ items, rendering degrades.
 
@@ -1626,4 +1491,4 @@ invariants mechanically unbreakable.
 
 ---
 
-*End of SPEC.md. Current version: v1.7. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*
+*End of SPEC.md. Current version: v1.6. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*

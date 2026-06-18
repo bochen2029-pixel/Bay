@@ -1,25 +1,20 @@
 # CLAUDE.md — Bay
 
-> v1.8 — 2026-06-17. v0.2.0 revamp: Phase 4 (above-and-beyond UX) and
-> the first Phase 5 increment shipped on top of the Phase 2 correctness
-> layer. Delivered since v1.7: **I-15** command palette (Cmd/Ctrl+K),
-> **I-16** C-tier collapse (>50), **I-17** undo (Ctrl+Z, generalized to
-> batch-undo), **I-18** audit-log search, **I-19** batch operations
-> (multi-select + atomic batch state/delete), and **I-20** LLM re-org
-> proposals — the v2 surface this doctrine preserved: the LLM proposes
-> a diff, the human accepts, the deterministic tier applies it
-> atomically under cap enforcement and **`LLM_SUGGESTION_ACCEPTED.
-> resulting_event_ids` is finally populated** (was `[]` forever). The
-> LLM firewall is unchanged and absolute (LLM still never writes;
-> `ProjectionEvent` still blocks LLM events from the projection). A
-> cold-context two-pass verification (P2e) caught and fixed two real
-> bugs the test suite missed: undo-of-unblock crashing the migration-002
-> CHECK, and `restore_item` bypassing the cap. The six principles and
-> the "Cut from v1" list are unchanged. Co-pass: SPEC.md v1.6 → v1.7,
-> PROMPTS.md v1.4 → v1.5. Still in progress: I-21 recurring (blocked on
-> the undo transaction-id decision — see `FUTURE_WORK.md` / QUESTIONS
-> Q01), I-22 streaming, Phase 6. Prior versions at archive/CLAUDE_v1.0.md
-> … archive/CLAUDE_v1.7.md.
+> v1.7 — 2026-06-17. v0.2.0 revamp in progress. Phase 2 (correctness
+> layer) shipped: property tests (15 across the 6 critical modules),
+> DB-enforced invariants (migration 002 — append-only trigger on
+> `events` + items CHECK constraints, `user_version` 1→2), operator
+> golden cases (`contracts/golden/`), and the **type-level LLM
+> firewall** (`ProjectionEvent` enum — LLM events structurally cannot
+> reach the projection; the firewall is now "type system won't let
+> you," not "match arm returns Ok(())"). The four load-bearing
+> invariants (events append-only; projection pure; swap atomic; caps
+> active-only) are now enforced at three layers: Rust handlers,
+> property tests (non-LLM oracle), DB triggers + CHECKs (runtime).
+> Doctrine principles and "Cut from v1" list unchanged. Co-pass with
+> SPEC.md v1.5 → v1.6 reconciling §5.1/§6/§6.2 drift + adding §4.4/§4.5/
+> §4.6/§11. Prior versions at archive/CLAUDE_v1.0.md …
+> archive/CLAUDE_v1.6.md.
 
 > Working title. Rename at will. Placeholder chosen to match the ATC strip-bay metaphor the design derives from. If renamed, update this file, `package.json`, `tauri.conf.json`, and any user-facing strings.
 
@@ -262,45 +257,10 @@ implementation. Phase 2 (the correctness layer) is complete:
   returns Ok(())".
 
 The four load-bearing invariants (events append-only; projection pure;
-swap atomic; caps active-only) are enforced at THREE layers: Rust
+swap atomic; caps active-only) are now enforced at THREE layers: Rust
 handlers (convention + validation), property tests (non-LLM oracle),
-DB triggers + CHECKs (runtime mechanical).
-
-**Phase 3 (doctrine reconciliation): done.** SPEC §5.1/§6/§6.2 drift
-fixed; new SPEC §4.4/§4.5/§4.6/§11 added (CLAUDE v1.7 / SPEC v1.6).
-
-**Phase 4 (above-and-beyond UX): done (`I-15..I-19`).**
-- I-15 command palette (Cmd/Ctrl+K): fuzzy nav/create/jump/actions.
-- I-16 C-tier collapse: C >50 items collapses to first 50 (SPEC §10.12).
-- I-17 undo (Ctrl+Z): compensating events over the log; generalized to
-  batch-undo via `(ts,type)` action grouping (see QUESTIONS Q01 for the
-  documented limitation + the transaction-id fix).
-- I-18 audit-log search: full-text over `events.payload` + filters.
-- I-19 batch operations: multi-select (shift-click range) + atomic
-  `batch_set_state` / `batch_delete` (one `write_events` tx; no new
-  event types). Cap enforced across the whole batch.
-
-**P2e (cold-context two-pass verification): done.** Two BLOCKING bugs
-the 143-test suite had missed, both fixed + regression-tested:
-(1) undo of an unblock set `state='blocked'` with a null reason →
-migration-002 CHECK abort (fix: the state-change event now preserves the
-outgoing blocked reason); (2) `restore_item` had no cap check, so an
-archive-restore could exceed A/B (fix: restore is now cap-gated like
-every other entry path — a JOINT_WRONG vs `caps.json` #12).
-
-**Phase 5 (selective v2): I-20 done.** LLM re-org proposals as a
-human-accepted atomic diff. `analyze` may now return `proposals`
-(move/done/active); the user reviews the diff in `AnalyzePanel` and
-accepts a subset; `accept_suggestion(ops)` applies them in one atomic,
-cap-enforced `write_events` tx and records the resulting event ids on
-`LLM_SUGGESTION_ACCEPTED` — the schema this doctrine preserved, finally
-wired. **The firewall holds**: the LLM proposes, the human accepts, the
-deterministic tier writes. The system prompt evolved from "observe only"
-to "observe + optionally propose," which is the preserved v2 surface,
-NOT a firewall change.
-
-Test count: **152 Rust** (up from 91 at v0.1.1) + **93 vitest** (up from
-85), all green; `cargo build` warning-clean; `pnpm build` clean.
+DB triggers + CHECKs (runtime mechanical). Test count: 113/113
+(up from 91 at v0.1.1 baseline). `cargo build` warning-clean.
 
 **v0.1.1 (prior):** All 14 build-plan increments (`I-01..I-14`) landed
 at `v0.1.0` (2026-04-24). A disciplined v1.1 cleanup pass landed at
@@ -310,22 +270,14 @@ for `OpenAiCompatClient`; dedicated `lan_capture_received` toast;
 close-to-tray promoted to a Settings → General toggle; and a top-level
 `<ArchiveView>` for soft-deleted items.
 
-Doctrine versions at this commit: CLAUDE.md v1.8, SPEC.md v1.7,
-PROMPTS.md v1.5. Public on GitHub at
+Doctrine versions at this commit: CLAUDE.md v1.7, SPEC.md v1.6,
+PROMPTS.md v1.4. Public on GitHub at
 https://github.com/bochen2029-pixel/Bay (MIT).
 
-**Remaining (see `FUTURE_WORK.md` for full scoping):**
-- **I-21 recurring tasks** — recurrence math is straightforward
-  (RRULE subset, dependency-free civil-date arithmetic); the real
-  blocker is correct undo: completing a recurring item is a *mixed-type*
-  atomic action (STATE_CHANGED + CREATED + RECURRED), which the current
-  `(ts,type)` undo grouping can't unwind as a unit. It needs the
-  transaction-id event-grouping decision (QUESTIONS Q01) — a schema
-  change to `events`, deferred to operator review.
-- **I-22 LLM streaming** — render observations as they arrive (nicety).
-- **Phase 6** — sync, multi-profile, theming, plugin surface, mobile
-  companion. Several re-litigate the "Cut from v1" list (theming;
-  cloud-sync) and warrant operator sign-off on approach before build.
-
-The increment-prompt rhythm in PROMPTS.md §2 + archive-and-diff doctrine
-discipline hold throughout.
+Next: Phase 3 (doctrine reconciliation — in progress), then Phase 4
+(above-and-beyond UX: command palette, C-tier virtualization,
+undo/redo, audit-log search, batch ops), Phase 5 (selective v2: LLM
+re-org accept-path finally populating `resulting_event_ids`, recurring
+tasks, LLM streaming), Phase 6 (full v2: sync, multi-profile, theming,
+plugin surface, mobile companion). All follow the increment-prompt
+rhythm in PROMPTS.md §2 with archive-and-diff doctrine discipline.

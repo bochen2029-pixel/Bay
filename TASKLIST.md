@@ -119,14 +119,16 @@ items:
     notes: "I-15 palette (c2d4278), I-16 C-collapse (c4260e6), I-17 undo (c45f400), I-18 audit search (6307b7c) committed by prior run. I-19 batch ops completed on resume: cap bug fixed + regression test, undo generalized to batch-undo, frontend multi-select + BatchActionBar. cargo 139/139, vitest 90/90."
   - id: P5
     description: "Selective v2: I-20 LLM re-org diffs, I-21 recurring tasks, I-22 LLM streaming"
-    status: NOT_STARTED
+    status: IN_PROGRESS
     dependency: [P4]
     blocks: [P6]
     fan_out: 1
     verifiability: AUTONOMOUSLY_VERIFIABLE
     cost_estimate: 8h
+    cost_actual: 2.5h
     critical: false
     oracle: [characterization]
+    notes: "I-20 DONE (cbad5b2): LLM re-org accept-path, resulting_event_ids wired, firewall intact, 12 tests. I-21 (recurring) DEFERRED: correct undo of a recurring-completion (mixed-type atomic action) needs the events txn_id column (QUESTIONS Q01) — a schema change deferred to operator review; full design + the txn_id fix are in FUTURE_WORK.md. I-22 (streaming) not started. Next session: txn_id first, then I-21."
   - id: P6
     description: "Full v2 modernization: I-23 sync, I-24 multi-profile, I-25 theming, I-26 plugin surface, I-27 mobile companion"
     status: NOT_STARTED

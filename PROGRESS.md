@@ -291,3 +291,32 @@
   firewall still blocks LLM events from the projection.
 - cargo 152/152 (+9), warning-clean; vitest 93/93 (+3); builds clean.
 - I-20 save point: committing. Next: I-21 (recurring tasks).
+
+## 2026-06-17T20:30:00Z — Session-end consolidation (clean checkpoint)
+
+- **Decision: stop feature work at the I-20 boundary; consolidate.**
+  Began I-21 (wrote + unit-tested a dependency-free recurrence module),
+  then realized recurring-task completion is a MIXED-TYPE atomic action
+  (STATE_CHANGED + CREATED + RECURRED) whose correct undo needs a
+  transaction-id on `events` — the schema change deferred to operator
+  review in QUESTIONS Q01. Building I-21 on that deferred foundation
+  would ship broken recurrence-undo or force an autonomous schema change
+  to the append-only core at the tail of a long run. Per the charter
+  ("a 2-hour run stopping at the right decision beats an 8-hour run on a
+  wrong foundation") + the reversibility gate, stopped clean. Backed out
+  the untracked recurrence.rs (design preserved in FUTURE_WORK.md).
+- Consolidation deliverables:
+  - Doctrine archive-and-diff: archived CLAUDE v1.7/SPEC v1.6/PROMPTS
+    v1.4; bumped to v1.8/v1.7/v1.5. CLAUDE "Current state" rewritten;
+    SPEC/PROMPTS reconciled (resulting_event_ids populated; LLM scope
+    observe→propose; batch ops; I-15..I-20 increment prompts).
+  - README v0.2.0 features (palette, undo, batch, audit, re-org).
+  - FUTURE_WORK.md (I-21 full design + the txn_id dependency; I-22;
+    Phase 6 with doctrine notes; P7 release).
+  - REVIEW_QUEUE.md (operator accept/reject queue, cheapest-to-verify
+    first, revert commands ready, complacency canary).
+  - memory project_bay_state.md + MEMORY.md index updated.
+- Run NOT fully closed: .run-lock stays; no v0.2.0 tag (I-21+ remain).
+  This is a session checkpoint + handoff, not a release.
+- Final gates: cargo 152/152 warning-clean, vitest 93/93, pnpm build
+  clean, store-logic smoke green.
