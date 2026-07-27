@@ -74,6 +74,8 @@ RECURRENCE = "src-tauri/src/domain/recurrence.rs"
 UNDO = "src-tauri/src/commands/events.rs"
 CAPTURE = "src-tauri/src/capture/mod.rs"
 COMPRESSION = "src-tauri/src/llm/compression.rs"
+SETTINGS = "src-tauri/src/settings.rs"
+PROMPT = "src-tauri/src/llm/prompt.rs"
 
 # Each mutation reintroduces a defect a cold review actually found.
 # `why` is the finding it guards; it is printed when the mutation
@@ -496,6 +498,28 @@ MUTATIONS = [
         "replace": "    let since_ts = now_ms - 2 * window_days * MS_PER_DAY;",
         "why": "every windowed number handed to the coach silently covers twice the stated period",
     },
+    # ── breadth sweep: modules nothing had ever probed ───────────────
+    {
+        "name": "settings/lan-capture-on-by-default",
+        "file": SETTINGS,
+        "find": "            lan_capture_enabled: false,",
+        "replace": "            lan_capture_enabled: true,",
+        "why": "opens a port on every install without the user choosing to — the app's only network listener",
+    },
+    {
+        "name": "settings/api-key-flag-persisted",
+        "file": SETTINGS,
+        "find": "    copy.llm.has_api_key = false;",
+        "replace": "",
+        "why": "leaks which accounts exist to anyone who can read the settings JSON",
+    },
+    {
+        "name": "prompt/model-told-it-can-apply",
+        "file": PROMPT,
+        "find": "the user explicitly accepts or rejects them; you never apply anything.",
+        "replace": "apply them.",
+        "why": "the model would narrate proposals as completed actions; the firewall still holds, but the user is misinformed",
+    },
 ]
 
 
@@ -577,6 +601,11 @@ def tracked_dirt() -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="print mutation names and exit")
+    ap.add_argument(
+        "--check-anchors",
+        action="store_true",
+        help="verify every anchor is present and unique, then exit (seconds, no cargo)",
+    )
     ap.add_argument("-k", metavar="SUBSTR", help="only mutations whose name contains SUBSTR")
     args = ap.parse_args()
 
@@ -588,6 +617,23 @@ def main() -> int:
     if not selected:
         print(f"no mutation matches {args.k!r}", file=sys.stderr)
         return 2
+
+    if args.check_anchors:
+        # A full run costs ~15 minutes and only reports a stale anchor
+        # when it reaches that mutation. Editing the code an anchor
+        # quotes silently disarms it until then. This is the same check,
+        # in seconds — run it after touching any mutated file.
+        bad = 0
+        for m in selected:
+            path = os.path.join(REPO_ROOT, m["file"])
+            with open(path, "r", encoding="utf-8", newline="") as f:
+                n = f.read().count(m["find"])
+            if n != 1:
+                state = "MISSING (stale)" if n == 0 else f"AMBIGUOUS ({n} matches)"
+                print(f"BAD  {m['name']}: anchor {state} in {m['file']}")
+                bad += 1
+        print(f"\n{len(selected)} mutations, {bad} bad anchor(s)")
+        return 1 if bad else 0
 
     # This script edits the real working tree. `try/finally` restores on
     # exceptions and Ctrl-C, but NOT on SIGKILL, a CI cancellation, or a

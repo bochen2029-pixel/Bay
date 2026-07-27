@@ -102,3 +102,57 @@ pub fn write_to_disk(app_data_dir: &Path, settings: &Settings) -> Result<(), Str
     let path = settings_path(app_data_dir);
     fs::write(&path, text).map_err(|e| format!("write settings {path:?}: {e}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lan_capture_is_off_by_default() {
+        // CLAUDE.md architecture: the LAN server is "disabled by
+        // default; toggle in settings". It is the only network listener
+        // in an app whose whole premise is local-first and
+        // no-network-dependency, so defaulting it ON would open a port
+        // on every install without the user choosing to.
+        //
+        // settings.rs had NO tests until v0.3 pass 10.
+        let d = Settings::default();
+        assert!(!d.lan_capture_enabled, "the listener must be opt-IN");
+        assert_eq!(d.lan_capture_port, 47821, "SPEC 7: the documented port");
+        assert_eq!(
+            d.lan_capture_shared_secret, None,
+            "LAN-trust by default (SPEC 7.4); hardening is opt-in on top"
+        );
+    }
+
+    #[test]
+    fn default_staleness_thresholds_match_spec() {
+        // SPEC 5.3. These are the numbers behind "visibility is the
+        // nudge" — get them wrong and the board either nags constantly
+        // or never speaks.
+        let d = Settings::default();
+        assert_eq!(d.staleness_inbox_days, Some(3));
+        assert_eq!(d.staleness_a_days, Some(14));
+        assert_eq!(d.staleness_b_days, Some(21));
+        assert_eq!(d.staleness_c_days, None, "C is the someday bucket — no staleness");
+    }
+
+    #[test]
+    fn the_api_key_flag_is_never_persisted() {
+        // has_api_key is derived from the OS keychain. Writing it to
+        // disk would leak which accounts exist to anyone who can read
+        // the JSON — the exact thing keeping the key in the keychain is
+        // meant to prevent.
+        let dir = std::env::temp_dir().join("bay-settings-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut s = Settings::default();
+        s.llm.has_api_key = true;
+        write_to_disk(&dir, &s).unwrap();
+        let text = std::fs::read_to_string(settings_path(&dir)).unwrap();
+        assert!(
+            text.contains("\"has_api_key\": false"),
+            "has_api_key must be cleared before serializing, got: {text}"
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

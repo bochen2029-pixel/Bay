@@ -193,3 +193,43 @@ fn render_map(m: &std::collections::HashMap<String, i64>) -> String {
 fn active_of(list: &[super::compression::ItemSummary]) -> usize {
     list.iter().filter(|s| s.state == "active").count()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_system_prompt_never_grants_the_model_write_authority() {
+        // The firewall is structural — ProjectionEvent has no LLM
+        // variant, so an LLM event cannot reach the projection whatever
+        // the prompt says. But the prompt is what stops the model
+        // NARRATING as though it had applied something ("I moved three
+        // items to C"), which a user would reasonably read as a report
+        // of fact rather than a proposal.
+        //
+        // prompt.rs had no tests until v0.3 pass 10.
+        assert!(
+            SYSTEM_PROMPT.contains("SUGGESTIONS ONLY"),
+            "the proposal constraint must stay in the prompt"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("you never apply anything"),
+            "the prompt must state plainly that the model has no write path"
+        );
+        assert!(
+            SYSTEM_PROMPT.contains("accepts or rejects"),
+            "the accept/reject contract is what makes a proposal safe to make"
+        );
+    }
+
+    #[test]
+    fn the_prompt_reports_rather_than_exhorts() {
+        // CLAUDE law 9: the mirror confronts, it never shames. A coach
+        // that tells the user to try harder is the thing this product
+        // is a reaction against.
+        assert!(
+            SYSTEM_PROMPT.to_lowercase().contains("report"),
+            "the report-not-exhort rule must stay in the prompt"
+        );
+    }
+}
