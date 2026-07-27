@@ -48,6 +48,32 @@ edge cases, cap joints (recurrence spawn accounting × batch × Today),
 projection purity across both projection tables, and the Mirror's
 aggregate definitions.
 
+### F-05 — Extract the blocked-reason carry into one helper
+**Deliberately deferred, not forgotten.** The rule "carry the outgoing
+`blocked_reason` whenever `blocked` is on either side of the
+transition" is written out inline at **four** doors:
+`items::set_item_state_inner`, `items::batch_set_state_inner`,
+`session::end_session_inner` (the Done co-write), and *two* arms of
+`llm::apply_reorg_inner`. Every one of them is currently correct.
+
+The contrast worth noticing is with the Today re-entry cap, which is
+the *same shape of rule* and has never drifted — because it lives in
+one shared helper (`day::today_overflow_draft`) that three doors call.
+One mutation on that helper breaks all three call sites at once.
+Duplicated logic needs a guard per door; shared logic needs one. The
+blocked-reason rule is the duplicated kind, which is exactly why v0.3
+pass 4 found it broken at one door and pass 7 found it *unguarded* at
+another.
+
+Extracting `outgoing_blocked_reason(current, target) -> Option<String>`
+would collapse four copies into one and make the drift structurally
+impossible. Not done during the verification chain on purpose: this run
+has spent seven passes learning that changes made late, while
+confidence is high, are where defects hide — and a refactor of a core
+write path is precisely that. Do it at the start of a run, not the end,
+and keep the four per-door tests afterwards (they catch a door that
+stops calling the helper, which a mutation on the helper cannot).
+
 ### F-03 — I-22 LLM streaming
 `OpenAiCompatClient.chat` does a single request. Add a streaming
 variant (`stream: true`, SSE) and an `analyze_progress` `streaming`
