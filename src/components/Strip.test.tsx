@@ -23,6 +23,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { Strip } from "./Strip";
+import { localDate } from "./TodayLane";
 import { useStore } from "../store";
 import { Item } from "../domain";
 
@@ -108,9 +109,10 @@ describe("Strip — overflow menu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("opens the popover with the ten menu items on ⋯ click", async () => {
-    // Ten for a non-recurring item; an eleventh ("Stop repeating")
-    // appears only when the item has a recurrence rule (I-21).
+  it("opens the popover with the eleven menu items on ⋯ click", async () => {
+    // Eleven for an active, non-recurring item off Today. "Stop
+    // repeating" appears only with a recurrence rule (I-21), and the
+    // Today entry is hidden for a done item that isn't on Today.
     seed(makeActiveA());
     render(<Strip itemId="itm-1" />);
     await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
@@ -118,10 +120,11 @@ describe("Strip — overflow menu", () => {
     const menu = screen.getByRole("menu");
     expect(menu).toBeInTheDocument();
     const items = screen.getAllByRole("menuitem");
-    expect(items).toHaveLength(10);
+    expect(items).toHaveLength(11);
     expect(items.map((b) => b.textContent)).toEqual([
       "Edit",
       "Set first step…",
+      "Add to Today",
       "Set start date…",
       "Set due date…",
       "Mark done",
@@ -131,6 +134,44 @@ describe("Strip — overflow menu", () => {
       "Repeat monthly",
       "Delete",
     ]);
+  });
+
+  it("Add to Today sends the LOCAL date, and flips to Remove once on Today", async () => {
+    // `add_to_today` was registered, specced, and unreachable: the only
+    // way onto Today was the day-open picker, so "put this one on
+    // today" — the natural gesture while looking at the board — had no
+    // affordance.
+    const item = makeActiveA();
+    seed(item);
+    invokeMock.mockResolvedValueOnce({
+      ...item,
+      today_on: localDate(),
+      updated_at: item.updated_at + 1,
+    });
+    render(<Strip itemId="itm-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Add to Today" }));
+
+    expect(invokeMock).toHaveBeenCalledWith("add_to_today", {
+      id: "itm-1",
+      date: localDate(),
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    expect(
+      screen.getByRole("menuitem", { name: "Remove from Today" }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces TODAY_FULL inline instead of failing silently", async () => {
+    seed(makeActiveA());
+    invokeMock.mockRejectedValueOnce("TODAY_FULL");
+    render(<Strip itemId="itm-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    await userEvent.click(screen.getByRole("menuitem", { name: "Add to Today" }));
+
+    expect(
+      await screen.findByText(/Today is full/),
+    ).toBeInTheDocument();
   });
 
   it("first step is settable, and the item shows it once set", async () => {
@@ -187,7 +228,7 @@ describe("Strip — overflow menu", () => {
     expect(
       screen.getByRole("menuitem", { name: "Stop repeating" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem")).toHaveLength(11);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(12);
   });
 
   it("Repeat weekly fires invoke('set_item_recurrence') with the rule", async () => {

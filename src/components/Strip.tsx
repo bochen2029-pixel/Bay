@@ -19,6 +19,7 @@ import { format } from "date-fns";
 import { Item, Session } from "../domain";
 import { isStale } from "../staleness";
 import { useStore } from "../store";
+import { localDate } from "./TodayLane";
 
 export function Strip({ itemId }: { itemId: string }) {
   const item = useStore((s) => s.items[itemId]);
@@ -26,6 +27,7 @@ export function Strip({ itemId }: { itemId: string }) {
   const isEditing = useStore((s) => s.editingItemId === itemId);
   const [dateField, setDateField] = useState<"start" | "due" | null>(null);
   const [editingFirstStep, setEditingFirstStep] = useState(false);
+  const [todayError, setTodayError] = useState<string | null>(null);
   const setEditingItemId = useStore((s) => s.setEditingItemId);
   const openBlockModal = useStore((s) => s.openBlockModal);
   const setSelectedItemId = useStore((s) => s.setSelectedItemId);
@@ -158,6 +160,12 @@ export function Strip({ itemId }: { itemId: string }) {
         />
       ) : null}
 
+      {todayError ? (
+        <span className="strip-today-error" role="status">
+          {todayError}
+        </span>
+      ) : null}
+
       {item.state === "active" && !hasOpenSession ? (
         <button
           type="button"
@@ -217,6 +225,25 @@ export function Strip({ itemId }: { itemId: string }) {
             }
           } else {
             openBlockModal(item.id);
+          }
+        }}
+        onToggleToday={async () => {
+          try {
+            const raw = item.today_on
+              ? await invoke<unknown>("remove_from_today", { id: item.id })
+              : await invoke<unknown>("add_to_today", {
+                  id: item.id,
+                  date: localDate(),
+                });
+            onItemUpdated(Item.parse(raw));
+          } catch (err) {
+            const msg = typeof err === "string" ? err : String(err);
+            if (msg === "TODAY_FULL") {
+              setTodayError("Today is full — finish or drop something first.");
+              window.setTimeout(() => setTodayError(null), 4000);
+            } else if (msg !== "NO_OP") {
+              console.error("toggle today failed:", err);
+            }
           }
         }}
         onSetRecurrence={async (rule) => {
@@ -323,6 +350,7 @@ function StripMenu({
   item,
   onEdit,
   onSetFirstStep,
+  onToggleToday,
   onSetDate,
   onToggleDone,
   onToggleBlocked,
@@ -332,6 +360,7 @@ function StripMenu({
   item: Item;
   onEdit: () => void;
   onSetFirstStep: () => void;
+  onToggleToday: () => void;
   onSetDate: (field: "start" | "due") => void;
   onToggleDone: () => void;
   onToggleBlocked: () => void;
@@ -380,6 +409,11 @@ function StripMenu({
           <button type="button" role="menuitem" onClick={() => run(onSetFirstStep)}>
             {item.first_step ? "Change first step…" : "Set first step…"}
           </button>
+          {item.state === "active" || item.today_on ? (
+            <button type="button" role="menuitem" onClick={() => run(onToggleToday)}>
+              {item.today_on ? "Remove from Today" : "Add to Today"}
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"

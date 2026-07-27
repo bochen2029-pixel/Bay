@@ -705,3 +705,30 @@ fails under it and passes when restored.
 
 Gates: cargo **229/229** warning-clean; vitest 114/114; both builds
 clean; store-logic, check-golden (5 files), verify-schema --fresh green.
+
+## 2026-07-27 — Reachability audit: two commands shipped unreachable
+
+Prompted by finding that `set_first_step` had no UI at all, I swept
+every command in `generate_handler!` against `invoke("…")` call sites in
+`src/`. Two were unreachable from the app:
+
+- **`set_first_step`** — registered, tested, and DISPLAYED in three
+  places (strip, Today lane, focus bar), with the Mirror reporting "no
+  first step" as an avoidance signal — and no way to set one. The
+  activation-energy handle VISION calls the central lever, shipped
+  inert. Added "Set first step…" to the overflow menu with an inline
+  one-line input, and the step now renders on the strip itself.
+- **`add_to_today`** — the only route onto Today was the day-open
+  picker, so "put THIS one on today", the natural gesture while looking
+  at the board, had no affordance. Added a menu toggle that sends the
+  LOCAL date and surfaces TODAY_FULL inline rather than to console.
+
+(`get_settings` is also uninvoked, but legitimately so: settings arrive
+via `bootstrap`. Left as available API, same call as ADR-005.)
+
+This is the same failure shape as the run''s other defects — something
+that exists but is never exercised — one layer up: a command that
+exists but is never *invoked*. Worth keeping the sweep as a standing
+check.
+
+Gates: vitest 118/118, build clean.

@@ -2191,3 +2191,9 @@ button:hover {
   padding: 0.1rem 0.5rem;
   cursor: pointer;
 }
+
+.strip-today-error {
+  font-size: 0.8rem;
+  opacity: 0.85;
+  flex: 1 1 100%;
+}
