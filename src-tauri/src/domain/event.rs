@@ -60,6 +60,39 @@ impl EventType {
     }
 }
 
+/// Who initiated a write transaction (envelope v2, migration 003).
+///
+/// Deliberately TWO variants. The LLM is not an actor because it has no
+/// write path (the `ProjectionEvent` firewall): an accepted suggestion
+/// is a HUMAN write whose `origin` records `llm_accept:<event id>`.
+/// `System` is reserved for the deterministic execution of a timer the
+/// human configured (VISION law 6 — e.g. the Today day-roll), never for
+/// autonomous decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Actor {
+    #[default]
+    Human,
+    System,
+}
+
+impl Actor {
+    pub fn as_sql(self) -> &'static str {
+        match self {
+            Actor::Human => "human",
+            Actor::System => "system",
+        }
+    }
+
+    pub fn from_sql(s: &str) -> Option<Self> {
+        match s {
+            "human" => Some(Actor::Human),
+            "system" => Some(Actor::System),
+            _ => None,
+        }
+    }
+}
+
 /// The seven event types that MAY affect the `items` projection.
 ///
 /// This is the **type-level LLM firewall** (Phase 2d / CLAUDE.md
@@ -128,6 +161,22 @@ pub struct Event {
     pub event_type: EventType,
     pub item_id: Option<String>,
     pub payload: serde_json::Value,
+    // ── envelope v2 (migration 003) ─────────────────────────────────
+    // All None on legacy (pre-envelope) rows; stamped by
+    // `db::write_events_ctx` on every row written since. Omitted from
+    // the wire when absent so old frontends/logs parse unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub txn_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<Actor>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_ver: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev_hash: Option<String>,
 }
 
 #[cfg(test)]

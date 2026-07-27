@@ -24,7 +24,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
-use crate::commands::items::create_item_inner;
+use crate::commands::items::create_item_inner_ctx;
 use crate::db::SqlitePool;
 use crate::domain::Tier;
 
@@ -266,7 +266,17 @@ async fn serve_capture(
     let pool = state.pool.clone();
     let item =
         match tokio::task::spawn_blocking(move || {
-            create_item_inner(&pool, Tier::Inbox, content, None, None)
+            create_item_inner_ctx(
+                &pool,
+                crate::db::WriteCtx {
+                    origin: Some("lan".into()),
+                    ..Default::default()
+                },
+                Tier::Inbox,
+                content,
+                None,
+                None,
+            )
         })
         .await
         {

@@ -178,3 +178,27 @@ shipping only I-21 (under-delivers the explicit ask).
 surfaces (CLAUDE v1.9 / SPEC v1.8 / PROMPTS v1.6); REVIEW_QUEUE rebuilt
 for return review; every increment stays gate-green and committed
 separately with exact reverts.
+
+## ADR-008 — `sha2` runtime dep + meta-table device identity (migration 003)
+**Date:** 2026-07-26
+**Status:** Active
+**Context:** The envelope's `prev_hash` chain needs SHA-256 inside the
+write path; `device_id` needs a durable home reachable inside the write
+transaction without threading state through every command signature.
+**Decision:** (1) Add `sha2 = "0.10"` (RustCrypto) as a RUNTIME
+dependency — charter §3 requires an ADR + `SPEC:` commit tag for any
+new dep; both provided. (2) `device_id` lives in a new
+`meta(key, value)` table inside `bay.db`, seeded `INSERT OR IGNORE` by
+the migration runner: identity travels with the data it stamps and is
+readable inside the same transaction that writes events.
+**Alternatives rejected:** hand-rolled SHA-256 (never roll your own
+crypto primitives); `device_id` in settings.json (splits identity from
+data; unreachable inside the write tx without API churn across every
+`*_inner` signature). Known trade-off: wholesale-copying `bay.db` to a
+second machine carries the id until regenerated — acceptable and
+documented pre-sync.
+**Consequences:** every event written from v0.3 on is chained +
+attributed; `verify_event_chain` runs at boot in a background thread
+(failure = toast, never a boot block); migration 003 uses ALTER ADD
+COLUMN (never a rebuild of `events` — charter §5 "never DROP tables");
+`scripts/verify-schema.py` gains a column-set check for ALTERed tables.

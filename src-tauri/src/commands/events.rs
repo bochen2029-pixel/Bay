@@ -13,7 +13,12 @@ use serde::Serialize;
 use tauri::State;
 
 use crate::db::{self, SqlitePool};
-use crate::domain::{Event, EventType};
+use crate::domain::{Actor, Event, EventType};
+
+/// The eleven `events` columns every reader selects (envelope v2,
+/// migration 003). Order matches `parse_event_row`.
+const EVENT_COLS: &str =
+    "id, ts, type, item_id, payload, txn_id, actor, origin, device_id, schema_ver, prev_hash";
 
 // ── get_events ────────────────────────────────────────────────────
 
@@ -40,14 +45,14 @@ pub fn get_events_inner(
     // letting any filter combination light up. SQLite short-circuits
     // on NULL IS NULL so the unfiltered path is cheap.
     let mut stmt = conn
-        .prepare(
-            "SELECT id, ts, type, item_id, payload FROM events \
+        .prepare(&format!(
+            "SELECT {EVENT_COLS} FROM events \
              WHERE (?1 IS NULL OR item_id = ?1) \
                AND (?2 IS NULL OR ts >= ?2) \
                AND (?3 IS NULL OR ts <= ?3) \
              ORDER BY id \
-             LIMIT COALESCE(?4, -1)",
-        )
+             LIMIT COALESCE(?4, -1)"
+        ))
         .map_err(|e| format!("prepare get_events: {e}"))?;
     let rows = stmt
         .query_map(params![item_id, since_ts, until_ts, limit], parse_event_row)
@@ -81,10 +86,9 @@ pub fn get_items_at_inner(
     let events: Vec<Event> = {
         let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, ts, type, item_id, payload FROM events \
-                 WHERE ts <= ?1 ORDER BY id",
-            )
+            .prepare(&format!(
+                "SELECT {EVENT_COLS} FROM events WHERE ts <= ?1 ORDER BY id"
+            ))
             .map_err(|e| format!("prepare events for replay: {e}"))?;
         let rows = stmt
             .query_map(params![ts], parse_event_row)
@@ -269,7 +273,7 @@ pub fn rebuild_projection_inner(pool: &SqlitePool) -> Result<RebuildResult, Stri
 
     let events: Vec<Event> = {
         let mut stmt = tx
-            .prepare("SELECT id, ts, type, item_id, payload FROM events ORDER BY id")
+            .prepare(&format!("SELECT {EVENT_COLS} FROM events ORDER BY id"))
             .map_err(|e| format!("prepare rebuild events: {e}"))?;
         let rows = stmt
             .query_map([], parse_event_row)
@@ -420,11 +424,11 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
     let last = {
         let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, ts, type, item_id, payload FROM events \
+            .prepare(&format!(
+                "SELECT {EVENT_COLS} FROM events \
                  WHERE type NOT IN ('LLM_SUGGESTION_GENERATED','LLM_SUGGESTION_ACCEPTED','LLM_SUGGESTION_REJECTED') \
-                 ORDER BY id DESC LIMIT 1",
-            )
+                 ORDER BY id DESC LIMIT 1"
+            ))
             .map_err(|e| format!("prepare last event: {e}"))?;
         let mut rows = stmt
             .query_map([], parse_event_row)
@@ -440,10 +444,10 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
     let action_events: Vec<Event> = {
         let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
         let mut stmt = conn
-            .prepare(
-                "SELECT id, ts, type, item_id, payload FROM events \
-                 WHERE ts = ?1 AND type = ?2 ORDER BY id DESC",
-            )
+            .prepare(&format!(
+                "SELECT {EVENT_COLS} FROM events \
+                 WHERE ts = ?1 AND type = ?2 ORDER BY id DESC"
+            ))
             .map_err(|e| format!("prepare action events: {e}"))?;
         let rows = stmt
             .query_map(
@@ -623,12 +627,30 @@ fn parse_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
             Box::new(e),
         )
     })?;
+    let actor = row
+        .get::<_, Option<String>>(6)?
+        .map(|s| {
+            Actor::from_sql(&s).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    6,
+                    rusqlite::types::Type::Text,
+                    format!("invalid actor {s:?}").into(),
+                )
+            })
+        })
+        .transpose()?;
     Ok(Event {
         id: row.get(0)?,
         ts: row.get(1)?,
         event_type,
         item_id: row.get(3)?,
         payload,
+        txn_id: row.get(5)?,
+        actor,
+        origin: row.get(7)?,
+        device_id: row.get(8)?,
+        schema_ver: row.get(9)?,
+        prev_hash: row.get(10)?,
     })
 }
 

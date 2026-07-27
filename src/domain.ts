@@ -35,6 +35,14 @@ export const Event = z.object({
   type: EventType,
   item_id: z.string().nullable(),
   payload: z.unknown(),
+  // Envelope v2 (migration 003) — omitted by the backend on legacy
+  // (pre-envelope) rows, so every field is optional here.
+  txn_id: z.string().nullable().optional(),
+  actor: z.enum(["human", "system"]).nullable().optional(),
+  origin: z.string().nullable().optional(),
+  device_id: z.string().nullable().optional(),
+  schema_ver: z.number().nullable().optional(),
+  prev_hash: z.string().nullable().optional(),
 });
 export type Event = z.infer<typeof Event>;
 

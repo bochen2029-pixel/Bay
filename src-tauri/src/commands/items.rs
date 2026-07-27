@@ -71,6 +71,20 @@ pub fn create_item_inner(
     start_at: Option<i64>,
     due_at: Option<i64>,
 ) -> Result<Item, String> {
+    create_item_inner_ctx(pool, db::WriteCtx::default(), tier, content, start_at, due_at)
+}
+
+/// `create_item_inner` with explicit write provenance (envelope v2):
+/// the LAN capture path stamps `origin: "lan"` through here; the
+/// desktop command uses the default (human, no origin).
+pub fn create_item_inner_ctx(
+    pool: &SqlitePool,
+    ctx: db::WriteCtx,
+    tier: Tier,
+    content: String,
+    start_at: Option<i64>,
+    due_at: Option<i64>,
+) -> Result<Item, String> {
     let content = content.trim().to_string();
     if content.is_empty() {
         return Err("CONTENT_EMPTY".into());
@@ -84,7 +98,7 @@ pub fn create_item_inner(
     // substitute UUIDv4. SPEC §6.1.
     let item_id = Uuid::now_v7().to_string();
 
-    let event = db::write_event(pool, |tx, _ts| {
+    let event = db::write_event_ctx(pool, ctx, |tx, _ts| {
         // Cap check FIRST, inside the tx: same isolation as the insert.
         match tier {
             Tier::A => {
@@ -1705,6 +1719,12 @@ mod tests {
                     event_type,
                     item_id: item_id_opt,
                     payload,
+                    txn_id: None,
+                    actor: None,
+                    origin: None,
+                    device_id: None,
+                    schema_ver: None,
+                    prev_hash: None,
                 };
                 db::items::apply_event_to_projection(&tx, &event).unwrap();
             }
@@ -1780,6 +1800,12 @@ mod tests {
                     event_type,
                     item_id,
                     payload,
+                    txn_id: None,
+                    actor: None,
+                    origin: None,
+                    device_id: None,
+                    schema_ver: None,
+                    prev_hash: None,
                 };
                 db::items::apply_event_to_projection(&tx, &event).unwrap();
             }

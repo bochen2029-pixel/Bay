@@ -366,3 +366,27 @@
   _corrected annotations; operator freeze requested on return.
 - Gates: cargo 155/155 (152 + 3 runner tests), build warning-clean,
   check-golden.py OK, 4.07s test wall.
+
+## 2026-07-26 — P5b(1): migration 003 — event envelope v2
+
+- migrations/003_event_envelope.sql: ALTER ADD txn_id / actor / origin /
+  device_id / schema_ver / prev_hash (all nullable; legacy rows valid),
+  idx_events_txn, meta(key,value) table. user_version 2 -> 3. ALTER not
+  rebuild — events is the source of truth; charter forbids DROP.
+- write path (db::write_events_ctx): one txn_id (uuidv7) per call;
+  actor human|system (LLM is NOT an actor — accepted suggestions are
+  human writes with origin llm_accept:<id>); device_id from meta
+  (ADR-008; seeded INSERT OR IGNORE by the migration runner); schema_ver
+  1; prev_hash = SHA-256 chain threaded row-to-row INSIDE the write tx.
+  sha2 = "0.10" runtime dep (ADR-008, SPEC: tag).
+- Origins wired where trivially known: lan (capture), llm_accept:<id>.
+- verify_event_chain: full-log walk, legacy rows tolerated only at the
+  head; runs at boot on a background thread (failure = warning toast).
+- Readers (get_events / get_items_at / rebuild / undo / search) select
+  the full 11-column envelope; Event struct + Zod schema extended
+  (optional fields; legacy rows omit them on the wire).
+- verify-schema.py: v3 + column-set check for ALTERed tables.
+- Tests: 161/161 (155 + 6 envelope: stamping, txn sharing + chain
+  threading, tamper-detect via raw INSERT, legacy upgrade + chain
+  extension, device_id stability, chain property over any write
+  sequence). cargo warning-clean, pnpm build clean, vitest 93/93.

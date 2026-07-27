@@ -66,6 +66,36 @@ pub fn run() {
             // DB pool + migrations.
             let pool = db::open_pool(&data_dir.join("bay.db"))?;
             db::run_migrations(&pool)?;
+
+            // Verify the event-log hash chain off the boot path (VISION
+            // §3.0: trust made visible). Failure surfaces as a warning
+            // toast — never blocks launch.
+            {
+                let verify_pool = pool.clone();
+                let verify_handle = handle.clone();
+                std::thread::spawn(move || {
+                    match verify_pool
+                        .get()
+                        .map_err(|e| format!("pool get: {e}"))
+                        .and_then(|c| db::events::verify_event_chain(&c))
+                    {
+                        Ok(r) => eprintln!(
+                            "event chain verified: {} rows ({} enveloped)",
+                            r.total, r.enveloped
+                        ),
+                        Err(e) => {
+                            eprintln!("EVENT CHAIN VERIFICATION FAILED: {e}");
+                            let _ = verify_handle.emit(
+                                WARNING_EVENT,
+                                json!({
+                                    "kind": "event_chain_verification_failed",
+                                    "message": e,
+                                }),
+                            );
+                        }
+                    }
+                });
+            }
             app.manage(pool);
 
             // Settings (loads from JSON; checks keychain for has_api_key).

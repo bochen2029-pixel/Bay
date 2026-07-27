@@ -232,7 +232,14 @@ fn apply_reorg_inner(
     }
 
     let mut affected: Vec<String> = Vec::new();
-    let _ = db::write_events(pool, |tx, _ts| {
+    // Provenance: this is a HUMAN write (the user accepted); origin
+    // records which suggestion it executed (envelope v2). The LLM is
+    // never an actor — it has no write path.
+    let ctx = db::WriteCtx {
+        origin: Some(format!("llm_accept:{suggestion_event_id}")),
+        ..Default::default()
+    };
+    let _ = db::write_events_ctx(pool, ctx, |tx, _ts| {
         // resulting_event_ids must be known when we build the acceptance
         // event's payload, but ids aren't assigned until append. events is
         // append-only (no deletes, trigger-enforced), so AUTOINCREMENT ids

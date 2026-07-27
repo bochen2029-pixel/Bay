@@ -17,10 +17,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::Transaction;
+use rusqlite::{OptionalExtension, Transaction};
 use serde_json::Value;
 
-use crate::domain::{Event, EventType};
+use crate::domain::{Actor, Event, EventType};
 
 pub mod events;
 pub mod items;
@@ -32,6 +32,7 @@ pub type SqlitePool = Pool<SqliteConnectionManager>;
 const MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../../../migrations/001_initial.sql")),
     (2, include_str!("../../../migrations/002_invariants.sql")),
+    (3, include_str!("../../../migrations/003_event_envelope.sql")),
 ];
 
 pub fn open_pool(db_path: &Path) -> Result<SqlitePool, String> {
@@ -66,7 +67,28 @@ pub fn run_migrations(pool: &SqlitePool) -> Result<(), String> {
         tx.commit()
             .map_err(|e| format!("commit migration {target}: {e}"))?;
     }
+
+    // Post-migration idempotent defaults: the durable device identity
+    // (envelope v2, ADR-008). INSERT OR IGNORE = generated exactly once
+    // per database, stable forever after; readable inside every write
+    // transaction with zero API churn.
+    conn.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES ('device_id', ?1)",
+        rusqlite::params![uuid::Uuid::now_v7().to_string()],
+    )
+    .map_err(|e| format!("ensure device_id: {e}"))?;
+
     Ok(())
+}
+
+/// Provenance context for one write transaction (envelope v2, ADR-007).
+/// Default = a human-initiated write with no finer origin recorded.
+/// `actor: System` is reserved for deterministic execution of
+/// human-configured timers (VISION law 6); the LLM is never an actor.
+#[derive(Clone, Debug, Default)]
+pub struct WriteCtx {
+    pub actor: Actor,
+    pub origin: Option<String>,
 }
 
 /// What a command builds inside the event-writing transaction. The runner
@@ -89,7 +111,15 @@ pub fn write_event<F>(pool: &SqlitePool, build: F) -> Result<Event, String>
 where
     F: FnOnce(&Transaction<'_>, i64) -> Result<EventDraft, String>,
 {
-    let events = write_events(pool, |tx, ts| build(tx, ts).map(|d| vec![d]))?;
+    write_event_ctx(pool, WriteCtx::default(), build)
+}
+
+/// `write_event` with explicit provenance (envelope v2).
+pub fn write_event_ctx<F>(pool: &SqlitePool, ctx: WriteCtx, build: F) -> Result<Event, String>
+where
+    F: FnOnce(&Transaction<'_>, i64) -> Result<EventDraft, String>,
+{
+    let events = write_events_ctx(pool, ctx, |tx, ts| build(tx, ts).map(|d| vec![d]))?;
     events
         .into_iter()
         .next()
@@ -110,12 +140,38 @@ pub fn write_events<F>(pool: &SqlitePool, build: F) -> Result<Vec<Event>, String
 where
     F: FnOnce(&Transaction<'_>, i64) -> Result<Vec<EventDraft>, String>,
 {
+    write_events_ctx(pool, WriteCtx::default(), build)
+}
+
+/// `write_events` with explicit provenance. This is the real body: one
+/// transaction, one shared `ts`, one shared `txn_id` (THE transaction
+/// boundary undo groups by), the device identity from `meta`, and the
+/// hash chain threaded draft-to-draft — all under the same isolation
+/// as the append + apply.
+pub fn write_events_ctx<F>(pool: &SqlitePool, ctx: WriteCtx, build: F) -> Result<Vec<Event>, String>
+where
+    F: FnOnce(&Transaction<'_>, i64) -> Result<Vec<EventDraft>, String>,
+{
     let mut conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
     let tx = conn
         .transaction()
         .map_err(|e| format!("begin tx: {e}"))?;
     let ts = unix_ms_now();
     let drafts = build(&tx, ts)?;
+
+    let txn_id = uuid::Uuid::now_v7().to_string();
+    let device_id: Option<String> = tx
+        .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(|e| format!("read device_id: {e}"))?;
+    // Chain tail read inside this tx: the previous row cannot change
+    // under us (SQLite write transactions are exclusive; the 002
+    // triggers forbid UPDATE/DELETE besides).
+    let mut prev_hash =
+        events::last_event_hash(&tx)?.unwrap_or_else(|| events::GENESIS_HASH.to_string());
+
     let mut out = Vec::with_capacity(drafts.len());
     for EventDraft {
         event_type,
@@ -123,15 +179,45 @@ where
         payload,
     } in drafts
     {
-        let id = events::append_event(&tx, ts, event_type, item_id.as_deref(), &payload)?;
+        // Serialize once; the same bytes are stored AND hashed.
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|e| format!("serialize payload: {e}"))?;
+        let stamp = events::EnvelopeStamp {
+            txn_id: &txn_id,
+            actor: ctx.actor,
+            origin: ctx.origin.as_deref(),
+            device_id: device_id.as_deref(),
+            schema_ver: events::ENVELOPE_SCHEMA_VER,
+            prev_hash: &prev_hash,
+        };
+        let id = events::append_event(&tx, ts, event_type, item_id.as_deref(), &payload_json, &stamp)?;
         let event = Event {
             id,
             ts,
             event_type,
             item_id,
             payload,
+            txn_id: Some(txn_id.clone()),
+            actor: Some(ctx.actor),
+            origin: ctx.origin.clone(),
+            device_id: device_id.clone(),
+            schema_ver: Some(events::ENVELOPE_SCHEMA_VER),
+            prev_hash: Some(prev_hash.clone()),
         };
         items::apply_event_to_projection(&tx, &event)?;
+        prev_hash = events::event_row_hash(
+            id,
+            ts,
+            event_type.as_sql(),
+            event.item_id.as_deref(),
+            &payload_json,
+            Some(&txn_id),
+            Some(ctx.actor.as_sql()),
+            ctx.origin.as_deref(),
+            device_id.as_deref(),
+            Some(events::ENVELOPE_SCHEMA_VER),
+            Some(&prev_hash),
+        );
         out.push(event);
     }
     tx.commit().map_err(|e| format!("commit tx: {e}"))?;
@@ -165,9 +251,10 @@ mod tests {
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
         // Migration 001 -> user_version 1 (schema); migration 002 ->
-        // user_version 2 (DB-enforced invariants: events append-only
-        // trigger + items CHECK constraints).
-        assert_eq!(v, 2);
+        // user_version 2 (DB-enforced invariants); migration 003 ->
+        // user_version 3 (event envelope v2: txn_id/actor/origin/
+        // device_id/schema_ver/prev_hash + meta table).
+        assert_eq!(v, 3);
     }
 
     #[test]
@@ -179,7 +266,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 2);
+        assert_eq!(v, 3);
     }
 
     #[test]
@@ -200,8 +287,10 @@ mod tests {
                 "events".to_string(),
                 "idx_events_item".to_string(),
                 "idx_events_ts".to_string(),
+                "idx_events_txn".to_string(),
                 "idx_items_tier_rank".to_string(),
                 "items".to_string(),
+                "meta".to_string(),
             ]
         );
     }
@@ -600,6 +689,12 @@ mod tests {
                     event_type,
                     item_id,
                     payload,
+                    txn_id: None,
+                    actor: None,
+                    origin: None,
+                    device_id: None,
+                    schema_ver: None,
+                    prev_hash: None,
                 };
                 items::apply_event_to_projection(&tx, &event).unwrap();
             }
@@ -716,6 +811,177 @@ mod tests {
             let items_after = snapshot_items(&pool);
             prop_assert_eq!(items_after, items_before,
                 "failed write_events must leave projection untouched (atomicity)");
+        });
+    }
+
+    // ── Envelope v2 (migration 003) ─────────────────────────────────
+
+    fn create_draft(i: usize) -> EventDraft {
+        EventDraft {
+            event_type: EventType::ItemCreated,
+            item_id: Some(format!("env-itm-{i}")),
+            payload: serde_json::json!({
+                "content": format!("item {i}"), "tier": "inbox", "rank": format!("m{i}"),
+                "start_at": null, "due_at": null,
+            }),
+        }
+    }
+
+    #[test]
+    fn envelope_stamped_on_every_write() {
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let ev = write_event(&pool, |_tx, _ts| Ok(create_draft(0))).unwrap();
+
+        // The returned Event carries the envelope.
+        assert!(ev.txn_id.is_some());
+        assert_eq!(ev.actor, Some(Actor::Human));
+        assert_eq!(ev.origin, None);
+        assert_eq!(ev.schema_ver, Some(events::ENVELOPE_SCHEMA_VER));
+        assert_eq!(ev.prev_hash.as_deref(), Some(events::GENESIS_HASH));
+
+        // And the stored row matches, device_id = meta.device_id.
+        let conn = pool.get().unwrap();
+        let (txn_id, actor, origin, device_id, schema_ver, prev_hash): (
+            Option<String>, Option<String>, Option<String>,
+            Option<String>, Option<i64>, Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT txn_id, actor, origin, device_id, schema_ver, prev_hash \
+                 FROM events WHERE id = ?1",
+                [ev.id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(txn_id, ev.txn_id);
+        assert_eq!(actor.as_deref(), Some("human"));
+        assert_eq!(origin, None);
+        let meta_device: String = conn
+            .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(device_id.as_deref(), Some(meta_device.as_str()));
+        assert_eq!(schema_ver, Some(events::ENVELOPE_SCHEMA_VER));
+        assert_eq!(prev_hash.as_deref(), Some(events::GENESIS_HASH));
+    }
+
+    #[test]
+    fn batch_shares_txn_id_and_chain_threads_between_writes() {
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let first = write_event(&pool, |_tx, _ts| Ok(create_draft(0))).unwrap();
+        let batch = write_events(&pool, |_tx, _ts| Ok(vec![create_draft(1), create_draft(2)])).unwrap();
+
+        assert_eq!(batch.len(), 2);
+        // One txn_id per write_events call, shared inside, distinct across.
+        assert_eq!(batch[0].txn_id, batch[1].txn_id);
+        assert_ne!(batch[0].txn_id, first.txn_id);
+
+        // Chain: batch[0] chains from first's row hash; batch[1] from batch[0]'s.
+        // verify_event_chain recomputes independently and must agree.
+        let conn = pool.get().unwrap();
+        let report = events::verify_event_chain(&conn).unwrap();
+        assert_eq!(report.total, 3);
+        assert_eq!(report.enveloped, 3);
+        assert_ne!(batch[0].prev_hash.as_deref(), Some(events::GENESIS_HASH));
+        assert_ne!(batch[0].prev_hash, batch[1].prev_hash);
+    }
+
+    #[test]
+    fn chain_detects_tampering_via_raw_insert() {
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let _ = write_event(&pool, |_tx, _ts| Ok(create_draft(0))).unwrap();
+
+        // The append-only triggers block UPDATE/DELETE, but a raw INSERT
+        // that bypasses db::write_events is still possible at the SQL
+        // layer. The chain catches it: a bogus prev_hash breaks verify.
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO events (ts, type, item_id, payload, txn_id, actor, origin, device_id, schema_ver, prev_hash) \
+             VALUES (0, 'ITEM_DELETED', 'env-itm-0', '{\"soft\":true}', 'rogue-txn', 'human', NULL, NULL, 1, 'deadbeef')",
+            [],
+        )
+        .unwrap();
+        let err = events::verify_event_chain(&conn).unwrap_err();
+        assert!(
+            err.contains("CHAIN_BROKEN"),
+            "bogus prev_hash must break the chain, got: {err}"
+        );
+    }
+
+    #[test]
+    fn legacy_pre_envelope_rows_upgrade_and_chain_extends_over_them() {
+        // Simulate a v2 database (pre-envelope): apply 001+002 only,
+        // insert a legacy 4-column event row, then run the full
+        // migration set and keep writing. The chain must tolerate the
+        // legacy head and extend from the hash of the last legacy row.
+        let pool = mem_pool();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute_batch(MIGRATIONS[0].1).unwrap();
+            conn.execute_batch(MIGRATIONS[1].1).unwrap();
+            conn.execute_batch("PRAGMA user_version = 2;").unwrap();
+            conn.execute(
+                "INSERT INTO events (ts, type, item_id, payload) VALUES \
+                 (1, 'ITEM_CREATED', 'legacy-1', '{\"content\":\"old\",\"tier\":\"inbox\",\"rank\":\"m\",\"start_at\":null,\"due_at\":null}')",
+                [],
+            )
+            .unwrap();
+        }
+        run_migrations(&pool).unwrap();
+        {
+            let conn = pool.get().unwrap();
+            let v: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            assert_eq!(v, 3);
+            let report = events::verify_event_chain(&conn).unwrap();
+            assert_eq!((report.total, report.enveloped), (1, 0));
+        }
+
+        let ev = write_event(&pool, |_tx, _ts| Ok(create_draft(9))).unwrap();
+        // Chains from the legacy row's recomputed hash, NOT genesis.
+        assert!(ev.prev_hash.is_some());
+        assert_ne!(ev.prev_hash.as_deref(), Some(events::GENESIS_HASH));
+
+        let conn = pool.get().unwrap();
+        let report = events::verify_event_chain(&conn).unwrap();
+        assert_eq!((report.total, report.enveloped), (2, 1));
+    }
+
+    #[test]
+    fn device_id_is_stable_across_migration_runs() {
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let first: String = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| r.get(0))
+            .unwrap();
+        run_migrations(&pool).unwrap();
+        let second: String = pool
+            .get()
+            .unwrap()
+            .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(first, second, "INSERT OR IGNORE must never regenerate the id");
+    }
+
+    // Property: the hash chain verifies for ANY sequence of writes —
+    // single and batched, interleaved. The non-LLM oracle for the
+    // envelope's integrity claim.
+    #[test]
+    fn prop_chain_verifies_for_any_write_sequence() {
+        proptest!(|(batch_sizes in proptest::collection::vec(1usize..4, 1..6))| {
+            let pool = mem_pool();
+            run_migrations(&pool).unwrap();
+            let mut n = 0usize;
+            for size in &batch_sizes {
+                let drafts: Vec<EventDraft> = (0..*size).map(|_| { n += 1; create_draft(n) }).collect();
+                write_events(&pool, |_tx, _ts| Ok(drafts)).unwrap();
+            }
+            let conn = pool.get().unwrap();
+            let report = events::verify_event_chain(&conn).unwrap();
+            prop_assert_eq!(report.total as usize, batch_sizes.iter().sum::<usize>());
+            prop_assert_eq!(report.enveloped, report.total);
         });
     }
 }

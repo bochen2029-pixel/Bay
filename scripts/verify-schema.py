@@ -20,7 +20,7 @@ import re
 import sqlite3
 import sys
 
-EXPECTED_VERSION = 2
+EXPECTED_VERSION = 3
 DB_PATH = os.path.join(
     os.environ["USERPROFILE"],
     "AppData",
@@ -31,6 +31,57 @@ DB_PATH = os.path.join(
 MIGRATIONS_DIR = os.path.join(
     os.path.dirname(__file__), "..", "migrations"
 )
+
+
+ALTER_ADD_RE = re.compile(
+    r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)", re.IGNORECASE
+)
+
+
+def load_altered_columns(migrations_dir: str) -> dict[str, list[str]]:
+    """Collect ALTER TABLE ... ADD COLUMN additions per table.
+
+    Migration 003 extends `events` via ALTER (never a rebuild — the
+    events table is the source of truth and a copy-rebuild would DROP
+    it). SQLite rewrites the stored CREATE text for ALTERed tables, so
+    byte-matching against the original CREATE is impossible; those
+    tables get a column-set check instead (see main()).
+    """
+    out: dict[str, list[str]] = {}
+    for path in sorted(glob.glob(os.path.join(migrations_dir, "*.sql"))):
+        with open(path, "r", encoding="utf-8") as f:
+            sql = f.read()
+        for match in ALTER_ADD_RE.finditer(sql):
+            out.setdefault(match.group(1), []).append(match.group(2))
+    return out
+
+
+def parse_create_columns(stmt: str) -> list[str]:
+    """Column names from a CREATE TABLE statement (depth-aware split,
+    skipping table-level constraints)."""
+    body = stmt[stmt.index("(") + 1 : stmt.rindex(")")]
+    parts, depth, cur = [], 0, []
+    for ch in body:
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        if ch == "," and depth == 0:
+            parts.append("".join(cur))
+            cur = []
+        else:
+            cur.append(ch)
+    parts.append("".join(cur))
+    cols = []
+    for part in parts:
+        tokens = part.strip().split()
+        if not tokens:
+            continue
+        head = tokens[0].upper()
+        if head in ("CHECK", "PRIMARY", "UNIQUE", "FOREIGN", "CONSTRAINT"):
+            continue
+        cols.append(tokens[0].strip('"'))
+    return cols
 
 
 def load_expected_creates_from_all_migrations(migrations_dir: str) -> dict[str, str]:
@@ -66,6 +117,7 @@ def main() -> int:
         return 2
 
     expected = load_expected_creates_from_all_migrations(MIGRATIONS_DIR)
+    altered = load_altered_columns(MIGRATIONS_DIR)
     conn = sqlite3.connect(DB_PATH)
     try:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
@@ -78,6 +130,10 @@ def main() -> int:
             "WHERE type IN ('table','index','trigger') AND name NOT LIKE 'sqlite_%' "
             "ORDER BY name"
         ).fetchall()
+        live_columns = {
+            name: [r[1] for r in conn.execute(f"PRAGMA table_info({name})").fetchall()]
+            for name in altered
+        }
     finally:
         conn.close()
 
@@ -97,6 +153,19 @@ def main() -> int:
 
     failures = 0
     for name in sorted(expected):
+        if name in altered:
+            # Column-set check for ALTERed tables (byte-match impossible:
+            # SQLite rewrote the stored CREATE when the ALTERs applied).
+            want_cols = parse_create_columns(expected[name]) + altered[name]
+            got_cols = live_columns.get(name, [])
+            if sorted(want_cols) == sorted(got_cols):
+                print(f"OK  {name} (column-set check; extended by ALTER)")
+            else:
+                print(f"MISMATCH {name} (column-set)")
+                print(f"  expected columns: {sorted(want_cols)}")
+                print(f"  actual columns:   {sorted(got_cols)}")
+                failures += 1
+            continue
         want = expected[name].rstrip()
         got = actual[name].rstrip()
         if want == got:

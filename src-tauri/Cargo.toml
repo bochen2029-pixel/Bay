@@ -31,6 +31,11 @@ r2d2_sqlite = "0.25"
 
 uuid = { version = "1", features = ["v7"] }
 keyring = "3"
+# SHA-256 for the event-envelope hash chain (migration 003, ADR-008):
+# every event row carries prev_hash = H(previous row), making the
+# append-only log tamper-EVIDENT, not just trigger-protected.
+# RustCrypto, pure Rust, runtime dep (hashing happens in the write path).
+sha2 = "0.10"
 
 axum = "0.7"
 tokio = { version = "1", features = ["full"] }
