@@ -164,6 +164,50 @@
       "expect_on_today": { "0": "D1" }
     },
     {
+      "name": "ACCEPT-DIFF: a finished item keeps its Today membership",
+      "description": "Case 3's rule, asserted at the door that broke it. An item unblocked AND completed in one accepted re-org is not competing for a Today slot (done items hold none), so its membership must survive — and no TODAY_REMOVED may be written for it. The runner could not reach accept_suggestion before, which is exactly why a violation shipped while case 3 passed.",
+      "ops": [
+        { "type": "create", "tier": "B", "content": "y", "rank": "m" },
+        { "type": "today", "item_index": 0, "date": "D2" },
+        { "type": "set_state", "item_index": 0, "state": "blocked", "blocked_reason": "stuck" },
+        { "type": "create", "tier": "B", "content": "z", "rank": "n" },
+        { "type": "today", "item_index": 1, "date": "D2" },
+        { "type": "set_state", "item_index": 1, "state": "blocked", "blocked_reason": "stuck" },
+        { "type": "create", "tier": "A", "content": "f0", "rank": "m" },
+        { "type": "create", "tier": "A", "content": "f1", "rank": "n" },
+        { "type": "create", "tier": "A", "content": "f2", "rank": "o" },
+        { "type": "today", "item_index": 2, "date": "D2" },
+        { "type": "today", "item_index": 3, "date": "D2" },
+        { "type": "today", "item_index": 4, "date": "D2" },
+        {
+          "type": "accept_reorg",
+          "ops": [
+            { "item_index": 0, "action": "active" },
+            { "item_index": 0, "action": "done" },
+            { "item_index": 1, "action": "active" }
+          ]
+        }
+      ],
+      "expect_on_today": { "0": "D2", "1": null },
+      "expect_today_active": { "D2": 3 },
+      "expect_event_counts": { "TODAY_REMOVED": 1 }
+    },
+    {
+      "name": "ACCEPT-DIFF: completing a blocked item leaves undo working",
+      "description": "Every done-door must carry the outgoing blocked reason, or undo writes a blocked row with a null reason, trips the migration-002 CHECK, rolls back, and stays dead on that transaction. The accept path was the last door missing it.",
+      "ops": [
+        { "type": "create", "tier": "A", "content": "stuck work", "rank": "m" },
+        { "type": "set_state", "item_index": 0, "state": "blocked", "blocked_reason": "waiting on legal" },
+        {
+          "type": "accept_reorg",
+          "ops": [{ "item_index": 0, "action": "done" }]
+        },
+        { "type": "undo" }
+      ],
+      "expect_item_state": { "0": "blocked" },
+      "expect_item_blocked_reason": { "0": "waiting on legal" }
+    },
+    {
       "name": "the day-roll is not an undo target",
       "description": "Law 10: the roll executes a timer the human set, so Ctrl+Z looks past it to the last HUMAN action — here the add.",
       "ops": [

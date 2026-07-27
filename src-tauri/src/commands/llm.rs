@@ -218,7 +218,7 @@ pub fn accept_suggestion(
 /// audit event (carrying the resulting event ids) all land together or
 /// not at all. Returns the distinct item ids touched.
 #[derive(Debug)]
-struct ReorgOutcome {
+pub(crate) struct ReorgOutcome {
     /// Item ids named by the accepted ops, first-seen order.
     affected: Vec<String>,
     /// Recurrence children spawned by accepted `done` ops. They reach
@@ -228,7 +228,7 @@ struct ReorgOutcome {
     spawned_ids: Vec<String>,
 }
 
-fn apply_reorg_inner(
+pub(crate) fn apply_reorg_inner(
     pool: &SqlitePool,
     suggestion_event_id: i64,
     ops: Vec<ReorgProposal>,

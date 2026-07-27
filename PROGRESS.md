@@ -837,3 +837,24 @@ the fix.
 
 Gates: cargo **237/237** warning-clean; vitest 118/118; golden 5 files;
 verify-schema --fresh; reachability 39/39.
+
+## 2026-07-27 — golden runner now reaches the accept-diff door
+
+Pass 4 raised a JOINT_WRONG that was really a structural gap: golden
+`today.json` case 3 STATES the rule the accept path broke ("a finished
+Today item keeps its membership"), and the case passed the whole time —
+because the runner never drives `accept_suggestion`. The externality
+existed; nothing pointed it at that door.
+
+- golden_runner gains an `accept_reorg` op (seeds a suggestion, calls
+  `apply_reorg_inner` with the ReorgOp wire shape) plus
+  `expect_item_state` / `expect_item_blocked_reason`.
+- today.json gains 2 ACCEPT-DIFF cases: a finished item keeps its
+  membership while the genuinely-competing item yields the slot; and
+  completing a BLOCKED item through the diff leaves undo working.
+- Negative-controlled BOTH ways: reverting either pass-4 fix makes the
+  corresponding golden case fail. These are the first golden cases in
+  the repo that assert against the LLM accept path.
+
+Gates: cargo 237/237 warning-clean; check-golden 5 files / 15 today
+cases.

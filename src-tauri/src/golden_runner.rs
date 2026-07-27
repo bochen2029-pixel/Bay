@@ -624,7 +624,29 @@ const TODAY_CASE_KEYS: &[&str] = &[
     "expect_last_today_removed_actor",
     "expect_last_today_removed_origin",
     "expect_undone_event_types",
+    "expect_item_state",
+    "expect_item_blocked_reason",
 ];
+
+/// A minimal LLM_SUGGESTION_GENERATED row, so an `accept_reorg` op has
+/// something to accept. The accept path requires the suggestion to
+/// exist; its content is irrelevant to the board rules under test.
+fn seed_suggestion(pool: &SqlitePool) -> i64 {
+    db::write_event(pool, |_tx, _ts| {
+        Ok(db::EventDraft {
+            event_type: EventType::LlmSuggestionGenerated,
+            item_id: None,
+            payload: serde_json::json!({
+                "kind": "analyze",
+                "scope": { "since_ts": 0, "until_ts": 0, "event_count": 0 },
+                "model": "golden-runner",
+                "observations": [],
+            }),
+        })
+    })
+    .unwrap()
+    .id
+}
 
 /// Symbolic date labels (`D1`, `D2`) keep the cases readable and keep
 /// real calendar dates out of assertions.
@@ -700,6 +722,30 @@ fn run_today_case(case: &Value, dates: &serde_json::Map<String, Value>) {
                 resolve_date(dates, op["date"].as_str().unwrap()),
             )
             .map(|_| ()),
+            // The accepted LLM re-org is an ENTRY DOOR like any other,
+            // and the one the runner could not previously reach — which
+            // is how a violation of case 3 below shipped while case 3
+            // itself passed. `ops` mirrors the ReorgOp wire shape.
+            "accept_reorg" => {
+                let ops: Vec<crate::llm::parse::ReorgProposal> = op["ops"]
+                    .as_array()
+                    .expect("accept_reorg ops")
+                    .iter()
+                    .map(|o| crate::llm::parse::ReorgProposal {
+                        item_id: ids[o["item_index"].as_u64().unwrap() as usize].clone(),
+                        action: match o["action"].as_str().unwrap() {
+                            "move" => crate::llm::parse::ProposalAction::Move,
+                            "done" => crate::llm::parse::ProposalAction::Done,
+                            "active" => crate::llm::parse::ProposalAction::Active,
+                            other => panic!("[{name}] unhandled reorg action {other:?}"),
+                        },
+                        to_tier: o["to_tier"].as_str().map(String::from),
+                        rationale: None,
+                    })
+                    .collect();
+                let suggestion_id = seed_suggestion(&pool);
+                crate::commands::llm::apply_reorg_inner(&pool, suggestion_id, ops).map(|_| ())
+            }
             "undo" => crate::commands::events::undo_last_action_inner(&pool).map(|r| {
                 last_undone = r.undone_event_types;
             }),
@@ -803,6 +849,28 @@ fn run_today_case(case: &Value, dates: &serde_json::Map<String, Value>) {
                 )
                 .unwrap_or_else(|e| panic!("[{name}] no TODAY_REMOVED to read {key}: {e}"));
             assert_eq!(actual, expected, "[{name}] {key}");
+        }
+    }
+    for (key, column) in [
+        ("expect_item_state", "state"),
+        ("expect_item_blocked_reason", "blocked_reason"),
+    ] {
+        if let Some(map) = case[key].as_object() {
+            for (index, expected) in map {
+                let id = &ids[index.parse::<usize>().expect("item index key")];
+                let actual: Option<String> = conn
+                    .query_row(
+                        &format!("SELECT {column} FROM items WHERE id = ?1"),
+                        [id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(
+                    actual.as_deref(),
+                    expected.as_str(),
+                    "[{name}] {key} for item {index}"
+                );
+            }
         }
     }
     if let Some(expected) = case["expect_undone_event_types"].as_array() {
