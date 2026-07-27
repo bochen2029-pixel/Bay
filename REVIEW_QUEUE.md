@@ -86,7 +86,22 @@ result is the most important thing on this page:
 | 5 | pass 4's fix (`a0f4775`) + golden accept-door coverage (`1e7467d`) | **FAIL** — 2 MAJOR, **no BLOCKING**: the ordering *key* was still ops-derived, and the contest policy was indistinguishable from its inverse |
 | 6 | pass 5's fix (`ea2fb64`) + the mutation gate | **FAIL** — 3 MAJOR, but *"no incorrect behaviour in the shipped code; every finding is a hole in the guard"* |
 | 7 | pass 6's fix + the guards the gate itself exposed | **PASS with 3 MAJOR** — *"no incorrect behaviour found in the shipped code"*; all three MAJORs are lines the round **leaned on** while adding guards beside them |
-| 8 | pass 7's fix (three guards + the gate's own repairs) | dispatched |
+| 8 | pass 7's fix (three guards + the gate's own repairs) | **FAIL, 2 MAJOR** — *"I found no incorrect behaviour in the shipped code"*; both MAJORs were the two blocked-reason doors the session had **already fixed independently** while the pass ran |
+| 9 | pass 8's fix + the sibling audit + the mixed-op permutations | dispatched |
+
+**Pass 8 is the one that converged.** Its two MAJORs — `session.rs:157`
+and `items.rs:993`, both unguarded doors of the P2e BLOCKING-1 class —
+were found *twice, independently*: by the cold verifier reading
+`14b1111`, and by the main session applying pass 7's own lesson forward
+(*"after fixing a defect, grep for its siblings and guard each"*) and
+auditing all four doors that carry the blocked-reason carry. Two
+different methods, same two doors, same verdict. That is the strongest
+evidence in this queue that the finding is real and the fix is right.
+
+It also means the pattern pass 7 named **repeated inside the very
+commit that named it** — the fix was applied at five doors and guarded
+at three. That is why the audit is now a standing rule rather than an
+observation.
 
 **Read passes 6 and 7 together.** Two rounds running, the cold verifier
 could not make the shipped code do anything wrong. The defects have

@@ -1016,3 +1016,69 @@ mislabelling inflates a statistic the user is judged on), and
 Gates: cargo **247/247** warning-clean; vitest 118/118; **mutations
 20/20**; golden 5 files / 16 today cases; verify-schema --fresh;
 reachability 39/39.
+
+## 2026-07-27 — Eighth cold pass, and the audit that met it halfway
+
+Pass 8: **FAIL on 2 MAJOR, and again "no incorrect behaviour in the
+shipped code"** — three rounds running. Both MAJORs were the same two
+doors the session had *already fixed independently* while the pass was
+in flight: `session.rs:157` and `items.rs:993`, the two remaining
+unguarded doors of the P2e BLOCKING-1 blocked-reason class. The pass
+verified them at 14b1111; they were closed at 47d9393.
+
+Two different methods, same two doors. The verifier read the diff cold;
+the session applied pass 7`s own lesson forward — after fixing a
+defect, grep for its SIBLINGS and guard each — and audited all four
+doors that write the blocked-reason carry. The batch door and the
+session door had no guard at all. (The single-item door turned out to
+be guarded twice, by an undo test in events.rs I had missed by grepping
+only items.rs; my commit message overstated its weakness.)
+
+So the pattern pass 7 named repeated *inside the commit that named it*:
+fixed at five doors, guarded at three. It is now a standing rule.
+
+The audit also produced the structural tell. The Today re-entry cap is
+the same shape of rule and has never drifted — because three doors call
+ONE shared helper, so one mutation breaks all three. The blocked-reason
+carry is written out inline at four doors. **Duplicated logic needs a
+guard per door; shared logic needs one.** Filed as F-05: extracting the
+helper is the real fix, deliberately deferred, because seven passes of
+evidence say changes made late in a chain are where defects hide.
+
+Pass 8`s two MINORs, both closed here with a test and a mutation:
+- `effective_active_today` filtered `today_on == Some(date)`; dropping
+  the date comparison survived the whole suite. Two live dates coexist
+  whenever a day is planned ahead or the app is open across midnight,
+  and the mutation then evicts a legal third member of one day because
+  another day`s member counted against it.
+- the accept door`s already-done skip was unguarded: without it,
+  accepting `done` on an item finished BEFORE the diff appends a
+  done->done event and spawns a DUPLICATE recurrence child.
+
+And it caught an assertion of mine that was structurally unfalsifiable:
+`ItemCreatedPayload` has no `today_on` field, so a spawned child`s
+stored membership is unconditionally NULL. Kept as a tripwire, but
+labelled, with the neighbouring assertion named as the one that bites.
+
+Also closed: the pass-6 gap that had stayed open two rounds — the
+exhaustive permutation test contained no `move` op. Now 24 orderings of
+[move x, move y, done x, done y] including the interleavings, asserting
+who wins, with the fixture built so id order and rank order disagree.
+Excluding `rank` from its fingerprint is deliberate and is filed as
+**QUESTIONS Q02**: intra-tier placement still follows the model`s
+listing order, which is a real order-dependence inside a path whose
+stated invariant is order-independence.
+
+Two process errors of mine, both fixed rather than filed:
+- I ran the in-place mutation gate against the live repo **while a cold
+  verifier was reading it**. A reviewer opening a mutated file reports a
+  defect that does not exist, and nothing in its output distinguishes
+  that from a real one. The gate now writes `.mutation-in-progress`, and
+  I run it in a scratch clone.
+- A 10-minute tool timeout killed a gate run mid-mutation and left
+  broken code in the tree — exactly what the clean-tree refusal exists
+  to make visible, which it did.
+
+Gates: cargo **252/252** warning-clean; vitest 118/118; golden 5 files;
+verify-schema --fresh; reachability 39/39; store-logic. Mutations at 27
+(from 20), running in a clone.
