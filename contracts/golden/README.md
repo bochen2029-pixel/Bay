@@ -26,6 +26,7 @@ contract-reader misread the spec identically.
 | `projection.json` | `apply_event_to_projection` + `rebuild_projection_inner` | proposed | 7 |
 | `swap.json` | `swap_move_inner` | proposed | 6 |
 | `caps.json` | `create_item` + `move_item` + `set_item_state` + `swap_move` | proposed | 12 |
+| `today.json` | `add_to_today` + `roll_day` + `apply_reorg` (the accept door) | proposed | 16 |
 | `rank.json` | `rank_between` | frozen (mirrors `scripts/rank-fixtures.json`) | 42 (in scripts/) |
 
 ## Status lifecycle

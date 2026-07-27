@@ -453,10 +453,16 @@ pub(crate) fn apply_reorg_inner(
                 &parent, ts, rule, child_tier, child_rank.clone(),
             );
             // Register the child so a later sibling spawn counts it.
-            // Modelled faithfully rather than cloned wholesale: a stale
-            // date or first_step inherited here would be invisible today
-            // (only tier+state are read) and wrong the moment anything
-            // else consults the simulation.
+            // Modelled faithfully rather than cloned wholesale — and
+            // `today_on` in particular is NOT cosmetic: the Today loop
+            // below reads it back out of this very map through
+            // `effective_active_today`, so a child carrying its parent's
+            // day would occupy a slot it holds no membership in and
+            // evict a real reactivation. (`first_step` and
+            // `blocked_reason` genuinely are unread today; they are
+            // cleared because a stale one is wrong the moment anything
+            // else consults the simulation, not because it would bite
+            // now.)
             let mut child = parent.clone();
             child.id = child_id.clone();
             child.tier = child_tier;
@@ -1254,8 +1260,11 @@ mod tests {
         // are per-tier sequences, so two first-in-tier items otherwise
         // share a rank and the id tiebreak decides — which let the tier
         // byte be a constant with every test still green. With the
-        // ranks inverted, only the tier component can produce the
-        // expected answer.
+        // ranks inverted, removing or inverting the tier component
+        // fails this test. (It is not the case that ONLY tier can
+        // produce this answer: a key of `(0, "", id)` also would,
+        // since `in-a` was created first. The narrower claim is the
+        // true one, and it is what the two gate mutations verify.)
         crate::commands::items::move_item_inner(
             &pool,
             in_a.clone(),
@@ -1303,6 +1312,22 @@ mod tests {
             None,
             "the B-tier item yields — tier is the highest-order component of the contest key"
         );
+
+        // The eviction's CAUSE, not just its effect. `expired` is
+        // reserved for the day-roll — the one sanctioned system write
+        // (CLAUDE.md principle 10) — and Mirror counts it as roll-over
+        // slippage that the coach is then told about. An accept is the
+        // human's own doing, so mislabelling it here would quietly
+        // inflate a behavioural statistic the user is judged on.
+        let cause: String = conn
+            .query_row(
+                "SELECT json_extract(payload, '$.cause') FROM events \
+                 WHERE type = 'TODAY_REMOVED' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cause, "user", "an accepted diff is the human's doing, not the clock's");
     }
 
     #[test]
@@ -1533,6 +1558,235 @@ mod tests {
             .unwrap();
         assert_eq!(state, "blocked");
         assert_eq!(reason.as_deref(), Some("waiting on legal"));
+    }
+
+    #[test]
+    fn accept_reorg_unblock_stays_undoable() {
+        // The done-door above earned a test, a golden case AND a gate
+        // mutation. Its identical twin one match arm down — unblocking —
+        // had none of the three, and dropping the same line there
+        // reproduces the same BLOCKING bug through the other door: undo
+        // of an unblock writes `state='blocked'` with a null reason,
+        // trips the migration-002 CHECK, rolls the transaction back, and
+        // leaves Ctrl+Z dead on it forever.
+        //
+        // The bug was fixed at every door at once; the GUARDS were only
+        // ever added at the door the report happened to name.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "stuck work".into(), None, None).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            item.id.clone(),
+            ItemState::Blocked,
+            Some("waiting on legal".into()),
+        )
+        .unwrap();
+        let sug = seed_suggestion(&pool);
+        apply_reorg_inner(
+            &pool,
+            sug,
+            vec![ReorgProposal {
+                item_id: item.id.clone(),
+                action: ProposalAction::Active,
+                to_tier: None,
+                rationale: None,
+            }],
+        )
+        .unwrap();
+
+        {
+            let conn = pool.get().unwrap();
+            let reason: Option<String> = conn
+                .query_row(
+                    "SELECT json_extract(payload, '$.blocked_reason') FROM events \
+                     WHERE type = 'ITEM_STATE_CHANGED' ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                reason.as_deref(),
+                Some("waiting on legal"),
+                "the unblock event must carry the reason it cleared"
+            );
+        }
+
+        crate::commands::events::undo_last_action_inner(&pool).expect("undo must never fail");
+        let conn = pool.get().unwrap();
+        let (state, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT state, blocked_reason FROM items WHERE id = ?1",
+                [&item.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "blocked");
+        assert_eq!(
+            reason.as_deref(),
+            Some("waiting on legal"),
+            "undoing an unblock must restore the reason, not a null the CHECK rejects"
+        );
+    }
+
+    #[test]
+    fn accept_reorg_spawned_child_does_not_inherit_a_today_commitment() {
+        // `child.today_on = None` is load-bearing, and the comment beside
+        // it used to argue the opposite — that a wrongly-inherited field
+        // would be "invisible today (only tier+state are read)".
+        // `effective_active_today` reads `today_on`, out of the SAME
+        // simulation the spawn loop inserts the child into one loop
+        // earlier. A child carrying its parent's day would occupy a
+        // Today slot it holds no real membership in, and evict a
+        // genuine reactivation that should have fit.
+        use crate::commands::items::set_item_recurrence_inner;
+        const DATE: &str = "2026-07-26";
+        let pool = fresh_pool();
+
+        // `w` joins the day BEFORE blocking — joining is itself
+        // cap-gated, and a blocked item holds no slot.
+        let w = create_item_inner(&pool, Tier::B, "unblock me".into(), None, None).unwrap();
+        crate::commands::day::add_to_today_inner(&pool, w.id.clone(), DATE.into()).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            w.id.clone(),
+            ItemState::Blocked,
+            Some("stuck".into()),
+        )
+        .unwrap();
+
+        // The recurring parent, committed to the same day, plus two
+        // more actives: the day sits at 3 of 3, and completing the
+        // parent frees exactly one slot — the one `w` needs.
+        let r = create_item_inner(&pool, Tier::A, "weekly".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, r.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        crate::commands::day::add_to_today_inner(&pool, r.id.clone(), DATE.into()).unwrap();
+        for i in 0..2 {
+            let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into()).unwrap();
+        }
+
+        let sug = seed_suggestion(&pool);
+        let outcome = apply_reorg_inner(
+            &pool,
+            sug,
+            vec![
+                done_op(&r.id),
+                ReorgProposal {
+                    item_id: w.id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(outcome.spawned_ids.len(), 1, "the parent owes one instance");
+
+        let conn = pool.get().unwrap();
+        let today_of = |id: &String| -> Option<String> {
+            conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            today_of(&outcome.spawned_ids[0]),
+            None,
+            "next week's instance is not committed to today — the human never chose that"
+        );
+        assert_eq!(
+            today_of(&w.id).as_deref(),
+            Some(DATE),
+            "and the slot the completion freed goes to the reactivation, \
+             not to a phantom occupant that holds no real membership"
+        );
+    }
+
+    #[test]
+    fn accept_reorg_today_contest_breaks_a_rank_tie_by_id() {
+        // The `id` component is what makes the contest key a TOTAL
+        // order. Ranks are per-tier sequences and there is no UNIQUE
+        // constraint on (tier, rank) — this transaction's own comment
+        // says two items can legitimately hold the same one. Drop the
+        // id and `sort_by`, being stable, falls back to input order:
+        // the `reactivated` vector, which is the ops array, which is
+        // the model's. That is exactly the lever SPEC §8.7 forbids,
+        // and both existing order-independence tests miss it because
+        // they use distinct ranks.
+        const DATE: &str = "2026-07-26";
+        let build = || {
+            let pool = fresh_pool();
+            let mut ids = Vec::new();
+            for name in ["p", "q"] {
+                let it = create_item_inner(&pool, Tier::B, name.into(), None, None).unwrap();
+                crate::commands::day::add_to_today_inner(&pool, it.id.clone(), DATE.into())
+                    .unwrap();
+                crate::commands::items::set_item_state_inner(
+                    &pool,
+                    it.id.clone(),
+                    ItemState::Blocked,
+                    Some("stuck".into()),
+                )
+                .unwrap();
+                // Same tier, and now the SAME RANK. Nothing but the id
+                // can separate these two.
+                crate::commands::items::move_item_inner(
+                    &pool,
+                    it.id.clone(),
+                    Tier::B,
+                    Some("m".into()),
+                    None,
+                )
+                .unwrap();
+                ids.push(it.id);
+            }
+            // Two actives already on the date → exactly one free slot.
+            for i in 0..2 {
+                let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+                crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into()).unwrap();
+            }
+            let sug = seed_suggestion(&pool);
+            let (lo, hi) = if ids[0] < ids[1] {
+                (ids[0].clone(), ids[1].clone())
+            } else {
+                (ids[1].clone(), ids[0].clone())
+            };
+            (pool, lo, hi, sug)
+        };
+
+        let mut results = Vec::new();
+        for reversed in [false, true] {
+            let (pool, lo, hi, sug) = build();
+            let active_op = |id: &String| ReorgProposal {
+                item_id: id.clone(),
+                action: ProposalAction::Active,
+                to_tier: None,
+                rationale: None,
+            };
+            let mut ops = vec![active_op(&lo), active_op(&hi)];
+            if reversed {
+                ops.swap(0, 1);
+            }
+            apply_reorg_inner(&pool, sug, ops).unwrap();
+            let conn = pool.get().unwrap();
+            let today_of = |id: &String| -> Option<String> {
+                conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                    .unwrap()
+            };
+            results.push((today_of(&lo), today_of(&hi)));
+        }
+        assert_eq!(
+            results[0], results[1],
+            "reordering the ops changed who lost a TIED contest — with the tiebreak gone \
+             the model decides it by listing order"
+        );
+        assert_eq!(
+            results[0].0.as_deref(),
+            Some(DATE),
+            "with tier and rank tied, the lower id keeps the slot"
+        );
+        assert_eq!(
+            results[0].1, None,
+            "and the higher id is the one that yields"
+        );
     }
 
     #[test]

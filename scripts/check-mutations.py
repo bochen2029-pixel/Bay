@@ -186,10 +186,39 @@ MUTATIONS = [
         "replace": "INSERT OR REPLACE INTO meta (key, value) VALUES ('device_id', ?1)",
         "why": "ADR-008: identity must travel with the data, not be reminted each launch",
     },
+    {
+        "name": "accept/unblock-drops-blocked-reason",
+        "file": LLM,
+        "find": """                    // Preserve the outgoing blocked reason so an undo can
+                    // restore the blocked row (migration-002 CHECK).
+                    let reason = if cur.state == ItemState::Blocked {
+                        cur.blocked_reason.clone()
+                    } else {
+                        None
+                    };""",
+        "replace": "                    let reason: Option<String> = None;",
+        "why": "P2e BLOCKING-1 at the unblock door — the done door's identical twin, fixed at the same time but never guarded",
+    },
+    {
+        "name": "accept/spawned-child-inherits-today",
+        "file": LLM,
+        "find": "            child.today_on = None;",
+        "replace": "            child.today_on = parent.today_on.clone();",
+        "why": "a spawned child carrying its parent's day occupies a Today slot it holds no membership in, evicting a real reactivation",
+    },
+    {
+        "name": "contest/id-tiebreak-removed",
+        "file": LLM,
+        "find": """            it.rank.clone(),
+            it.id.clone(),""",
+        "replace": """            it.rank.clone(),
+            String::new(),""",
+        "why": "SPEC §8.7: without the id the contest key is not a total order, and tied ranks fall back to the model's ops order",
+    },
 ]
 
 
-def run_suite() -> tuple[bool, list[str]]:
+def run_suite() -> tuple[bool, list[str], str]:
     """(passed, names of tests that FAILED).
 
     The failing test names matter: a mutation "caught" by an unrelated
@@ -205,21 +234,36 @@ def run_suite() -> tuple[bool, list[str]]:
     )
     out = proc.stdout + proc.stderr
     if "error[E" in out or "could not compile" in out:
-        return proc.returncode == 0, ["<COMPILE ERROR — weak guard>"]
+        return proc.returncode == 0, ["<COMPILE ERROR — weak guard>"], out
     failed = re.findall(r"^\s{4}(\S+)$", out, re.MULTILINE)
     # The `failures:` block lists bare test paths; keep the plausible ones.
     names = sorted({f for f in failed if "::" in f})
-    return proc.returncode == 0, names
+    return proc.returncode == 0, names, out
 
 
-def working_tree_is_clean() -> bool:
+def tracked_dirt() -> list[str]:
+    """Paths with TRACKED modifications, which is the only dirt that matters.
+
+    The refusal exists because this script rewrites tracked source files
+    in place and restores them from memory; if a run is killed, recovery
+    is `git checkout -- <file>`, which only works when there was nothing
+    else uncommitted to confuse it. Untracked files cannot be clobbered
+    by that, so refusing on them only made the gate unrunnable during
+    normal work — which lowers the odds it is ever run.
+    """
     proc = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
-    return proc.returncode == 0 and not proc.stdout.strip()
+    if proc.returncode != 0:
+        return ["<git status failed>"]
+    return [
+        line[3:]
+        for line in proc.stdout.splitlines()
+        if line.strip() and not line.startswith("??")
+    ]
 
 
 def main() -> int:
@@ -242,19 +286,25 @@ def main() -> int:
     # crash — and a mutated tree left behind is far worse than a failed
     # run. Requiring a clean tree makes that state detectable: if a run
     # is killed, the next one refuses and `git checkout .` is the fix.
-    if not working_tree_is_clean():
+    dirty = tracked_dirt()
+    if dirty:
         print(
-            "FAIL: working tree is dirty. This script mutates files in place and\n"
-            "      needs a clean tree so an interrupted run is recoverable with\n"
-            "      `git checkout -- .` (and so its own edits are never committed).",
+            "FAIL: tracked files are modified. This script mutates files in place\n"
+            "      and needs them clean so an interrupted run is recoverable with\n"
+            "      `git checkout -- .` (and so its own edits are never committed).\n"
+            "      Modified: " + ", ".join(dirty[:8]),
             file=sys.stderr,
         )
         return 2
 
     print("Baseline: the suite must pass before mutating.")
-    passed, _ = run_suite()
+    passed, _, out = run_suite()
     if not passed:
+        # Without the output the operator gets a verdict and no lead —
+        # and a cargo failure here is as often environmental (a lock, a
+        # transient link error) as a genuinely red suite.
         print("FAIL: baseline suite is already red — fix that first.", file=sys.stderr)
+        print("\n".join(out.splitlines()[-40:]), file=sys.stderr)
         return 2
     print("OK  baseline green\n")
 
@@ -275,16 +325,30 @@ def main() -> int:
         try:
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(mutated)
-            passed, failing = run_suite()
+            passed, failing, out = run_suite()
         finally:
             # Restore unconditionally.
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(original)
-        if not passed:
-            guard = failing[0] if failing else "(unnamed)"
-            extra = f" +{len(failing) - 1}" if len(failing) > 1 else ""
-            print(f"OK   {m['name']}: caught by {guard}{extra}")
-            if failing and failing[0].startswith("<COMPILE"):
+        if not passed and not failing:
+            # A red suite with no parseable test name is not evidence of
+            # a guard — cargo can exit non-zero for reasons that have
+            # nothing to do with the mutation (a file lock, a transient
+            # link failure), and scoring that as "caught" would let a
+            # genuinely unguarded line pass the gate on a flake.
+            print(f"FAIL {m['name']}: INCONCLUSIVE — suite failed but named no test")
+            print("\n".join(out.splitlines()[-20:]))
+            survivors.append((m, "inconclusive"))
+        elif not passed:
+            # Every failing name, not just the alphabetically first one:
+            # the gate cannot know which test is causally responsible,
+            # and printing one implies a certainty it does not have.
+            # That mattered — the round that added these guards used
+            # this output to decide which of them were decoration.
+            shown = ", ".join(failing[:4])
+            extra = f" (+{len(failing) - 4} more)" if len(failing) > 4 else ""
+            print(f"OK   {m['name']}: caught by {shown}{extra}")
+            if failing[0].startswith("<COMPILE"):
                 print(f"     ^ weak guard: no assertion observed the change")
         else:
             print(f"FAIL {m['name']}: SURVIVED — nothing tests {m['why']}")
