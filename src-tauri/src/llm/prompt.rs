@@ -16,6 +16,9 @@ Rules:\n\
 - Only propose an action when the data clearly justifies it (e.g. an item untouched far past its tier's staleness threshold, or an A-tier inflated relative to throughput). Prefer few high-confidence proposals over many.\n\
 - Valid proposal actions: \"move\" (with to_tier one of \"inbox\"|\"A\"|\"B\"|\"C\"), \"done\", \"active\".\n\
 - Use only item ids that appear in the data below.\n\
+- You can see RECORDED BEHAVIOUR, not just the board: focus sessions, what broke them, and which committed items have never been started. Prefer an observation grounded in what the user actually did over one grounded in how a board looks. \"You have not started this in the three weeks since you called it critical\" beats \"this item is stale\".\n\
+- Zero sessions on a committed item is evidence of avoidance, not of laziness, and there is usually a reason: the item may be too large, too vague, or missing a first physical step. Say the useful version.\n\
+- Report; do not exhort. No praise, no encouragement, no motivational framing, and never a streak or a score. The user asked for a mirror, not a coach with opinions about their character.\n\
 - Output strictly valid JSON matching the schema. If nothing is interesting, return empty arrays.\n\
 - Do not repeat what the user can trivially see by looking at the board.\n\
 \n\
@@ -113,6 +116,57 @@ pub fn format_user_prompt(ctx: &AnalyzeContext) -> String {
                 &mut out,
                 "  - id={} tier={} untouched={}d (threshold {}d) content={}",
                 s.id, s.tier, s.days_untouched, s.threshold_days, s.content
+            )
+            .unwrap();
+        }
+        writeln!(&mut out).unwrap();
+    }
+
+    // ── behavior (v0.3) ───────────────────────────────────────────
+    // The log records WORK now, not only management. Without this the
+    // sharpest thing the model could say was "this item is old"; with
+    // it, it can say "you have never started the thing you called
+    // critical", which is a different and much more useful sentence.
+    writeln!(&mut out, "=== ATTENTION (recorded focus sessions) ===").unwrap();
+    writeln!(
+        &mut out,
+        "- Sessions in window: {} totalling {} minutes",
+        ctx.sessions_in_window, ctx.session_minutes_in_window
+    )
+    .unwrap();
+    writeln!(
+        &mut out,
+        "- Session outcomes: {}",
+        render_map(&ctx.sessions_by_outcome)
+    )
+    .unwrap();
+    if !ctx.interruptions_by_cause.is_empty() {
+        writeln!(
+            &mut out,
+            "- What broke focus: {}",
+            render_map(&ctx.interruptions_by_cause)
+        )
+        .unwrap();
+    }
+    writeln!(
+        &mut out,
+        "- Today: {} planned, {} finished, {} rolled over unfinished",
+        ctx.today_planned_in_window, ctx.today_finished_in_window, ctx.today_expired_in_window
+    )
+    .unwrap();
+    writeln!(&mut out).unwrap();
+
+    if !ctx.never_started.is_empty() {
+        writeln!(
+            &mut out,
+            "=== COMMITTED BUT NEVER STARTED (zero focus sessions, ever) ==="
+        )
+        .unwrap();
+        for s in &ctx.never_started {
+            writeln!(
+                &mut out,
+                "  - id={} tier={} untouched={}d content={}",
+                s.id, s.tier, s.days_untouched, s.content
             )
             .unwrap();
         }

@@ -739,3 +739,30 @@ Gates: vitest 118/118, build clean.
   only). Negative-control verified: renaming the `set_first_step` call
   site makes it fail by name. A one-off audit would have been another
   check that ran once.
+
+## 2026-07-27 — F-04 coach v2: the LLM can finally see behaviour
+
+Until now `compress` shipped only board TOPOLOGY, so the sharpest
+observation the coach could make was "this item is old" — while the
+Mirror, from the same log, could say "you have never started it". The
+firewall was never the limit; the context was.
+
+- compression.rs gains: sessions in window + total minutes, outcomes by
+  kind, what broke focus (the interruption taxonomy), Today
+  planned/finished/rolled-over, and `never_started` — committed (A/B)
+  active items with ZERO sessions EVER. Deliberately NOT windowed: "you
+  have never started this" must not weaken to "not lately".
+- prompt.rs renders an ATTENTION block and a COMMITTED BUT NEVER
+  STARTED block, and the system prompt now instructs: prefer an
+  observation grounded in what the user DID over how the board LOOKS;
+  treat zero sessions as evidence of avoidance with a cause (too large,
+  too vague, no first step) rather than laziness; and **report, do not
+  exhort** — no praise, no encouragement, no streaks or scores.
+- Firewall untouched: this is strictly more CONTEXT, not more
+  authority. The LLM still proposes; the human still accepts; the
+  deterministic tier still writes.
+- 4 tests, including one that pins SPEC §8.3`s <=2500-token budget on a
+  full board (A+B at cap, 40 C, 40 inbox) so the new blocks cannot
+  quietly blow the prompt size.
+
+Gates: cargo 233/233 warning-clean.
