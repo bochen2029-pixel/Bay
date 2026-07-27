@@ -122,3 +122,20 @@ I invented.
 it is optional rather than owed: board-deriving the rank would cost one
 sort and let §8.7 drop its caveat. **Doing nothing is now a legitimate
 outcome** — the documentation and the code already agree.
+
+**Addendum, pass 10.** The verifier demonstrated that the exception is
+narrower than §8.7's sentence read. Ranks allocated in accept #1 are
+real once committed, so they are part of `orig` for accept #2: two runs
+differing *only* in accept #1's op order, with a byte-identical accept
+#2, lose different recurrence children to Inbox. So the model's listing
+order can reach across accepts, via the board, into a later contest.
+
+This does not make the code wrong — `board_order` ignoring *post-diff*
+ranks is true within one accept, which is the scope that matters for
+predictability, and the human sees and can reorder the board in
+between. But §8.7 said "it decides nothing about what commits or what
+is lost" without qualification, so **§8.7 has been amended to say
+"within that accept"** and to state the channel explicitly. That is the
+one thing that was actually owed here. Alternative (1) remains
+optional, and I want to be explicit that I am not re-manufacturing the
+urgency this correction was itself about.

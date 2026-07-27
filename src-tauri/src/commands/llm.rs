@@ -1247,10 +1247,27 @@ mod tests {
     /// Today slot), and how full A and that date already are. The
     /// ordering is generated too.
     ///
-    /// `rank` is excluded from the fingerprint for the reason recorded
-    /// in QUESTIONS Q02 — `next_rank` allocates end-of-tier ranks in
-    /// ops-array order by design — NOT because excluding it makes the
-    /// test pass. Tier, state and Today membership carry every contest.
+    /// Two scoping notes, both from v0.3 pass 10:
+    ///
+    /// The fingerprint is `(content, tier, state, today_on)` — it omits
+    /// EIGHT columns, not just `rank`. Most are omitted of necessity:
+    /// `id`, `created_at`/`updated_at`, `due_at`/`start_at` all derive
+    /// from the per-call `ts`, which differs between the two pools, so
+    /// comparing them would fail for reasons that have nothing to do
+    /// with ordering. `rank` is omitted for the reason recorded in
+    /// QUESTIONS Q02 (`next_rank` allocates end-of-tier ranks in
+    /// ops-array order by design). `blocked_reason` and `first_step`
+    /// are omitted only because this fixture never varies them. Tier,
+    /// state and Today membership carry every contest, which is what
+    /// the property is about.
+    ///
+    /// The permutation freely reorders the two ops on the SAME item
+    /// (`move r`, `done r`), which is more than SPEC §8.7 grants — it
+    /// says ops on one item need not commute. They do commute here
+    /// because pass 2 reads the finished simulation, so "done in C then
+    /// moved to A" and "moved to A then done" are the same board. If
+    /// that ever legitimately diverges this property will fail, and the
+    /// right response is to narrow the permutation, not the invariant.
     #[test]
     fn prop_accept_reorg_result_is_a_function_of_the_op_set() {
         use crate::commands::items::set_item_recurrence_inner;
@@ -1280,10 +1297,26 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let committed = AtomicUsize::new(0);
         let rejected = AtomicUsize::new(0);
+        // The two-children-contending-for-one-A-slot shape is the exact
+        // configuration passes 5 and 6 found defects in, and it is
+        // generated only ~1.4% of the time — so roughly one run in six
+        // would never reach it, silently. Counted and asserted for the
+        // same reason as commit/reject: an unreached branch is an
+        // unasserted one. (v0.3 pass 10 measured the rate.)
+        let contested = AtomicUsize::new(0);
 
+        // `a_fill` is drawn from a WEIGHTED list, not a flat range. The
+        // contested board — two children wanting one free A slot —
+        // needs a_fill == 4 exactly, and with a flat 0..6 the whole
+        // shape appears in only ~1.4% of cases, so roughly one run in
+        // six would never reach it and the assertion below would flake.
+        // Weighting toward 4 (and doubling the case count) makes it
+        // ~5%, i.e. a zero-contest run about a 1-in-100k event, while
+        // 0/1/2/3/5 still appear for breadth.
         proptest!(
-            ProptestConfig::with_cases(128),
-            |(n_rec in 1usize..3, n_blk in 1usize..3, a_fill in 0usize..6,
+            ProptestConfig::with_cases(256),
+            |(n_rec in 1usize..3, n_blk in 1usize..3,
+              a_fill in prop::sample::select(vec![0usize, 1, 2, 3, 4, 4, 4, 5]),
               t_fill in 0usize..3, finish in prop::collection::vec(any::<bool>(), 2),
               keys in prop::collection::vec(0u32..10_000, 6))| {
             // Build the same board twice and run two different orderings
@@ -1384,19 +1417,38 @@ mod tests {
             );
             if ok_a {
                 committed.fetch_add(1, Ordering::Relaxed);
+                // Two recurring parents both completing means two
+                // children want the same tier; if any landed in Inbox,
+                // a real contest was decided.
+                if n_rec == 2 && finish[0] && finish[1] {
+                    let overflowed = fingerprint(&pool_a)
+                        .iter()
+                        .any(|(content, tier, state, _today)| {
+                            content.starts_with("rec-") && tier == "inbox" && state == "active"
+                        });
+                    if overflowed {
+                        contested.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
             } else {
                 rejected.fetch_add(1, Ordering::Relaxed);
             }
         });
 
-        let (c, r) = (
+        let (c, r, k) = (
             committed.load(Ordering::Relaxed),
             rejected.load(Ordering::Relaxed),
+            contested.load(Ordering::Relaxed),
         );
         assert!(
             c > 0 && r > 0,
             "the generator must exercise BOTH outcomes or `ok_a == ok_b` asserts nothing: \
              {c} committed, {r} rejected"
+        );
+        assert!(
+            k > 0,
+            "the generator never produced the two-children-one-slot contest — the shape \
+             passes 5 and 6 found defects in. {c} committed, {r} rejected, {k} contested."
         );
     }
 

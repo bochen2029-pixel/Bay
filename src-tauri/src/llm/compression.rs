@@ -402,6 +402,45 @@ mod tests {
     }
 
     #[test]
+    fn the_window_boundary_is_pinned_from_both_sides() {
+        // `since_ts = now_ms - window_days * MS_PER_DAY` was unpinned:
+        // doubling it left the suite green (v0.3 pass 10), because every
+        // compression fixture creates its items microseconds before
+        // compressing, so `since_ts` is always safely in the past and
+        // only one side of the comparison is ever taken.
+        //
+        // Everything windowed that the coach is handed rides on this —
+        // `event_count`, `created_in_window`, `done_in_window`,
+        // `created_by_tier`, the session counts, Today honesty. CLAUDE's
+        // LLM-scope example #1 ("You created 23 A items this month and
+        // completed 6") is exactly such a number, and a silently doubled
+        // window makes it a false statement about the user.
+        //
+        // This is the same hole pass 9 fixed in mirror.rs one module
+        // over; only the mirror copy was looked at then.
+        const DAY: i64 = 86_400_000;
+        let pool = fresh_pool();
+        create_item_inner(&pool, Tier::A, "made now".into(), None, None).unwrap();
+        let now = db::unix_ms_now();
+
+        // Pretend we are 3 days later. A 2-day window ENDS after the
+        // item was created, so it must not be counted...
+        let narrow = compress(&pool, 2, &Settings::default(), now + 3 * DAY).unwrap();
+        assert_eq!(
+            narrow.created_in_window, 0,
+            "an item created 3 days before `now` is outside a 2-day window — a wider \
+             window than requested would count it"
+        );
+        // ...and a 5-day window reaches back past it, so it must.
+        let wide = compress(&pool, 5, &Settings::default(), now + 3 * DAY).unwrap();
+        assert_eq!(
+            wide.created_in_window, 1,
+            "a 5-day window does reach it — otherwise the assertion above would hold \
+             for a window of any size"
+        );
+    }
+
+    #[test]
     fn never_started_is_committed_tiers_only_and_survives_the_window() {
         // "You have never started this" must not quietly weaken to "not
         // lately", and C/Inbox are not commitments.

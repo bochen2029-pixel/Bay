@@ -231,6 +231,34 @@ struct CaptureBody {
     content: String,
 }
 
+/// The tier a LAN capture lands in. CLAUDE.md §5 is explicit and
+/// unconditional — captures go to Inbox, **never** directly to A/B/C,
+/// because tiering is deliberate human work. Named rather than inlined
+/// so the rule is greppable and can be asserted without a socket.
+const CAPTURE_TIER: Tier = Tier::Inbox;
+
+/// The shared-secret decision, lifted out of the axum extractors.
+///
+/// `serve_capture` needs a live `AppHandle`, so with the policy inline
+/// this module had **no tests at all** (v0.3 pass 10) — and it is the
+/// only network listener in the app. Separating the decision from the
+/// transport makes the part that matters assertable.
+fn secret_ok(expected: Option<&str>, provided: Option<&str>) -> bool {
+    match expected {
+        None => true, // disabled: LAN-trust, per SPEC §7.4
+        Some(e) => provided == Some(e),
+    }
+}
+
+/// Trim-and-reject-empty, lifted out for the same reason.
+fn normalize_capture_content(raw: &str) -> Result<String, &'static str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("CONTENT_EMPTY");
+    }
+    Ok(trimmed.to_string())
+}
+
 #[derive(Serialize)]
 struct CaptureOk {
     ok: bool,
@@ -245,21 +273,19 @@ async fn serve_capture(
 ) -> Result<Json<CaptureOk>, (StatusCode, String)> {
     // Shared-secret gate. Accept in query string (friendly from the QR
     // URL) or X-Bay-Secret header (friendly from non-browser clients).
-    if let Some(expected) = &state.shared_secret {
-        let provided = q.s.as_deref().or_else(|| {
-            headers
-                .get("x-bay-secret")
-                .and_then(|v| v.to_str().ok())
-        });
-        if provided != Some(expected.as_str()) {
-            return Err((StatusCode::UNAUTHORIZED, "bad secret".into()));
-        }
+    let provided = q.s.as_deref().or_else(|| {
+        headers
+            .get("x-bay-secret")
+            .and_then(|v| v.to_str().ok())
+    });
+    if !secret_ok(state.shared_secret.as_deref(), provided) {
+        return Err((StatusCode::UNAUTHORIZED, "bad secret".into()));
     }
 
-    let content = body.content.trim().to_string();
-    if content.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, "CONTENT_EMPTY".into()));
-    }
+    let content = match normalize_capture_content(&body.content) {
+        Ok(c) => c,
+        Err(e) => return Err((StatusCode::BAD_REQUEST, e.into())),
+    };
 
     // Run the synchronous write on a blocking thread so we don't
     // stall the tokio runtime on SQLite I/O.
@@ -272,7 +298,7 @@ async fn serve_capture(
                     origin: Some("lan".into()),
                     ..Default::default()
                 },
-                Tier::Inbox,
+                CAPTURE_TIER,
                 content,
                 None,
                 None,
@@ -304,6 +330,61 @@ async fn serve_capture(
         ok: true,
         id: item.id,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn captures_land_in_inbox_and_nowhere_else() {
+        // CLAUDE.md §5, verbatim: "Both go to Inbox, never directly to
+        // A/B/C. Tiering is deliberate human work." A capture that
+        // landed in A would route around the triage step the caps exist
+        // to force — and it would do so from the network, without the
+        // user present. v0.3 pass 10 changed this to Tier::A and the
+        // whole suite stayed green, because this module had no tests.
+        assert_eq!(CAPTURE_TIER, Tier::Inbox);
+    }
+
+    #[test]
+    fn secret_gate_is_closed_by_default_and_open_only_on_an_exact_match() {
+        // Disabled means LAN-trust (SPEC §7.4): no secret configured,
+        // anything is accepted.
+        assert!(secret_ok(None, None));
+        assert!(secret_ok(None, Some("anything")));
+
+        // Configured means EXACT match, and nothing else.
+        assert!(secret_ok(Some("hunter2"), Some("hunter2")));
+        assert!(!secret_ok(Some("hunter2"), None), "a missing secret must not pass");
+        assert!(!secret_ok(Some("hunter2"), Some("")), "empty is not a match");
+        assert!(!secret_ok(Some("hunter2"), Some("wrong")));
+        assert!(
+            !secret_ok(Some("hunter2"), Some("hunter")),
+            "a prefix must not pass — this is the app's only network listener"
+        );
+        assert!(
+            !secret_ok(Some("hunter2"), Some("hunter2 ")),
+            "no trimming: the secret is compared as sent"
+        );
+        assert!(
+            !secret_ok(Some("hunter2"), Some("HUNTER2")),
+            "case matters"
+        );
+    }
+
+    #[test]
+    fn capture_content_is_trimmed_and_empty_is_refused() {
+        assert_eq!(normalize_capture_content("  buy milk  ").unwrap(), "buy milk");
+        assert_eq!(normalize_capture_content("x").unwrap(), "x");
+        for empty in ["", "   ", "\t", "\n", " \r\n "] {
+            assert_eq!(
+                normalize_capture_content(empty),
+                Err("CONTENT_EMPTY"),
+                "whitespace-only capture {empty:?} must be refused, not stored as a blank item"
+            );
+        }
+    }
 }
 
 /// Cheap encoder for the handful of characters a shared secret might

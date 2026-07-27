@@ -324,34 +324,57 @@ mod tests {
     }
 
     #[test]
-    fn null_is_distinguishable_from_empty_string() {
-        // The encoding's stated property. Without the None tag, a NULL
-        // `origin` and an empty-string `origin` would hash identically,
-        // so provenance could be erased rather than altered.
-        let with_none = event_row_hash(
-            1, 1, "ITEM_CREATED", None, "{}", None, None, None, None, None, None,
+    fn a_value_moved_between_adjacent_nullable_columns_changes_the_hash() {
+        // The None TAG, specifically.
+        //
+        // The version of this test committed at b9076c2 compared an
+        // all-NULL row against an all-empty-string row — and passed
+        // WITHOUT the tag, because the empty fields still contribute
+        // their own presence byte and length. It asserted a true thing
+        // the tag was not responsible for. v0.3 pass 10 deleted
+        // `None => h.update([0u8])` and all 261 tests stayed green.
+        //
+        // These two rows collide EXACTLY when the tag is absent: a NULL
+        // then contributes nothing at all, so a value can be slid from
+        // one nullable column into its neighbour undetected — which for
+        // `txn_id`/`actor`/`origin` makes provenance forgeable, not
+        // merely erasable.
+        let actor_holds_it = event_row_hash(
+            1, 1, "T", None, "{}", None, Some("x"), None, None, None, None,
         );
-        let with_empty = event_row_hash(
-            1, 1, "ITEM_CREATED", Some(""), "{}", Some(""), Some(""), Some(""), Some(""), None,
-            Some(""),
+        let txn_holds_it = event_row_hash(
+            1, 1, "T", None, "{}", Some("x"), None, None, None, None, None,
         );
-        assert_ne!(with_none, with_empty, "NULL and empty string must not collide");
+        assert_ne!(
+            actor_holds_it, txn_holds_it,
+            "a value moved between adjacent nullable columns is invisible — the NULL tag \
+             is not reaching the digest"
+        );
     }
 
     #[test]
-    fn field_boundaries_are_unambiguous_under_concatenation() {
-        // The length prefix's reason for existing: without it, adjacent
-        // fields could be re-partitioned to produce the same digest —
-        // ("ab","c") and ("a","bc"). Currently no field can carry the
-        // bytes needed to exploit that through the app's own write path,
-        // so this is defence-in-depth rather than a live hole; it is
-        // asserted anyway because the encoding's doc comment claims it.
-        let left = event_row_hash(
-            1, 1, "AB", Some("C"), "{}", None, None, None, None, None, None,
+    fn adjacent_fields_cannot_be_repartitioned() {
+        // The LENGTH PREFIX, specifically.
+        //
+        // The version committed at b9076c2 compared ("AB","C") against
+        // ("A","BC"), which still differs without the prefix because the
+        // presence byte alone shifts those two apart. It pinned that *a*
+        // re-partition differs — one of ten adjacent pairs — rather than
+        // pinning the prefix. Pass 10 deleted the prefix and the suite
+        // stayed green.
+        //
+        // This pair collides EXACTLY when the prefix is absent: both
+        // then encode `item_id || payload` as the same three bytes.
+        let byte_in_id = event_row_hash(
+            1, 1, "T", Some("\u{1}"), "", None, None, None, None, None, None,
         );
-        let right = event_row_hash(
-            1, 1, "A", Some("BC"), "{}", None, None, None, None, None, None,
+        let byte_in_payload = event_row_hash(
+            1, 1, "T", Some(""), "\u{1}", None, None, None, None, None, None,
         );
-        assert_ne!(left, right, "field boundaries must survive concatenation");
+        assert_ne!(
+            byte_in_id, byte_in_payload,
+            "item_id and payload are re-partitionable — the length prefix is not reaching \
+             the digest"
+        );
     }
 }

@@ -55,6 +55,9 @@ import sys
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MANIFEST = os.path.join(REPO_ROOT, "src-tauri", "Cargo.toml")
+# The only crate a mutation can legitimately break. Anything else that
+# fails to compile is environmental — see run_suite().
+CRATE_NAME = "bay"
 # Present only while a mutation is applied. Gitignored: it is a runtime
 # flag for concurrent readers, not a tracked artifact.
 MARKER = os.path.join(REPO_ROOT, ".mutation-in-progress")
@@ -68,6 +71,9 @@ SESSION = "src-tauri/src/commands/session.rs"
 EVENTS = "src-tauri/src/db/events.rs"
 MIRROR = "src-tauri/src/commands/mirror.rs"
 RECURRENCE = "src-tauri/src/domain/recurrence.rs"
+UNDO = "src-tauri/src/commands/events.rs"
+CAPTURE = "src-tauri/src/capture/mod.rs"
+COMPRESSION = "src-tauri/src/llm/compression.rs"
 
 # Each mutation reintroduces a defect a cold review actually found.
 # `why` is the finding it guards; it is printed when the mutation
@@ -387,6 +393,109 @@ MUTATIONS = [
         "replace": "    y % 4 == 0",
         "why": "a monthly recurrence crossing 2100-02 would clamp to a February 29th that does not exist",
     },
+    # ── v0.3 pass 10 ────────────────────────────────────────────────
+    {
+        "name": "chain/length-prefix-dropped",
+        "file": EVENTS,
+        "find": "            h.update((b.len() as u64).to_le_bytes());",
+        "replace": "",
+        "why": "without it, item_id and payload are re-partitionable: (0x01,\"\") and (\"\",0x01) collide",
+    },
+    {
+        "name": "chain/null-tag-dropped",
+        "file": EVENTS,
+        "find": "        None => h.update([0u8]),",
+        "replace": "        None => {}",
+        "why": "without it a value slides between adjacent nullable columns undetected — provenance becomes forgeable",
+    },
+    {
+        "name": "undo/date-set-not-inverted",
+        "file": UNDO,
+        "find": """                    payload: json!({
+                        "field": field,
+                        "value_before": value_after,
+                        "value_after": value_before,
+                    }),""",
+        "replace": """                    payload: json!({
+                        "field": field,
+                        "value_before": value_before,
+                        "value_after": value_after,
+                    }),""",
+        "why": "undo of a date-set becomes a silent no-op: it re-asserts the new value",
+    },
+    {
+        "name": "undo/first-step-not-inverted",
+        "file": UNDO,
+        "find": """                descriptions.push(format!("Undone ITEM_FIRST_STEP_SET on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemFirstStepSet,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "before": after, "after": before }),
+                }""",
+        "replace": """                descriptions.push(format!("Undone ITEM_FIRST_STEP_SET on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemFirstStepSet,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "before": before, "after": after }),
+                }""",
+        "why": "same silent no-op for first_step — the verb CLAUDE law 8 is built around",
+    },
+    {
+        "name": "undo/restore-arm-missing",
+        "file": UNDO,
+        "find": """            EventType::ItemRestored => {
+                descriptions.push(format!("Undone ITEM_RESTORED on item {item_id}"));""",
+        "replace": """            EventType::ItemRestored if false => {
+                descriptions.push(format!("Undone ITEM_RESTORED on item {item_id}"));""",
+        "why": "BRICKS Ctrl+Z: undo returns NOTHING_TO_UNDO and keeps re-targeting the same txn",
+    },
+    {
+        "name": "undo/today-add-labelled-expired",
+        "file": UNDO,
+        "find": """                descriptions.push(format!("Undone TODAY_ADDED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::TodayRemoved,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "date": date, "cause": "user" }),
+                }""",
+        "replace": """                descriptions.push(format!("Undone TODAY_ADDED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::TodayRemoved,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "date": date, "cause": "expired" }),
+                }""",
+        "why": "a human undo recorded as a day-roll expiry — CLAUDE law 10's one machine write — permanently, and it inflates the Mirror",
+    },
+    {
+        "name": "capture/lands-outside-inbox",
+        "file": CAPTURE,
+        "find": "const CAPTURE_TIER: Tier = Tier::Inbox;",
+        "replace": "const CAPTURE_TIER: Tier = Tier::A;",
+        "why": "CLAUDE.md 5 verbatim: captures go to Inbox, NEVER directly to A/B/C — routing around triage, from the network",
+    },
+    {
+        "name": "capture/secret-gate-open",
+        "file": CAPTURE,
+        "find": "        Some(e) => provided == Some(e),",
+        "replace": "        Some(_) => true,",
+        "why": "SPEC 7.4 disarmed on the app's only network listener, bound to 0.0.0.0:47821",
+    },
+    {
+        "name": "capture/empty-content-accepted",
+        "file": CAPTURE,
+        "find": """    if trimmed.is_empty() {
+        return Err("CONTENT_EMPTY");
+    }""",
+        "replace": "",
+        "why": "a blank LAN post creates an empty Inbox item the user must then find and delete",
+    },
+    {
+        "name": "coach/window-doubled",
+        "file": COMPRESSION,
+        "find": "    let since_ts = now_ms - window_days * MS_PER_DAY;",
+        "replace": "    let since_ts = now_ms - 2 * window_days * MS_PER_DAY;",
+        "why": "every windowed number handed to the coach silently covers twice the stated period",
+    },
 ]
 
 
@@ -405,6 +514,26 @@ def run_suite() -> tuple[bool, list[str], str]:
         text=True,
     )
     out = proc.stdout + proc.stderr
+    # A build failure in a DEPENDENCY is not evidence of anything. Every
+    # mutation edits a first-party file under src-tauri/src, so a broken
+    # third-party crate is environmental — a corrupted target dir, a full
+    # disk, an interrupted build script — and scoring it as "caught"
+    # certifies a mutation that was never exercised.
+    #
+    # This is not hypothetical. v0.3 pass 10 hit it live: a full volume
+    # broke `libsqlite3-sys` mid-run and the gate printed "All 33
+    # mutations caught" with 14 of them never actually run. A gate that
+    # reports green when the toolchain is broken is the precise failure
+    # this script exists to prevent.
+    dep_build_failure = re.search(
+        r"could not compile `(?P<crate>[^`]+)`", out
+    )
+    if dep_build_failure and dep_build_failure.group("crate") != CRATE_NAME:
+        return (
+            proc.returncode == 0,
+            [f"<BUILD BROKE in dependency `{dep_build_failure.group('crate')}` — not exercised>"],
+            out,
+        )
     if "error[E" in out or "could not compile" in out:
         return proc.returncode == 0, ["<COMPILE ERROR — weak guard>"], out
     failed = re.findall(r"^\s{4}(\S+)$", out, re.MULTILINE)
@@ -549,6 +678,19 @@ def main() -> int:
             print(f"FAIL {m['name']}: INCONCLUSIVE — suite failed but named no test")
             print("\n".join(out.splitlines()[-20:]))
             survivors.append((m, "inconclusive"))
+        elif failing and failing[0].startswith("<BUILD BROKE"):
+            # Never exercised. Abort rather than continue: once the
+            # target dir or the environment is broken, every remaining
+            # mutation would be scored on the same non-evidence.
+            print(f"FAIL {m['name']}: {failing[0]}")
+            print("\n".join(out.splitlines()[-20:]))
+            print(
+                "\nABORTING: the build is broken for reasons unrelated to the mutation.\n"
+                "          Nothing after this point would be evidence of anything.\n"
+                "          Try `cargo clean` and re-run.",
+                file=sys.stderr,
+            )
+            return 2
         elif not passed:
             # Every failing name, not just the alphabetically first one:
             # the gate cannot know which test is causally responsible,

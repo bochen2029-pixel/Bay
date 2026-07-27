@@ -1568,7 +1568,19 @@ proposes, the human accepts, the deterministic tier writes.
   appear in the diff — which is the order the human reviewed and
   accepted them in. That affects where they sit next to each other,
   and (since `board_order` ignores post-diff ranks) it decides nothing
-  about what commits or what is lost.
+  about what commits or what is lost **within that accept**.
+
+  That qualifier is load-bearing and was added at v0.3 pass 10, which
+  demonstrated the channel it excludes. Those ranks are real once
+  committed, so they are part of `orig` for the NEXT accept: two runs
+  differing only in accept #1's op order, with a byte-identical accept
+  #2, can lose different recurrence children to Inbox. This stays
+  inside the standard §8.7 sets for itself — the human sees the board
+  between the two accepts and can drag it — but "it decides nothing
+  about what is lost" is true *per accept*, not across a session, and
+  the earlier unqualified wording claimed more than the code delivers.
+  Whether to remove the channel entirely by board-deriving the rank is
+  QUESTIONS **Q02**, and is optional.
 - **A derived effect may never fail the accept.** Pass 2 places a
   spawned child where it fits and overflows to Inbox otherwise; it
   never returns `CAP_EXCEEDED`. A human diff that is legal on its face

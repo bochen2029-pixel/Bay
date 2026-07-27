@@ -1391,6 +1391,99 @@ mod tests {
     }
 
     #[test]
+    fn undo_inverts_every_compensating_arm_it_claims_to() {
+        // Four of the eleven compensation arms had no test at all (v0.3
+        // pass 10). An inverse that fails to invert is invisible from
+        // the outside: the undo "succeeds", writes an event, and leaves
+        // the board exactly as it was.
+        //
+        // Each block below undoes ONE action and asserts the field
+        // actually went back — not merely that undo returned Ok.
+        use crate::commands::day::{add_to_today_inner, get_day_state_inner};
+        use crate::commands::items::{
+            create_item_inner, delete_item_inner, restore_item_inner, set_first_step_inner,
+            set_item_date_inner,
+        };
+        const DATE: &str = "2026-07-26";
+
+        // ── ITEM_DATE_SET: the swap of value_before/value_after ──────
+        {
+            let pool = fresh_pool();
+            let item = create_item_inner(&pool, Tier::A, "dated".into(), None, None).unwrap();
+            set_item_date_inner(&pool, item.id.clone(), "due".into(), Some(1_700_000_000_000))
+                .unwrap();
+            undo_last_action_inner(&pool).expect("undo must succeed");
+            let conn = pool.get().unwrap();
+            let due: Option<i64> = conn
+                .query_row("SELECT due_at FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(due, None, "undo of a date-set must clear it, not re-assert it");
+        }
+
+        // ── ITEM_FIRST_STEP_SET: the same swap, for CLAUDE law 8's verb
+        {
+            let pool = fresh_pool();
+            let item = create_item_inner(&pool, Tier::A, "startable".into(), None, None).unwrap();
+            set_first_step_inner(&pool, item.id.clone(), Some("open the file".into())).unwrap();
+            undo_last_action_inner(&pool).expect("undo must succeed");
+            let conn = pool.get().unwrap();
+            let step: Option<String> = conn
+                .query_row("SELECT first_step FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(step, None, "undo of a first-step must clear it");
+        }
+
+        // ── ITEM_RESTORED: the arm whose absence BRICKS Ctrl+Z ───────
+        // Without this arm the draft list comes back empty, undo returns
+        // NOTHING_TO_UNDO, and since undo always targets the newest
+        // human transaction it stays stuck there until the user does
+        // something else undoable.
+        {
+            let pool = fresh_pool();
+            let item = create_item_inner(&pool, Tier::A, "archived".into(), None, None).unwrap();
+            delete_item_inner(&pool, &item.id).unwrap();
+            restore_item_inner(&pool, &item.id).unwrap();
+            undo_last_action_inner(&pool).expect("undo of a restore must not be NOTHING_TO_UNDO");
+            let conn = pool.get().unwrap();
+            let deleted: i64 = conn
+                .query_row("SELECT deleted FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(deleted, 1, "undo of a restore must put it back in the archive");
+        }
+
+        // ── TODAY_ADDED: the CAUSE, not just the effect ──────────────
+        // `expired` is reserved for the day-roll, CLAUDE law 10's one
+        // sanctioned machine write. Labelling a human undo as an expiry
+        // misattributes it permanently (the log is append-only) and
+        // inflates both the Mirror's Today-honesty numbers and the
+        // coach's `today_expired_in_window`.
+        {
+            let pool = fresh_pool();
+            let item = create_item_inner(&pool, Tier::A, "today item".into(), None, None).unwrap();
+            add_to_today_inner(&pool, item.id.clone(), DATE.into()).unwrap();
+            undo_last_action_inner(&pool).expect("undo must succeed");
+            let state = get_day_state_inner(&pool, DATE.into()).unwrap();
+            assert!(
+                state.today_ids.is_empty(),
+                "undo of add-to-today must remove the membership"
+            );
+            let conn = pool.get().unwrap();
+            let cause: String = conn
+                .query_row(
+                    "SELECT json_extract(payload, '$.cause') FROM events \
+                     WHERE type = 'TODAY_REMOVED' ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                cause, "user",
+                "a human undo is not a day-roll expiry — that label belongs to `actor: system`"
+            );
+        }
+    }
+
+    #[test]
     fn undo_after_unblock_does_not_violate_check_constraint() {
         // Regression (P2e verifier BLOCKING-1): before the fix, undoing an
         // unblock (blocked→active) tried to set state='blocked' with a
