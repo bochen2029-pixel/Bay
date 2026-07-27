@@ -305,10 +305,18 @@ pub fn rebuild_projection_inner(pool: &SqlitePool) -> Result<RebuildResult, Stri
 // is itself an event — it lands in the append-only log, so it's
 // auditable and reversible (redo = undo the undo, or re-apply).
 //
-// "Action" = one or more events sharing a ts (a single write_events
-// tx). The most recent action is the one with the highest ts; if
-// multiple events share that ts (swap_move's two ITEM_MOVED events),
-// they're undone together.
+// "Action" = one write_events transaction. Since migration 003 every
+// event carries a txn_id, so the action boundary is EXACT: the most
+// recent human-actor non-LLM event names the transaction, and every
+// event sharing its txn_id is undone together (swap = 2 ITEM_MOVED;
+// batch = N same-type; an accepted re-org = N item events + the
+// acceptance audit row; I-21's recurrence completion = a mixed-type
+// trio). Legacy rows (txn_id NULL, pre-003) fall back to the (ts,type)
+// heuristic I-17 shipped with (QUESTIONS Q01 — closed by this change).
+//
+// System-actor transactions (deterministic executions of a human-set
+// timer, VISION law 6 — e.g. the Today day-roll) are never targeted by
+// Ctrl+Z: undo looks past them to the most recent HUMAN transaction.
 //
 // Compensation logic per event type:
 //   ITEM_CREATED     -> ITEM_DELETED (soft-delete)
@@ -403,30 +411,20 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
     use crate::domain::EventType;
     use serde_json::json;
 
-    // Find the most recent user action and undo it atomically. Skip
-    // LLM_SUGGESTION_* events (advisory only — nothing to undo).
-    //
-    // "Action" = the set of most-recent events that share the latest
-    // event's timestamp AND type. Every atomic operation in Bay writes
-    // its events in one `write_events` transaction stamped with a single
-    // shared ts and a single event type:
-    //   - swap_move       → 2 ITEM_MOVED
-    //   - batch_set_state → N ITEM_STATE_CHANGED
-    //   - batch_delete    → N ITEM_DELETED
-    //   - every single-item command → 1 event
-    // Grouping by (ts, type) therefore undoes a swap or a batch as one
-    // action, while a single command undoes exactly one event.
-    //
-    // Keying on TYPE as well as ts is what prevents over-grouping: two
-    // fast single-item commands (e.g. create then edit) can share a ms
-    // timestamp, but they carry different types, so they stay distinct
-    // actions — only the latest is undone.
+    // Find the most recent HUMAN action and undo it atomically.
+    // - LLM_SUGGESTION_* rows are advisory-only (they never touched the
+    //   projection); a pure-LLM transaction (analyze / reject) contains
+    //   no non-LLM row, so the type filter skips the whole txn.
+    // - actor = 'system' rows are deterministic timer executions
+    //   (VISION law 6); Ctrl+Z looks past them to the last human txn.
+    //   Legacy rows (actor NULL, pre-003) are human by definition.
     let last = {
         let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {EVENT_COLS} FROM events \
                  WHERE type NOT IN ('LLM_SUGGESTION_GENERATED','LLM_SUGGESTION_ACCEPTED','LLM_SUGGESTION_REJECTED') \
+                   AND (actor IS NULL OR actor = 'human') \
                  ORDER BY id DESC LIMIT 1"
             ))
             .map_err(|e| format!("prepare last event: {e}"))?;
@@ -439,24 +437,44 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
         }
     };
 
-    // Gather every event of this action (same ts + same type), newest
-    // first so the compensating events unwind in LIFO order.
+    // Gather every event of this action, newest first so the
+    // compensating events unwind in LIFO order. Exact txn boundary when
+    // the envelope is present (migration 003); the (ts,type) heuristic
+    // survives only for legacy pre-envelope rows, pinned to
+    // txn_id IS NULL so a legacy row can never co-group with an
+    // enveloped one.
     let action_events: Vec<Event> = {
         let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
-        let mut stmt = conn
-            .prepare(&format!(
-                "SELECT {EVENT_COLS} FROM events \
-                 WHERE ts = ?1 AND type = ?2 ORDER BY id DESC"
-            ))
-            .map_err(|e| format!("prepare action events: {e}"))?;
-        let rows = stmt
-            .query_map(
-                rusqlite::params![last.ts, last.event_type.as_sql()],
-                parse_event_row,
-            )
-            .map_err(|e| format!("query action events: {e}"))?;
-        rows.collect::<rusqlite::Result<Vec<Event>>>()
-            .map_err(|e| format!("action event row: {e}"))?
+        match &last.txn_id {
+            Some(txn) => {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {EVENT_COLS} FROM events WHERE txn_id = ?1 ORDER BY id DESC"
+                    ))
+                    .map_err(|e| format!("prepare action events: {e}"))?;
+                let rows = stmt
+                    .query_map(rusqlite::params![txn], parse_event_row)
+                    .map_err(|e| format!("query action events: {e}"))?;
+                rows.collect::<rusqlite::Result<Vec<Event>>>()
+                    .map_err(|e| format!("action event row: {e}"))?
+            }
+            None => {
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {EVENT_COLS} FROM events \
+                         WHERE ts = ?1 AND type = ?2 AND txn_id IS NULL ORDER BY id DESC"
+                    ))
+                    .map_err(|e| format!("prepare action events: {e}"))?;
+                let rows = stmt
+                    .query_map(
+                        rusqlite::params![last.ts, last.event_type.as_sql()],
+                        parse_event_row,
+                    )
+                    .map_err(|e| format!("query action events: {e}"))?;
+                rows.collect::<rusqlite::Result<Vec<Event>>>()
+                    .map_err(|e| format!("action event row: {e}"))?
+            }
+        }
     };
 
     // Build compensating drafts in LIFO order (the query above is
@@ -598,8 +616,20 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
 
     // drafts is in LIFO order (the action-events query is newest-first).
     // Append all compensating drafts in one atomic tx — the undo of a
-    // batch is itself a single atomic action.
-    let _ = db::write_events(pool, |_tx, _ts| Ok(drafts))?;
+    // batch is itself a single atomic (and undoable) action. Its origin
+    // names the transaction it reversed (envelope provenance).
+    let undo_origin = match &last.txn_id {
+        Some(txn) => format!("undo:{txn}"),
+        None => format!("undo:event:{}", last.id),
+    };
+    let _ = db::write_events_ctx(
+        pool,
+        db::WriteCtx {
+            origin: Some(undo_origin),
+            ..Default::default()
+        },
+        |_tx, _ts| Ok(drafts),
+    )?;
 
     Ok(UndoResult {
         description: descriptions.join("; "),
@@ -1464,5 +1494,164 @@ mod tests {
         )
         .unwrap();
         assert_eq!(limited.len(), 3, "limit should cap the result set");
+    }
+
+    // ── undo by txn_id (migration 003 payoff — QUESTIONS Q01 closed) ─
+
+    #[test]
+    fn undo_mixed_type_txn_reverses_all_events_as_one_action() {
+        // The exact shape the (ts,type) heuristic could NOT unwind
+        // (Q01): one atomic transaction containing events of DIFFERENT
+        // types. txn_id grouping must reverse the whole transaction in
+        // a single Ctrl+Z. (This is the precondition for I-21's
+        // recurrence-completion trio.)
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "mover".into(), None, None).unwrap();
+        let b = create_item_inner(&pool, Tier::B, "finisher".into(), None, None).unwrap();
+
+        let _ = db::write_events(&pool, |tx, _ts| {
+            let cur_a = db::items::read_item_by_id_tx(tx, &a.id)?.unwrap();
+            let cur_b = db::items::read_item_by_id_tx(tx, &b.id)?.unwrap();
+            Ok(vec![
+                crate::db::EventDraft {
+                    event_type: EventType::ItemMoved,
+                    item_id: Some(a.id.clone()),
+                    payload: serde_json::json!({
+                        "tier_before": cur_a.tier, "rank_before": cur_a.rank,
+                        "tier_after": "C", "rank_after": "zz", "reason": null,
+                    }),
+                },
+                crate::db::EventDraft {
+                    event_type: EventType::ItemStateChanged,
+                    item_id: Some(b.id.clone()),
+                    payload: serde_json::json!({
+                        "state_before": cur_b.state, "state_after": "done",
+                        "blocked_reason": null,
+                    }),
+                },
+            ])
+        })
+        .unwrap();
+
+        // Sanity: the mixed txn applied.
+        {
+            let conn = pool.get().unwrap();
+            let tier_a: String = conn
+                .query_row("SELECT tier FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
+                .unwrap();
+            let state_b: String = conn
+                .query_row("SELECT state FROM items WHERE id = ?1", [&b.id], |r| r.get(0))
+                .unwrap();
+            assert_eq!((tier_a.as_str(), state_b.as_str()), ("C", "done"));
+        }
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(
+            result.undone_event_types.len(),
+            2,
+            "one undo must reverse BOTH events of the mixed-type txn"
+        );
+
+        let conn = pool.get().unwrap();
+        let tier_a: String = conn
+            .query_row("SELECT tier FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
+            .unwrap();
+        let state_b: String = conn
+            .query_row("SELECT state FROM items WHERE id = ?1", [&b.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tier_a, "A", "move must be reversed");
+        assert_eq!(state_b, "active", "state change must be reversed");
+    }
+
+    #[test]
+    fn undo_skips_system_actor_txns() {
+        // A system-actor transaction (deterministic timer execution,
+        // e.g. the Today day-roll) lands AFTER the last human action.
+        // Ctrl+Z must look past it: the system write stays in force,
+        // the human action (the create) is what gets reversed.
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "human-made".into(), None, None).unwrap();
+
+        let _ = db::write_events_ctx(
+            &pool,
+            db::WriteCtx {
+                actor: crate::domain::Actor::System,
+                origin: Some("test_system_timer".into()),
+            },
+            |_tx, _ts| {
+                Ok(vec![crate::db::EventDraft {
+                    event_type: EventType::ItemStateChanged,
+                    item_id: Some(a.id.clone()),
+                    payload: serde_json::json!({
+                        "state_before": "active", "state_after": "done",
+                        "blocked_reason": null,
+                    }),
+                }])
+            },
+        )
+        .unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(
+            result.undone_event_types,
+            vec!["ITEM_CREATED".to_string()],
+            "undo must target the last HUMAN txn (the create), not the system one"
+        );
+        let conn = pool.get().unwrap();
+        let deleted: i64 = conn
+            .query_row("SELECT deleted FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(deleted, 1, "create was compensated by soft-delete");
+    }
+
+    #[test]
+    fn undo_of_accepted_reorg_reverses_item_events_and_skips_audit_row() {
+        // An accept_suggestion-shaped txn: item events + the
+        // LLM_SUGGESTION_ACCEPTED audit row in ONE transaction. Undo by
+        // txn_id must compensate the item events and skip the audit row
+        // (advisory events never touched the projection).
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "reorg-me".into(), None, None).unwrap();
+
+        let _ = db::write_events_ctx(
+            &pool,
+            db::WriteCtx {
+                origin: Some("llm_accept:999".into()),
+                ..Default::default()
+            },
+            |tx, _ts| {
+                let cur = db::items::read_item_by_id_tx(tx, &a.id)?.unwrap();
+                Ok(vec![
+                    crate::db::EventDraft {
+                        event_type: EventType::ItemMoved,
+                        item_id: Some(a.id.clone()),
+                        payload: serde_json::json!({
+                            "tier_before": cur.tier, "rank_before": cur.rank,
+                            "tier_after": "C", "rank_after": "zz", "reason": null,
+                        }),
+                    },
+                    crate::db::EventDraft {
+                        event_type: EventType::LlmSuggestionAccepted,
+                        item_id: None,
+                        payload: serde_json::json!({
+                            "suggestion_event_id": 999, "resulting_event_ids": [],
+                        }),
+                    },
+                ])
+            },
+        )
+        .unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(
+            result.undone_event_types,
+            vec!["ITEM_MOVED".to_string()],
+            "the audit row is skipped; only the item event is compensated"
+        );
+        let conn = pool.get().unwrap();
+        let tier: String = conn
+            .query_row("SELECT tier FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tier, "A");
     }
 }

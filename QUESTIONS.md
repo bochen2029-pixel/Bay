@@ -6,7 +6,16 @@
 
 ## Q01 — undo action grouping: (ts, type) heuristic vs. a transaction id
 
-**Status:** OPEN (reversible default applied; operator decision is a schema change).
+**Status:** CONFIRMED → resolved 2026-07-26. The operator authorized the
+schema change via the 2026-07-26 directive (DECISIONS ADR-007);
+migration 003 added `events.txn_id` (one uuid per `write_events`
+transaction) and `undo_last_action` now groups by `txn_id` exactly —
+the `(ts, type)` heuristic survives only as the fallback for legacy
+pre-envelope rows (`txn_id IS NULL`, pinned so legacy and enveloped
+rows can never co-group). Undo additionally skips `actor = 'system'`
+transactions (VISION law 6). Mixed-type transactions — the case this
+question existed for — now undo as one action (regression-tested;
+I-21's recurrence trio builds on this).
 
 **Context.** `undo_last_action` must treat a multi-event atomic operation
 (swap = 2 ITEM_MOVED; batch = N ITEM_STATE_CHANGED / ITEM_DELETED) as ONE

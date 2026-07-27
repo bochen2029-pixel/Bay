@@ -390,3 +390,17 @@
   threading, tamper-detect via raw INSERT, legacy upgrade + chain
   extension, device_id stability, chain property over any write
   sequence). cargo warning-clean, pnpm build clean, vitest 93/93.
+
+## 2026-07-26 — P5b(2): undo by txn_id — QUESTIONS Q01 closed
+
+- undo_last_action groups by the last HUMAN non-LLM event's txn_id
+  (exact transaction boundary); (ts,type) heuristic survives only for
+  legacy pre-envelope rows, pinned with txn_id IS NULL so the two
+  populations never co-group.
+- Undo skips actor='system' txns (VISION law 6: Ctrl+Z never reverses
+  a timer execution; it looks past to the last human action).
+- The undo write itself carries origin undo:<txn_id> (provenance).
+- Q01 -> CONFIRMED in QUESTIONS.md (operator-authorized via ADR-007).
+- New tests: mixed-type-txn undo (the exact Q01 shape; precondition for
+  the I-21 trio), system-txn skip, accepted-reorg undo (item events
+  compensated, audit row skipped). cargo 164/164 warning-clean.
