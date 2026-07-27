@@ -318,6 +318,26 @@ MUTATIONS = [
         if false {""",
         "why": "P2e BLOCKING-2: restore had no cap check, so an archive-restore could exceed A/B (JOINT_WRONG vs caps.json #12)",
     },
+    {
+        "name": "today-cap/counted-across-dates",
+        "file": LLM,
+        "find": "                it.today_on.as_deref() == Some(date) && it.state == ItemState::Active",
+        "replace": "                it.today_on.is_some() && it.state == ItemState::Active",
+        "why": "the Today cap is per DATE; counting every committed day at once evicts a legal member of another day",
+    },
+    {
+        "name": "accept/already-done-not-skipped",
+        "file": LLM,
+        "find": """                ProposalAction::Done => {
+                    if cur.state == ItemState::Done {
+                        continue;
+                    }""",
+        "replace": """                ProposalAction::Done => {
+                    if false {
+                        continue;
+                    }""",
+        "why": "accepting done on an already-finished item appends a done->done event and spawns a DUPLICATE recurrence child",
+    },
 ]
 
 
@@ -341,6 +361,13 @@ def run_suite() -> tuple[bool, list[str], str]:
     failed = re.findall(r"^\s{4}(\S+)$", out, re.MULTILINE)
     # The `failures:` block lists bare test paths; keep the plausible ones.
     names = sorted({f for f in failed if "::" in f})
+    if not names and "test result: FAILED" in out:
+        # Tests genuinely failed but no name matched the `::` shape — a
+        # crate-root `#[test]`, or a doctest (whose "name" contains
+        # spaces). Say so rather than let the caller read an empty list
+        # as "cargo died for some non-test reason", which would report a
+        # real catch as INCONCLUSIVE.
+        names = ["<test failed, name unparsed>"]
     return proc.returncode == 0, names, out
 
 
@@ -396,6 +423,29 @@ def main() -> int:
             "      and needs them clean so an interrupted run is recoverable with\n"
             "      `git checkout -- .` (and so its own edits are never committed).\n"
             "      Modified: " + ", ".join(dirty[:8]),
+            file=sys.stderr,
+        )
+        return 2
+
+    # Every target must be TRACKED. The restore path writes the original
+    # bytes back, but the safety net behind it is `git checkout -- .`,
+    # which cannot resurrect a file git does not know about. Narrowing
+    # the dirty-tree refusal to tracked files removed the accident that
+    # used to cover this.
+    untracked_targets = [
+        m["file"]
+        for m in selected
+        if subprocess.run(
+            ["git", "ls-files", "--error-unmatch", m["file"]],
+            cwd=REPO_ROOT,
+            capture_output=True,
+        ).returncode
+        != 0
+    ]
+    if untracked_targets:
+        print(
+            "FAIL: mutation target(s) are not tracked by git, so an interrupted\n"
+            "      run could not be recovered: " + ", ".join(sorted(set(untracked_targets))),
             file=sys.stderr,
         )
         return 2

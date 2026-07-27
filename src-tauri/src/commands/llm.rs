@@ -1231,6 +1231,117 @@ mod tests {
     }
 
     #[test]
+    fn accept_reorg_today_cap_is_counted_per_date_not_across_dates() {
+        // `effective_active_today` filters `today_on == Some(date)`. Drop
+        // the date comparison and it counts every item committed to ANY
+        // day, so reactivating two items on two different dates makes
+        // each date's tally include the other's member — and a legal
+        // third member of a day gets evicted for no reason.
+        //
+        // Two live `today_on` values coexist whenever a day is planned
+        // ahead, or simply when the app is left open across midnight.
+        const D1: &str = "2026-07-26";
+        const D2: &str = "2026-07-27";
+        let pool = fresh_pool();
+
+        let mut ids = Vec::new();
+        for (name, date) in [("x", D1), ("y", D2)] {
+            let it = create_item_inner(&pool, Tier::B, name.into(), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, it.id.clone(), date.into()).unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                it.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            ids.push(it.id);
+        }
+        let (x, y) = (ids[0].clone(), ids[1].clone());
+        // D2 holds two actives, so y is its legal THIRD member. D1 holds
+        // none. Neither date is over cap on its own.
+        for i in 0..2 {
+            let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, f.id.clone(), D2.into()).unwrap();
+        }
+
+        let sug = seed_suggestion(&pool);
+        let active_op = |id: &String| ReorgProposal {
+            item_id: id.clone(),
+            action: ProposalAction::Active,
+            to_tier: None,
+            rationale: None,
+        };
+        apply_reorg_inner(&pool, sug, vec![active_op(&x), active_op(&y)]).unwrap();
+
+        let conn = pool.get().unwrap();
+        let today_of = |id: &String| -> Option<String> {
+            conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(today_of(&x).as_deref(), Some(D1), "D1 has one member, well under cap");
+        assert_eq!(
+            today_of(&y).as_deref(),
+            Some(D2),
+            "D2 reaches exactly 3 — the cap counts ONE date, not every date at once"
+        );
+    }
+
+    #[test]
+    fn accept_reorg_done_on_an_already_finished_item_is_a_no_op() {
+        // The `cur.state == Done { continue }` skip. Without it, accepting
+        // `done` on an item finished BEFORE the diff — which the model can
+        // easily propose, since it reasons over a board snapshot — appends
+        // a done→done state event and spawns a SECOND recurrence child.
+        // The user gets a duplicate of a task they already completed once.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "weekly".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        crate::commands::items::set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None)
+            .unwrap();
+
+        let (items_before, events_before) = {
+            let conn = pool.get().unwrap();
+            let i: i64 = conn
+                .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))
+                .unwrap();
+            let e: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE type = 'ITEM_STATE_CHANGED'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (i, e)
+        };
+
+        let sug = seed_suggestion(&pool);
+        let outcome = apply_reorg_inner(&pool, sug, vec![done_op(&item.id)]).unwrap();
+        assert!(
+            outcome.spawned_ids.is_empty(),
+            "an already-finished item owes no second instance"
+        );
+
+        let conn = pool.get().unwrap();
+        let items_after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))
+            .unwrap();
+        let events_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'ITEM_STATE_CHANGED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(items_after, items_before, "no duplicate child was created");
+        assert_eq!(
+            events_after, events_before,
+            "no done→done event — the log records changes, not restatements"
+        );
+    }
+
+    #[test]
     fn accept_reorg_mixed_move_and_done_commutes_over_all_orderings() {
         // Pass 6 flagged this gap and it stayed open two rounds: the
         // exhaustive permutation test above contains no `move` op, so
@@ -1831,6 +1942,11 @@ mod tests {
             conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
                 .unwrap()
         };
+        // DOCUMENTS intent; does not guard it. `ItemCreatedPayload` has
+        // no `today_on` field, so a spawned child's stored membership is
+        // unconditionally NULL and this assertion cannot fail today. It
+        // is kept as a tripwire for a future payload that gains the
+        // field. The assertion below is the one that bites.
         assert_eq!(
             today_of(&outcome.spawned_ids[0]),
             None,
