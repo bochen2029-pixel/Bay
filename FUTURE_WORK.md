@@ -48,6 +48,23 @@ edge cases, cap joints (recurrence spawn accounting × batch × Today),
 projection purity across both projection tables, and the Mirror's
 aggregate definitions.
 
+### F-06 — Dogfood v0.3 against its own kill conditions *(the next step)*
+See **`DOGFOOD.md`** — every `VISION.md` §9 falsification criterion
+turned into a query you can run, with the threshold and the prescribed
+consequence stated in advance so the verdict cannot be rationalised
+afterwards. Writing it surfaced one problem: **§9's "Mirror unopened"
+criterion is unmeasurable**, because opening a view emits no event and
+Bay has no telemetry by design. The recommendation there is to fold the
+Mirror's top three numbers into day-open regardless, rather than add a
+`VIEW_OPENED` event — that would be the first event in the log
+recording *attention* rather than *action*, and it is a door worth
+leaving shut.
+
+This is the highest-value remaining work, and no amount of further
+verification substitutes for it: ten cold passes established that the
+code does what SPEC says, and not one of them could establish that SPEC
+is a good idea.
+
 ### F-05 — Extract the blocked-reason carry into one helper
 **Deliberately deferred, not forgotten.** The rule "carry the outgoing
 `blocked_reason` whenever `blocked` is on either side of the
