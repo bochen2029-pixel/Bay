@@ -1,37 +1,5 @@
 # CLAUDE.md — Bay
 
-> v1.9 — 2026-07-26. **v0.3 "Execution" run.** The operator directive of
-> 2026-07-26 ("proceed at your best recommendation — most ambitious,
-> highest quality") authorized the path scoped in `VISION.md` §8 and
-> recorded in DECISIONS ADR-007. Delivered, each green and committed:
-> the **golden runner** (contracts/golden cases are now EXECUTED under
-> `cargo test`, closing the exists-but-never-run gap the P2e
-> JOINT_WRONG slipped through); **migration 003 — event envelope v2**
-> (`txn_id`, `actor`, `origin`, `device_id`, `schema_ver`, `prev_hash`
-> — a SHA-256 chain making the append-only log tamper-EVIDENT), which
-> **closes QUESTIONS Q01**: undo now groups by transaction, exactly;
-> **I-21 recurring tasks** (spawn-on-done in one transaction, undo-safe,
-> cap-safe with Inbox overflow); and the **execution core** —
-> `first_step`, the **Today overlay (cap 3)**, the day-open/day-close
-> ceremonies, the **day-roll** (Bay's one sanctioned machine write),
-> **focus sessions** (the log finally records *work*, not only
-> management), and **Mirror v1** (deterministic feedback: throughput,
-> lead time, A-leak rate, the avoidance list, block cost, the
-> interruption taxonomy, Today honesty, and completion receipts —
-> computed with **no LLM in the path**).
->
-> The doctrine grows by two laws, both already implemented: **caps bind
-> flow as well as stock** (Today ≤ 3; at most one open session), and
-> **the system may act alone only to execute a timer the human set**
-> (`actor: system`, Today membership only, undo-skipped, always logged).
-> The LLM firewall is **unchanged and absolute** — `ProjectionEvent`
-> still has zero LLM variants; the LLM still never writes. The six
-> original principles stand verbatim; the "Cut from v1" list stands,
-> with recurring tasks promoted exactly as the list always sanctioned.
-> Test counts: **206 Rust** (from 152) + **106 vitest** (from 93).
-> Co-pass: SPEC.md v1.7 → v1.8, PROMPTS.md v1.5 → v1.6. Prior versions
-> at archive/CLAUDE_v1.0.md … archive/CLAUDE_v1.8.md.
-
 > v1.8 — 2026-06-17. v0.2.0 revamp: Phase 4 (above-and-beyond UX) and
 > the first Phase 5 increment shipped on top of the Phase 2 correctness
 > layer. Delivered since v1.7: **I-15** command palette (Cmd/Ctrl+K),
@@ -140,61 +108,6 @@ Both go to Inbox, never directly to A/B/C. Tiering is deliberate human work.
 
 Intra-tier reorder = drag, no friction, single event. Cross-tier move = drag + confirmation modal + optional reason string. Reasons log to the event stream. Over weeks the log exposes whether A is being used correctly or is leaking into the inbox role.
 
-### 7. Caps bind flow, not just stock (v0.3)
-
-A ≤ 5 and B ≤ 12 bound the **commitment inventory**. They do not bound
-*today* — and re-deciding "which one now?" at every glance is exactly
-where procrastination lives. So the same law applies where it actually
-binds execution:
-
-- **Today ≤ 3 active items**, chosen once at day-open, so the rest of
-  the day is re-decision-free. Today is an **execution overlay**, not a
-  fifth tier: items keep their tier; `today_on` marks "chosen for this
-  day"; membership expires at the day boundary.
-- **At most one open focus session** — the "Now" slot (command check +
-  a partial unique index; the same three-layer discipline as the caps).
-
-This is not a second prioritization scheme (the cut list still holds —
-one axis, human-ranked). It is a day-scoped WIP limit over the existing
-axis. By Little's law, lead time = WIP ÷ throughput; Bay caps WIP at
-both levels and the Mirror shows what that buys.
-
-### 8. Starting is the cheapest verb; the machine never interrupts (v0.3)
-
-Activation energy, not capacity, is where intention dies. So:
-
-- **`first_step`** — one line, ≤140 chars, the next *physical* action.
-  Deliberately not subtasks: a checklist is a place to hide from work;
-  a first step is a place to start it.
-- **Starting a session is one click** from any active strip, and
-  "tomorrow's first move" is chosen at day-close — the evening decision
-  that defeats tomorrow morning's inertia.
-- **Bay never pushes.** No notifications, badges, streaks, or nags. It
-  speaks only when opened; visibility is the nudge. An attention
-  guardian that pings is self-refuting.
-
-### 9. The mirror is deterministic first, and never shames (v0.3)
-
-Facts — throughput, lead time, A-leak rate, items with zero recorded
-sessions, block cost, Today planned-vs-finished — render from SQL over
-the log with **no model configured**. The LLM narrates on top, on
-demand, and still writes nothing. Feedback confronts; it never
-punishes. Completed work stays visible as evidence, not as a score.
-
-### 10. The system acts alone only to execute a timer the human set (v0.3)
-
-Every write in Bay is human-initiated, with exactly one sanctioned
-exception: the **day-roll** expires yesterday's Today membership
-(`TODAY_REMOVED{cause: expired}`, `actor: 'system'`, `origin:
-'day_roll'`). It touches Today membership only — never tier, state, or
-content — it is always in the log, and Ctrl+Z looks straight past it.
-No rollover, no guilt banner: the expiry is *recorded*, and the Mirror
-shows the delta, which is confrontation enough.
-
-**The LLM is not an actor.** It has no write path (see §2); an accepted
-suggestion is a *human* write whose `origin` records which suggestion
-it executed.
-
 ## Architecture — locked
 
 - **Shell**: Tauri v2. Rationale: small binary, low memory footprint, Rust backend gives a real database handle and a real HTTP listener without shipping Node.
@@ -211,24 +124,12 @@ it executed.
 
 ```sql
 -- Append-only. Nothing updates or deletes rows here.
--- v0.3 (migration 003) added the envelope columns below; every one is
--- nullable, so pre-envelope rows stay valid forever.
 CREATE TABLE events (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts         INTEGER NOT NULL,                   -- unix ms
-  type       TEXT NOT NULL,                      -- enum below
-  item_id    TEXT,                               -- nullable for non-item events
-  payload    TEXT NOT NULL,                      -- JSON
-  txn_id     TEXT,     -- one uuid per write_events call: THE transaction
-                       -- boundary. Undo groups by it (Q01 closed).
-  actor      TEXT,     -- 'human' | 'system'. The LLM is never an actor.
-  origin     TEXT,     -- 'lan' | 'llm_accept:<id>' | 'undo:<txn>' |
-                       -- 'day_open' | 'day_close' | 'day_roll' | …
-  device_id  TEXT,     -- from meta.device_id; prepares log replication
-  schema_ver INTEGER,  -- per-event payload version (upcasters read old)
-  prev_hash  TEXT      -- SHA-256 of the previous row: the log is a
-                       -- CHAIN, so tampering is evident, not just
-                       -- forbidden. Verified at boot, off the critical path.
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts        INTEGER NOT NULL,                    -- unix ms
+  type      TEXT NOT NULL,                       -- enum below
+  item_id   TEXT,                                -- nullable for non-item events
+  payload   TEXT NOT NULL                        -- JSON
 );
 CREATE INDEX idx_events_item ON events(item_id);
 CREATE INDEX idx_events_ts   ON events(ts);
@@ -243,29 +144,11 @@ CREATE TABLE items (
   blocked_reason  TEXT,
   start_at        INTEGER,                       -- unix ms, nullable
   due_at          INTEGER,                       -- unix ms, nullable
-  recurrence      TEXT,                          -- v0.3 (004): RRULE subset or NULL
-  first_step      TEXT,                          -- v0.3 (005): ≤140 chars, one line
-  today_on        TEXT,                          -- v0.3 (005): 'YYYY-MM-DD' or NULL
   created_at      INTEGER NOT NULL,
   updated_at      INTEGER NOT NULL,
   deleted         INTEGER NOT NULL DEFAULT 0     -- soft-delete flag
 );
 CREATE INDEX idx_items_tier_rank ON items(tier, rank) WHERE deleted = 0;
-
--- v0.3 (migration 006). The SECOND projection table, under the same
--- purity law: rebuildable from SESSION_STARTED / SESSION_ENDED. The
--- open session (ended_at NULL) is the "Now" slot; the partial unique
--- index makes "at most one" a storage-layer fact.
-CREATE TABLE sessions (
-  id          TEXT PRIMARY KEY,
-  item_id     TEXT NOT NULL,
-  started_at  INTEGER NOT NULL,
-  ended_at    INTEGER,
-  outcome     TEXT,   -- 'done' | 'progress' | 'interrupted'
-  reason      TEXT,   -- interrupted only: meeting|person|self_switch|blocked|energy
-  note        TEXT
-);
-CREATE UNIQUE INDEX idx_sessions_one_open ON sessions((1)) WHERE ended_at IS NULL;
 ```
 
 ### Event types — exhaustive for v1
@@ -279,27 +162,9 @@ CREATE UNIQUE INDEX idx_sessions_one_open ON sessions((1)) WHERE ended_at IS NUL
 | `ITEM_DATE_SET` | `{field: 'start'\|'due', value_before, value_after}` |
 | `ITEM_DELETED` | `{soft: true}` |
 | `ITEM_RESTORED` | `{}` |
-| `ITEM_RECURRENCE_SET` | `{before, after}` — v0.3 (I-21) |
-| `ITEM_RECURRED` | `{parent_id, child_id, next_due_at}` — audit link, no projection effect |
-| `ITEM_FIRST_STEP_SET` | `{before, after}` — v0.3 |
-| `TODAY_ADDED` | `{date}` — v0.3 |
-| `TODAY_REMOVED` | `{date, cause: 'user'\|'expired'}` — v0.3 |
-| `DAY_OPENED` | `{date, today_ids}` — ritual audit, NULL `item_id` |
-| `DAY_CLOSED` | `{date, tomorrow_first?, note?}` — ritual audit, NULL `item_id` |
-| `SESSION_STARTED` | `{session_id}` — projects into `sessions` |
-| `SESSION_ENDED` | `{session_id, outcome, reason?, note?}` |
 | `LLM_SUGGESTION_GENERATED` | `{kind, scope, content}` |
 | `LLM_SUGGESTION_ACCEPTED` | `{suggestion_event_id, resulting_event_ids: [...]}` |
 | `LLM_SUGGESTION_REJECTED` | `{suggestion_event_id, reason?}` |
-
-`ProjectionEvent` (the type-level firewall) covers the 13 event types
-that may touch a projection table. The types absent from it fall into
-two classes, both returning `None`: the three **LLM advisory** events
-(the firewall proper — there is no `ProjectionEvent::LlmSuggestion*`
-variant, so the compiler forbids an LLM event ever reaching the
-projection) and the **audit/link** events (`ITEM_RECURRED`,
-`DAY_OPENED`, `DAY_CLOSED`), whose effects travel on their own per-item
-rows in the same transaction.
 
 Rank uses lexicographic fractional indexing: insert between two items by computing a string strictly between their existing ranks (see SPEC §4.2). Rebalance is deferred in v1 per SPEC §10.4; the helper tolerates rank strings well beyond realistic solo usage. Atomic swaps (cap-enforcement demotions) must emit both events in a single transaction.
 
@@ -317,10 +182,9 @@ Rank uses lexicographic fractional indexing: insert between two items by computi
 - **"A exhausted" signal**: when every active A item is blocked or done, the UI surfaces a message inviting B work. Advisory only. User can still work A.
 - **Staleness**: items untouched past their tier's threshold flagged visually. Per-tier thresholds (Inbox 3d, A 14d, B 21d, C off) configurable in Settings — see SPEC §5.3. No nag modals. Visibility is the nudge.
 
-## Views — v1 (+ v0.3 additions)
+## Views — v1
 
-- **Board** (default): four vertical bays — Inbox, A, B, C — with strips. A and B show capacity indicators (`3/5`, `9/12`). Full A or B refuses drops and prompts swap. **v0.3:** the **Today lane** sits above the bays (≤3, with per-row Start), and a **FocusBar** appears while a session is open.
-- **Mirror** (v0.3): deterministic statistics over the log — flow, A-leak rate, avoidance, block cost, attention, Today honesty, receipts. No LLM required or involved.
+- **Board** (default): four vertical bays — Inbox, A, B, C — with strips. A and B show capacity indicators (`3/5`, `9/12`). Full A or B refuses drops and prompts swap.
 - **Calendar**: monthly grid. Renders items with `start_at` or `due_at` only. No inference. No recurring tasks.
 - **Time-travel**: date/time picker. Replays events up to that timestamp. Read-only board view of history.
 - **Inspector**: click any item → side panel showing full event history for that item.
@@ -357,9 +221,7 @@ These were considered and rejected. Adding them is scope creep.
 - Subtasks or checklists within items.
 - Multi-user, accounts, cloud sync, any network dependency beyond the optional LLM endpoint.
 - Eisenhower matrix, scoring overlays, urgency × importance axes, any second prioritization scheme.
-- ~~Recurring / repeating tasks.~~ **Promoted to v2 and shipped at
-  v0.3 (I-21)** — exactly as this list always sanctioned. The
-  prohibition was against building it in v1, not against it existing.
+- Recurring / repeating tasks.
 - LLM auto-tiering or any LLM write path.
 - Email / SMS / push notifications.
 - Custom tier schemes (A/B/C/D, user-defined names, etc.).
@@ -367,98 +229,13 @@ These were considered and rejected. Adding them is scope creep.
 
 Some are reasonable v2 candidates (LLM re-org proposals; capture-time tier suggestions as accept/reject; recurring tasks). None belong in v1.
 
-**Sharpened at v0.3** — things the new execution surfaces make newly
-tempting, and which remain cut:
-
-- **Gamification of any kind**: points, streaks, levels, confetti.
-  Streaks convert one bad Tuesday into cascading shame. Bay's currency
-  is evidence (receipts), not dopamine.
-- **Auto-planning**: the machine never fills Today, never orders the
-  day unbidden, never schedules. Drafting a Today set on request would
-  require an explicit doctrine amendment (VISION §7 T4) and is *not*
-  built.
-- **Manual time estimates.** The planning fallacy is not a user error
-  to be fixed with more user input. Sessions measure; the Mirror
-  reports measurements.
-- **Subtasks, again.** `first_step` is one line by design.
-
 ## Parent directory context
 
 None assumed. If this directory ends up nested under another project root with its own `CLAUDE.md`, that parent's doctrine does not apply here. This file is authoritative for this subtree.
 
 ## Current state
 
-**v0.3 "Execution" — shipped this run (2026-07-26), unreleased.** The
-v0.2.0 correctness layer made Bay's invariants mechanical; v0.3 closed
-the product gap that layer exposed: Bay could audit your *promises* but
-never your *behavior*, bounded stock but never flow, and had no verb
-for **starting**. Delivered, each increment green and committed:
-
-- **Golden runner** (`src-tauri/src/golden_runner.rs`). The
-  operator-owned cases in `contracts/golden/` are now EXECUTED under
-  `cargo test` against the real command layer — closing the
-  exists-but-never-run gap the P2e JOINT_WRONG slipped through.
-  Unknown op types or expectation keys fail loudly; silent skips are
-  how joint-wrongs hide. Execution immediately surfaced three
-  defective *proposed* caps cases (#5, #6, #8) whose expectations
-  contradicted both their own names and doctrine; corrected in place
-  with `_corrected` annotations, **operator freeze still pending**.
-- **Migration 003 — event envelope v2.** `txn_id` (one per
-  `write_events` call), `actor` (`human` | `system`), `origin`
-  provenance, `device_id` (from the new `meta` table), `schema_ver`,
-  and `prev_hash` — a SHA-256 chain that makes the append-only log
-  **tamper-evident**, verified at boot on a background thread. All
-  columns nullable; pre-envelope rows stay valid forever; `ALTER ADD
-  COLUMN`, never a rebuild of `events`.
-- **QUESTIONS Q01 CLOSED.** Undo groups by `txn_id` — exactly one
-  transaction, never a heuristic. The old `(ts,type)` grouping survives
-  only as the legacy-row fallback, fenced by `txn_id IS NULL`. Undo
-  skips `actor: system` transactions and session rows.
-- **I-21 recurring tasks.** RRULE subset (daily/weekly/monthly +
-  interval, civil-date math with short-month clamping). Completing a
-  recurring item writes `ITEM_STATE_CHANGED` + `ITEM_CREATED` +
-  `ITEM_RECURRED` in ONE transaction — the mixed-type action that Q01
-  existed for, now undoable as a unit. Cap-safe: an active parent frees
-  its own slot; a blocked parent's child overflows to **Inbox** so
-  marking done never fails.
-- **Execution core.** `first_step`; the **Today overlay** (cap 3, via
-  `add_to_today` / `open_day`); **day-close** with its single question
-  ("tomorrow's first move?"), handed back at the next day-open; the
-  **day-roll** (`actor: system`, Today membership only — Bay's one
-  sanctioned machine write); **focus sessions** (`sessions` is the
-  second projection table, ≤1 open enforced by a partial unique index;
-  ending with `done` finishes the item and spawns its recurrence in the
-  same transaction); the **FocusBar** and per-strip Start.
-- **Mirror v1** (`get_mirror_stats`). Throughput, lead time (p50/p90)
-  beside the Little's-law prediction, the A-leak rate, the **avoidance
-  list** (committed items with zero recorded sessions — the
-  procrastination metric the pre-session log could not produce), block
-  cost by reason, the interruption taxonomy, Today
-  planned-vs-finished-vs-expired, and completion receipts. **Zero LLM
-  involvement**; the coach may narrate these numbers later.
-
-**The firewall is unchanged.** `ProjectionEvent` still has no LLM
-variant; the LLM still never writes. Doctrine grew by laws 7–10 above
-(flow caps; cheap starts + no interruptions; deterministic non-shaming
-mirror; system-acts-only-on-a-human-timer), each already implemented.
-
-Gates at this boundary: **cargo 206/206**, **vitest 106/106**, both
-builds clean, warning-clean, `check-golden.py` + store-logic green.
-Schema at `PRAGMA user_version` 6 (migrations 001–006).
-
-**Still open / next:** the corrected golden cases await operator
-freeze; a cold-context verifier pass over the v0.3 critical-module
-diffs; I-22 (LLM streaming); the VISION §7 items that remain
-operator-gated (T4 LLM Today-draft, T5 calendar ICS read, T8 sync);
-and Phase 6. `VISION.md` §9 lists what would falsify each new mechanism
-after dogfooding — the execution core is a hypothesis with a stated
-kill condition, not a permanent fixture.
-
----
-
-### Prior state (v0.2.0)
-
-**v0.2.0 revamp.** v0.1.1 shipped first (see below); the
+**v0.2.0 revamp in progress.** v0.1.1 shipped first (see below); the
 v0.2.0 revamp then attacked the two problems v0.1.1 left: (1)
 correctness was asserted, not enforced; (2) doctrine had drifted from
 implementation. Phase 2 (the correctness layer) is complete:
@@ -533,26 +310,20 @@ for `OpenAiCompatClient`; dedicated `lan_capture_received` toast;
 close-to-tray promoted to a Settings → General toggle; and a top-level
 `<ArchiveView>` for soft-deleted items.
 
-Doctrine versions at this commit: CLAUDE.md v1.9, SPEC.md v1.8,
-PROMPTS.md v1.6. Public on GitHub at
+Doctrine versions at this commit: CLAUDE.md v1.8, SPEC.md v1.7,
+PROMPTS.md v1.5. Public on GitHub at
 https://github.com/bochen2029-pixel/Bay (MIT).
 
-**Remaining (see `FUTURE_WORK.md` and `VISION.md` §8 for scoping):**
-- ~~**I-21 recurring tasks**~~ — **shipped at v0.3**, once migration
-  003's `txn_id` made the mixed-type completion undoable as one action
-  (QUESTIONS Q01, closed).
+**Remaining (see `FUTURE_WORK.md` for full scoping):**
+- **I-21 recurring tasks** — recurrence math is straightforward
+  (RRULE subset, dependency-free civil-date arithmetic); the real
+  blocker is correct undo: completing a recurring item is a *mixed-type*
+  atomic action (STATE_CHANGED + CREATED + RECURRED), which the current
+  `(ts,type)` undo grouping can't unwind as a unit. It needs the
+  transaction-id event-grouping decision (QUESTIONS Q01) — a schema
+  change to `events`, deferred to operator review.
 - **I-22 LLM streaming** — render observations as they arrive (nicety).
-- **Coach v2** — feed session/ritual aggregates to the existing
-  `analyze` path so the LLM can reference behavior, not just board
-  topology. Firewall unchanged: propose → human accepts → deterministic
-  tier writes.
-- **VISION v0.4+** — wake dates on blocked items, the weekly review +
-  C-bankruptcy, one-at-a-time triage, capture idempotency + PWA
-  companion, hash-chain-backed auto-backup, projection snapshots.
-- **Operator-gated** (VISION §7): T4 LLM Today-draft, T5 calendar ICS
-  read, T8 sync-as-log-replication. Not built; each needs a doctrine
-  line first.
-- **Phase 6** — multi-profile, theming, plugin surface, mobile
+- **Phase 6** — sync, multi-profile, theming, plugin surface, mobile
   companion. Several re-litigate the "Cut from v1" list (theming;
   cloud-sync) and warrant operator sign-off on approach before build.
 

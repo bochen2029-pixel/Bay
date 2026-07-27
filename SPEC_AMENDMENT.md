@@ -119,3 +119,59 @@ scope/out-of-scope/demo/verify structure as I-01..I-14.
 
 Remove this file once the operator has reviewed both passes (Phase 3 +
 this one).
+
+---
+
+## Third pass (v1.9 / v1.8 / v1.6) — the v0.3 "Execution" run
+
+> Appended 2026-07-26. Authorized by the operator directive recorded in
+> DECISIONS ADR-007 ("proceed at your best recommendation — most
+> ambitious, highest quality"), scoped by VISION.md §8.
+
+### What shipped (now reflected in the docs)
+- **Golden RUNNER**: contracts/golden cases EXECUTE under cargo test
+  (SPEC §4.7). Three defective *proposed* caps cases (#5/#6/#8)
+  corrected in place with `_corrected` notes — **operator freeze still
+  pending**; they were never frozen, so this is a proposal edit, not a
+  charter violation.
+- **Migration 003 event envelope v2** (SPEC §4.0): txn_id, actor,
+  origin, device_id, schema_ver, prev_hash + meta table + SHA-256 chain
+  + boot verification. New runtime dep `sha2` (ADR-008, SPEC: tag).
+- **QUESTIONS Q01 CLOSED**: undo groups by txn_id (SPEC §3.6); legacy
+  (ts,type) fallback fenced by `txn_id IS NULL`; system + session
+  transactions are not undo targets.
+- **I-21 recurring** (migration 004): RRULE subset, spawn-on-done in
+  one transaction, Inbox overflow for blocked-parent completions.
+- **Execution core** (migrations 005/006): first_step, Today overlay
+  (cap 3), day open/close/roll, focus sessions (second projection
+  table), FocusBar + Today lane.
+- **Mirror v1** (SPEC §12): deterministic statistics, zero LLM.
+
+### Doctrine edits made this pass
+- CLAUDE.md → v1.9: **four new principles** (§7 caps bind flow; §8
+  cheap starts + never interrupts; §9 deterministic non-shaming mirror;
+  §10 system acts only on a human-set timer). Data model updated
+  (envelope columns, recurrence/first_step/today_on, sessions table).
+  Event table extended. Cut-list: recurring struck through as promoted
+  and shipped; four sharpened refusals added (gamification,
+  auto-planning, estimates, subtasks-again). Current state rewritten;
+  prior v0.2.0 state preserved below it.
+- SPEC.md → v1.8: new §4.0 envelope, §4.7 golden runner, §3.7 Today +
+  rituals, §3.8 sessions, §12 Mirror; §3.6 undo regrounded on txn_id;
+  §4.3 nine new payloads; §4.6 firewall None-arm now two classes; §5.1
+  fourteen command rows; §6 module tree; §9 delivered log.
+- PROMPTS.md → v1.6: six shipped increment prompts (V-01, V-02, I-21,
+  V-03, V-04, V-05); forward reference narrowed to I-22..I-27;
+  principle count six → ten.
+
+### Operator decisions still outstanding
+1. **Freeze the corrected golden cases** (contracts/golden/caps.json
+   #5/#6/#8) — or amend them differently if my doctrine reading is
+   wrong. This is the highest-value review item: they are operator
+   ground truth.
+2. **Ratify the two new doctrine laws** as written (§7 flow caps, §10
+   system-actor timer). Both are implemented; both are reversible.
+3. VISION §7 items NOT built and still gated: T4 (LLM Today-draft), T5
+   (calendar ICS read), T8 (sync as log replication).
+
+Remove this file once the operator has reviewed all three passes.

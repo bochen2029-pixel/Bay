@@ -1,20 +1,5 @@
 # PROMPTS.md — Bay
 
-> v1.6 — 2026-07-26. **v0.3 "Execution".** §1 principle count is now
-> **ten** (CLAUDE.md gained laws 7–10: caps bind flow; starting is
-> cheap and the machine never interrupts; the mirror is deterministic
-> and never shames; the system acts alone only to execute a human-set
-> timer). §2 gains six shipped increment prompts — **V-01** golden
-> runner, **V-02** event envelope + undo-by-transaction, **I-21**
-> recurring tasks, **V-03** execution core (first_step / Today / day
-> rituals), **V-04** focus sessions, **V-05** Mirror v1 — each written
-> the way the increment actually had to be built, with the constraints
-> that mattered more than the feature stated as rules. The forward
-> reference narrows to I-22..I-27 and points at `VISION.md` §8 for
-> sequencing and §7 for what remains operator-gated. Co-pass with
-> CLAUDE.md v1.8 → v1.9 and SPEC.md v1.7 → v1.8 (cargo 206/206, vitest
-> 106/106). Prior versions through archive/PROMPTS_v1.5.md.
-
 > v1.5 — 2026-06-17. v0.2.0 revamp in progress. §1 principle count
 > unchanged (six). §2 gains the **real** increment prompts for I-15..I-20
 > (Phase 4 + Phase 5 open), now that they have shipped (cargo 152/152,
@@ -52,7 +37,7 @@ code, read these files top to bottom, in order:
 
 Acknowledge, in one sentence each:
 
-  a. The ten load-bearing design principles in CLAUDE.md §Design philosophy (six original; §7–§10 added at v0.3).
+  a. The six load-bearing design principles in CLAUDE.md §Design philosophy.
   b. The capacity caps and which items they apply to.
   c. The LLM firewall rule.
   d. The event-sourcing invariant (events is append-only; items is a
@@ -1046,195 +1031,19 @@ Verify:
 Stop after I-20.
 ```
 
-### V-01 — Golden RUNNER (v0.3)
+### I-21..I-27 — forward reference (not built)
 
 ```
-Read CLAUDE.md, SPEC.md §4.5 + §4.7, AUTONOMY_CHARTER §12.
+I-21 (recurring tasks) and I-22 (LLM streaming) close out Phase 5;
+I-23..I-27 (sync, multi-profile, theming, plugin surface, mobile
+companion) are Phase 6. These are NOT built and have no full prompts
+yet. I-21 is additionally blocked on the undo transaction-id decision
+(QUESTIONS.md Q01 — the (ts, type) action-grouping heuristic from I-17
+would mis-batch recurrence-spawned coincident events).
 
-Scope: make contracts/golden/*.json EXECUTE under cargo test. Add a
-cfg(test) module that loads projection.json, swap.json and caps.json
-and drives every case through the real *_inner command functions on a
-fresh in-memory DB.
-
-Non-negotiable: the runner PANICS on any op type or expectation key it
-does not recognize. Never skip a case you cannot interpret — silent
-skips are exactly how a JOINT_WRONG hides, and one already did (P2e).
-
-If a case fails, do NOT assume the implementation is wrong. Diff the
-case against frozen doctrine first: a proposed case may itself be
-defective. If it is, correct it in place with a _corrected annotation
-saying what changed and why, leave _status: proposed, and flag it for
-operator freeze in REVIEW_QUEUE.md. Never edit a FROZEN file.
-
-Demo: `cargo test golden_` runs all cases; deleting an arm of
-apply_event_to_projection makes a named case fail.
-Verify: cargo test; python scripts/check-golden.py.
-```
-
-### V-02 — Event envelope v2 + undo by transaction (v0.3)
-
-```
-Read CLAUDE.md §Data model, SPEC §4.0 + §3.6, QUESTIONS.md Q01,
-DECISIONS ADR-007 + ADR-008.
-
-Scope: migration 003 adds txn_id, actor, origin, device_id, schema_ver,
-prev_hash to `events`, plus a meta(key,value) table seeded with a
-device_id. write_events stamps one txn_id per call and threads a
-SHA-256 chain. undo_last_action groups by txn_id.
-
-Constraints that matter more than the feature:
-- ALTER TABLE ADD COLUMN only. NEVER rebuild `events` — it is the
-  source of truth and the charter forbids DROP TABLE. (ALTER is DDL and
-  does not fire the migration-002 row triggers.)
-- Every column NULLABLE. A pre-envelope database must keep working and
-  keep replaying; the chain tolerates legacy rows at its head only.
-- Serialize the payload ONCE; insert and hash the same bytes.
-- Read the chain tail INSIDE the write transaction.
-- The legacy (ts,type) undo fallback must be fenced with
-  `txn_id IS NULL` so legacy and enveloped rows can never co-group.
-- Undo must skip actor='system' transactions and LLM rows.
-
-Demo: two commands in one transaction undo together; a raw INSERT that
-bypasses write_events is caught by verify_event_chain.
-Verify: cargo test; a v2-era DB migrates and keeps chaining.
-```
-
-### I-21 — Recurring tasks (v0.3)
-
-```
-Read CLAUDE.md "Cut from v1" (recurring was always a sanctioned v2
-candidate), FUTURE_WORK.md I-21, SPEC §4.3 + §5.1.
-
-Scope: migration 004 (items.recurrence), domain/recurrence.rs (RRULE
-subset: FREQ=DAILY|WEEKLY|MONTHLY[;INTERVAL=n], civil-date math with
-short-month clamping), ITEM_RECURRENCE_SET (projection) and
-ITEM_RECURRED (audit link), set_item_recurrence, spawn-on-done, the
-Repeat menu and 🔁 badge.
-
-Rules:
-- Completing a recurring item writes ITEM_STATE_CHANGED + ITEM_CREATED
-  + ITEM_RECURRED in ONE transaction (this is why V-02 came first).
-- Cap safety: an ACTIVE parent frees its own slot so the child fits;
-  a BLOCKED/DONE parent's child would add to the tier, so if that tier
-  is full the child goes to INBOX. Marking done must NEVER fail.
-- Validate and canonicalize the rule before writing it, so the column
-  never holds an unparseable string.
-- ITEM_RECURRED returns None from to_projection_event(). Update the
-  firewall doc-comment: None now means "no projection effect" and
-  covers LLM advisory AND audit links. The firewall claim itself (no
-  LLM variants on ProjectionEvent) does not change.
-- Pin the date math to ABSOLUTE unix anchors, not to itself.
-
-Demo: mark a monthly item done on Jan 31 → child due Feb 28/29.
-One Ctrl+Z reverts the parent AND soft-deletes the child.
-Verify: cargo test; pnpm test.
-```
-
-### V-03 — Execution core: first_step, Today, day rituals (v0.3)
-
-```
-Read VISION.md §2 + §3.1–3.4 + laws 4/6/8, CLAUDE.md §7 + §10,
-SPEC §3.7.
-
-Scope: migration 005 (items.first_step ≤140, items.today_on),
-ITEM_FIRST_STEP_SET / TODAY_ADDED / TODAY_REMOVED (projection) +
-DAY_OPENED / DAY_CLOSED (audit, NULL item_id — the log's first),
-commands/day.rs, set_first_step, the Today lane, the day-open picker
-and the day-close question.
-
-Rules:
-- Today is an OVERLAY, not a tier. Never touch tier or state.
-- Cap 3, ACTIVE-only: a done Today item keeps its membership (progress
-  stays visible) but frees its slot.
-- open_day is ONE atomic transaction; over-cap rolls the whole
-  ceremony back.
-- roll_day is the ONLY system-actor write: actor='system',
-  origin='day_roll', Today membership only, idempotent (an empty roll
-  writes nothing), and undo looks straight past it.
-- The FRONTEND owns the local date. Do not compute calendar days in
-  Rust — it has no timezone.
-- first_step is ONE LINE. If you find yourself adding a second field,
-  you are building subtasks, which are cut.
-
-Demo: plan three items, restart, roll to tomorrow — membership expires
-and is logged; Ctrl+Z after the roll reverses the last human action.
-Verify: cargo test (incl. the Today-cap property test); pnpm build.
-```
-
-### V-04 — Focus sessions (v0.3)
-
-```
-Read VISION.md §3.2 + law 8, SPEC §3.8.
-
-Scope: migration 006 (sessions table + partial unique index),
-SESSION_STARTED / SESSION_ENDED, commands/session.rs, the FocusBar and
-the per-strip Start affordance.
-
-Rules:
-- At most ONE open session, enforced twice: the command checks, and a
-  partial UNIQUE index over a constant expression makes a second open
-  row impossible at the storage layer.
-- `sessions` is a PROJECTION table: rebuild_projection must truncate
-  and replay it alongside `items`.
-- Ending with done co-writes the item's state change (and any
-  recurrence spawn) in the SAME transaction.
-- Sessions are BEHAVIOR records: undo never touches them. A pure
-  session transaction is skipped; a done-ending is reached via its
-  ITEM_STATE_CHANGED and reverts the board only. You cannot un-spend
-  attention.
-- Interruption reasons come from a fixed five-word taxonomy. Do not
-  make it configurable; a taxonomy nobody configures is one people
-  actually use.
-
-Demo: start from a strip, work, end with Interrupt → meeting; the
-Mirror later clusters it.
-Verify: cargo test; pnpm test.
-```
-
-### V-05 — Mirror v1 (v0.3)
-
-```
-Read VISION.md §3.5 + law 9, CLAUDE.md §9, SPEC §12.
-
-Scope: commands/mirror.rs (get_mirror_stats) + MirrorView.
-
-Rules:
-- ZERO LLM involvement. Facts are free; interpretation is the optional
-  add-on. If this view ever requires a configured model, the dependency
-  order has been inverted and the increment has failed.
-- Derive everything from RECORDED BEHAVIOR (events + sessions), never
-  from self-report. No estimate fields, ever.
-- One log pass; walk the FULL log so pre-window items still have a
-  known creation time, but count only in-window.
-- Handle un-done items: clearing a recorded completion so a later one
-  counts once.
-- Compute Today honesty from event payloads (no timezone math in Rust).
-- Editorial: state figures plainly; add an interpretive sentence only
-  when the data is unambiguous; read CALM on an empty log. No red, no
-  badges, no streaks. Keep finished work visible as evidence.
-- Hand-roll the bars. No chart library (SPEC §6.2).
-
-Demo: a board with a few weeks of history shows throughput, lead time,
-the leak rate, and the avoidance list.
-Verify: cargo test (incl. the empty-log case); pnpm test.
-```
-
-### I-22..I-27 — forward reference (not built)
-
-```
-I-22 (LLM streaming) is the remaining Phase 5 nicety. Coach v2
-(feeding session/ritual aggregates into the existing analyze path) is
-the natural follow-on — firewall unchanged: propose → human accepts →
-deterministic tier writes. I-23..I-27 (sync, multi-profile, theming,
-plugin surface, mobile companion) are Phase 6.
-
-VISION.md §8 sequences the rest (v0.4 time & ritual, v0.5 continuity,
-v0.6 replication); VISION.md §7 lists what is still operator-gated
-(T4 LLM Today-draft, T5 calendar ICS read, T8 sync). Do not build a
-gated item without a doctrine line first.
-
-When a phase lands, add its increment prompts here with the same
-scope/rules/demo/verify structure, then bump this file's version.
+See FUTURE_WORK.md for scope sketches. When a phase lands, add its
+increment prompts here with the same scope/out-of-scope/demo/verify
+structure as I-01..I-20, then bump this file's version.
 ```
 
 ---
@@ -1438,4 +1247,4 @@ Before closing Claude Code and committing, confirm:
 
 ---
 
-*End of PROMPTS.md. Current version: v1.6. Prior versions in archive/. Per-prompt wording is tuned to resist specific failure modes; change with care.*
+*End of PROMPTS.md. Current version: v1.5. Prior versions in archive/. Per-prompt wording is tuned to resist specific failure modes; change with care.*

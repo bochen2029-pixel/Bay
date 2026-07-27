@@ -1,33 +1,5 @@
 # SPEC.md — Bay
 
-> v1.8 — 2026-07-26. **v0.3 "Execution".** Co-pass with CLAUDE.md
-> v1.9 (which carries the new doctrine laws 7–10). Changes:
->   - §4.0 (new) **event envelope v2** — migration 003's six columns,
->     the hash chain, and the write-path contract.
->   - §4.3 gains the seven v0.3 event payloads (`ITEM_RECURRENCE_SET`,
->     `ITEM_RECURRED`, `ITEM_FIRST_STEP_SET`, `TODAY_ADDED`,
->     `TODAY_REMOVED`, `DAY_OPENED`, `DAY_CLOSED`, `SESSION_STARTED`,
->     `SESSION_ENDED`) and notes the first NULL-`item_id` events.
->   - §4.6 the firewall's `None` arm now covers two classes (LLM
->     advisory + audit/link); the structural claim is unchanged.
->   - §4.7 (new) **golden RUNNER** — cases are executed, not just
->     counted; three defective proposed caps cases corrected.
->   - §3.6 undo groups by `txn_id` (Q01 resolved); sessions and system
->     transactions are not undo targets.
->   - §3.7 (new) Today overlay + day ritual state machine.
->   - §3.8 (new) session lifecycle.
->   - §5.1 gains 11 commands (`set_first_step`, `set_item_recurrence`,
->     `add_to_today`, `remove_from_today`, `open_day`, `close_day`,
->     `roll_day`, `get_day_state`, `start_session`, `end_session`,
->     `get_open_session`, `get_mirror_stats`).
->   - §6 module layout gains `commands/{day,session,mirror}.rs`,
->     `domain/{recurrence,session}.rs`, `golden_runner.rs`.
->   - §9 gains "Post-v0.2.0 delivered (v0.3 Execution)".
->   - §12 (new) **Mirror** — the deterministic statistics contract.
-> No breaking payload changes: every new event type and column is
-> additive, and pre-envelope rows remain replayable. Prior versions
-> through archive/SPEC_v1.7.md.
-
 > v1.7 — 2026-06-17. v0.2.0 revamp in progress. Reconciles the spec
 > with Phase 4 (I-15..I-19), the P2e cold-context fixes, and Phase 5
 > I-20 (LLM re-org proposals). All committed and green (cargo 152/152,
@@ -542,127 +514,22 @@ sharing a single `ts`. Consequences:
   incremental projected counters, so a batch cannot smuggle a tier over
   its cap.
 
-### 3.6 Undo (I-17; regrounded on `txn_id` at v0.3)
+### 3.6 Undo (I-17)
 
 Ctrl+Z appends **compensating events** over the log — never deletes or
 rewrites history (CLAUDE.md §3). Per event type: `ITEM_CREATED` →
 `ITEM_DELETED`; `ITEM_EDITED` → edit-back; `ITEM_MOVED` → move-back;
 `ITEM_STATE_CHANGED` → state-back (restoring the prior `blocked_reason`
 where applicable — see §4.3); `ITEM_DATE_SET` → date-back;
-`ITEM_DELETED` → `ITEM_RESTORED`; `ITEM_RESTORED` → `ITEM_DELETED`;
-`ITEM_RECURRENCE_SET` / `ITEM_FIRST_STEP_SET` → before/after swapped;
-`TODAY_ADDED` ↔ `TODAY_REMOVED`.
-
-**An "action" is one transaction.** Since migration 003 the boundary is
-exact: undo finds the most recent *undoable* event, reads its `txn_id`,
-and compensates every event sharing it — swaps, batches, an accepted
-re-org, and I-21's mixed-type recurrence trio all unwind as a unit.
-The v0.2 `(ts, type)` heuristic survives **only** for legacy
-pre-envelope rows and is fenced with `txn_id IS NULL`, so a legacy row
-can never co-group with an enveloped one. `QUESTIONS.md` Q01 is
-resolved (CONFIRMED).
-
-Three classes are **not** undo targets, and the search looks past them
-to the last human board action:
-- **LLM advisory** events — they never touched the projection.
-- **`actor: 'system'`** transactions — the day-roll executes a timer
-  the human set (CLAUDE.md §10); reversing it would fight the user's
-  own configuration.
-- **Session events** — attention cannot be un-spent. A pure session
-  transaction is skipped entirely; a `done`-ending transaction is
-  reached via its `ITEM_STATE_CHANGED`, and the compensation reverts
-  the board while the session record stands exactly as logged.
-
-Audit/link rows inside a targeted transaction (`ITEM_RECURRED`,
-`DAY_*`) are skipped during compensation. The undo's own write is a
-normal enveloped transaction with `origin: undo:<txn id>`, so it is
-itself auditable and reversible.
-
-### 3.7 Today overlay + day rituals (v0.3)
-
-Today is an **execution overlay**, not a tier: `items.today_on` holds a
-local `YYYY-MM-DD` or NULL; tier and state are untouched.
-
-```
-day-open (human)   → open_day(date, ids)  : N × TODAY_ADDED + DAY_OPENED, ONE txn
-add / remove       → add_to_today / remove_from_today (cap 3 ACTIVE)
-day-close (human)  → close_day(date, tomorrow_first?, note?) : DAY_CLOSED
-day-roll (system)  → roll_day(today)      : N × TODAY_REMOVED{expired}, ONE txn,
-                                            actor system, origin day_roll
-```
-
-- **Cap 3, active-only** — mirroring the tier caps: a *done* Today item
-  keeps its membership (progress stays visible) but stops holding a
-  slot.
-- `open_day` is **atomic and idempotent**: already-chosen items are
-  skipped; a request that would exceed the cap rolls the whole ceremony
-  back (`TODAY_FULL`).
-- The **frontend owns the calendar date** (only it knows the local
-  timezone) and calls `roll_day` at bootstrap; ISO date strings compare
-  lexicographically, which is all the roll needs. An empty roll writes
-  no events (idempotent).
-- `get_day_state` returns the day's ids, whether `DAY_OPENED` was
-  recorded, and the previous close's `tomorrow_first` — but only if
-  that item is still alive, so a deleted "first move" degrades to
-  `None` rather than pointing at a ghost.
-
-### 3.8 Sessions (v0.3)
-
-```mermaid
-stateDiagram-v2
-    [*] --> open: SESSION_STARTED (item must be active; ≤1 open)
-    open --> [*]: SESSION_ENDED {done}         (co-writes ITEM_STATE_CHANGED + recurrence spawn)
-    open --> [*]: SESSION_ENDED {progress}
-    open --> [*]: SESSION_ENDED {interrupted, reason}
-```
-
-The open session is the **"Now" slot**. "At most one" is enforced twice:
-the command checks before writing (`SESSION_ALREADY_OPEN`), and
-`idx_sessions_one_open` — a partial UNIQUE index over a constant
-expression — makes a second open row impossible at the storage layer.
-`sessions` is a projection table under the same purity law as `items`:
-`rebuild_projection` truncates and replays both.
+`ITEM_DELETED` → `ITEM_RESTORED`; `ITEM_RESTORED` → `ITEM_DELETED`. An
+"action" is the most-recent run of events sharing `(ts, type)`, so undo
+generalizes to batch-undo (§3.5).
 
 ---
 
 ## 4. Event payload schemas
 
 All payloads are JSON, stored as TEXT in SQLite, validated on write via Rust `serde` and on the frontend via zod. Unknown fields are preserved (forward-compat) but never generated by v1 code.
-
-### 4.0 Event envelope v2 (v0.3, migration 003)
-
-Every event row carries an envelope beside its payload. All six columns
-are nullable so pre-v0.3 rows stay valid and replayable forever.
-
-| column | written by | contract |
-|---|---|---|
-| `txn_id` | `db::write_events_ctx` | One UUIDv7 per call. **The** transaction boundary: every draft in one call shares it. Undo groups by it (§3.6). |
-| `actor` | caller via `WriteCtx` | `'human'` (default) or `'system'`. The LLM is never an actor — an accepted suggestion is a human write with `origin: llm_accept:<id>`. |
-| `origin` | caller via `WriteCtx` | Free-form provenance where trivially known: `lan`, `llm_accept:<event id>`, `undo:<txn id>`, `day_open`, `day_close`, `day_roll`, `session_start`, `session_end`. NULL = unrecorded. |
-| `device_id` | `write_events_ctx` | Read from `meta.device_id` (seeded once by the migration runner, `INSERT OR IGNORE`). Prepares log replication (VISION §3.8). |
-| `schema_ver` | constant | Per-event payload version, currently `1`. Upcasters read older versions when a payload shape changes. |
-| `prev_hash` | `write_events_ctx` | SHA-256 over the **previous** row's eleven columns; the first row chains from `GENESIS_HASH` (64 zeros). |
-
-**Hash chain contract** (`db/events.rs`):
-- `event_row_hash` encodes each field length-prefixed and NULL-tagged
-  (`0x00` for NULL, `0x01 || len_le_u64 || bytes`), so concatenation is
-  unambiguous and NULL is distinguishable from empty string.
-- The payload is serialized **once** in `write_events_ctx`; the same
-  bytes are inserted and hashed.
-- The chain tail is read inside the write transaction, so it cannot
-  race; a rolled-back transaction leaves no rows and therefore no gap.
-- `verify_event_chain` walks the log in id order: an enveloped row's
-  `prev_hash` must equal the recomputed hash of its predecessor, and a
-  NULL-envelope row is tolerated **only before** the first enveloped
-  row (a NULL after the chain starts is `CHAIN_GAP`). Runs at boot on a
-  background thread; failure surfaces as a warning toast, never a boot
-  block.
-
-Consequence: the append-only invariant is now enforced at four layers —
-Rust convention, property tests, the migration-002 triggers, and
-tamper-**evidence** via the chain. A raw INSERT that bypasses
-`db::write_events` is still possible at the SQL layer, but it breaks
-the chain and `verify_event_chain` reports it (regression-tested).
 
 ### 4.1 Common types
 
@@ -761,80 +628,6 @@ Sets `items.deleted = 1`. Projection excludes. Event log preserved for audit.
 {}
 ```
 Clears `items.deleted` (sets to 0). Emitted only via the undo-delete toast path (see §9 I-08). Backend rejects if the item is not currently soft-deleted (`NOT_DELETED` error).
-
-**ITEM_RECURRENCE_SET** (v0.3, I-21) — projection event
-```json
-{ "before": "string | null", "after": "string | null" }
-```
-Canonical RRULE-subset strings only (`FREQ=DAILY|WEEKLY|MONTHLY[;INTERVAL=n]`,
-uppercase, `INTERVAL=1` omitted); `set_item_recurrence` validates and
-canonicalizes before writing, so `items.recurrence` never holds an
-unparseable rule. Undo swaps `before`/`after`.
-
-**ITEM_RECURRED** (v0.3, I-21) — audit link, **no projection effect**
-```json
-{ "parent_id": "string", "child_id": "string", "next_due_at": "UnixMs" }
-```
-Written in the same transaction as the parent's `ITEM_STATE_CHANGED`
-(→ done) and the child's `ITEM_CREATED`. The child's row comes from its
-own `ITEM_CREATED`; this event records the relationship for the
-inspector and for later analysis.
-
-**ITEM_FIRST_STEP_SET** (v0.3) — projection event
-```json
-{ "before": "string | null", "after": "string | null" }
-```
-`after` is trimmed, non-empty, ≤140 characters (`STEP_TOO_LONG`
-otherwise). One line by design — not a subtask list.
-
-**TODAY_ADDED** (v0.3) — projection event
-```json
-{ "date": "\"YYYY-MM-DD\" (local)" }
-```
-Sets `items.today_on`. Refused when the item is not `active`
-(`NOT_ACTIVE`) or the date already holds 3 active items (`TODAY_FULL`).
-
-**TODAY_REMOVED** (v0.3) — projection event
-```json
-{ "date": "\"YYYY-MM-DD\"", "cause": "\"user\" | \"expired\"" }
-```
-Clears `items.today_on`. `expired` rows are written only by
-`roll_day`, with `actor: 'system'` and `origin: 'day_roll'`.
-
-**DAY_OPENED** (v0.3) — ritual audit, **NULL `item_id`**
-```json
-{ "date": "\"YYYY-MM-DD\"", "today_ids": ["string"] }
-```
-
-**DAY_CLOSED** (v0.3) — ritual audit, **NULL `item_id`**
-```json
-{ "date": "\"YYYY-MM-DD\"", "tomorrow_first": "string | null", "note": "string | null" }
-```
-The first events in Bay's history with a NULL `item_id`. Both return
-`None` from `to_projection_event()`: the per-item `TODAY_*` rows in the
-same transaction carry every projection change.
-
-**SESSION_STARTED** (v0.3) — projects into `sessions`
-```json
-{ "session_id": "string (uuidv7)" }
-```
-`item_id` on the envelope. Refused when the item is not `active`
-(`NOT_ACTIVE`) or a session is already open (`SESSION_ALREADY_OPEN`).
-
-**SESSION_ENDED** (v0.3) — projects into `sessions`
-```json
-{
-  "session_id": "string",
-  "outcome":    "\"done\" | \"progress\" | \"interrupted\"",
-  "reason":     "\"meeting\"|\"person\"|\"self_switch\"|\"blocked\"|\"energy\" | null",
-  "note":       "string | null"
-}
-```
-`reason` is required exactly when `outcome == "interrupted"` and must
-come from the five-word taxonomy (`REASON_REQUIRED` otherwise); it is
-rejected on other outcomes. `outcome: "done"` co-writes the item's
-`ITEM_STATE_CHANGED` (and any recurrence spawn) in the same
-transaction.
 
 **LLM_SUGGESTION_GENERATED**
 ```json
@@ -950,45 +743,6 @@ projection logic for an LLM event requires adding a `ProjectionEvent`
 variant, which the compiler flags at every match site. The firewall is
 "the type system won't let you," not "the match arm returns Ok(())".
 
-**v0.3 amendment.** `ProjectionEvent` now has **13** variants (the
-seven original item events plus `ItemRecurrenceSet`, `ItemFirstStepSet`,
-`TodayAdded`, `TodayRemoved`, `SessionStarted`, `SessionEnded`). The
-`None` arm of `to_projection_event()` now covers **two classes**:
-
-1. **LLM advisory** (`LlmSuggestion{Generated,Accepted,Rejected}`) —
-   the firewall proper. Unchanged and absolute.
-2. **Audit/link** (`ItemRecurred`, `DayOpened`, `DayClosed`) — events
-   whose projection effects travel on their own per-item rows in the
-   same transaction.
-
-The structural claim is untouched: there is still no
-`ProjectionEvent::LlmSuggestion*` variant, so no refactor can route an
-LLM event into the projection, and the `projection_event_has_no_llm_variants`
-test pins the variant set.
-
-### 4.7 Golden RUNNER (v0.3)
-
-`contracts/golden/*.json` are now **executed**, not merely counted.
-`src-tauri/src/golden_runner.rs` (test-only) loads `projection.json`,
-`swap.json`, and `caps.json` at test time and drives every case through
-the real `*_inner` command functions against a fresh in-memory DB.
-(`rank.json` mirrors `scripts/rank-fixtures.json`, already executed by
-the Rust and TS parity suites.)
-
-Discipline: the runner **panics on any op type or expectation key it
-does not recognize**. A golden file that grows a new vocabulary fails
-loudly rather than silently skipping — silent skips are precisely how a
-`JOINT_WRONG` hides. `scripts/check-golden.py` remains the existence /
-frozen-file check; execution now happens under `cargo test`.
-
-Executing the cases immediately surfaced three defective *proposed*
-`caps.json` cases (#5, #6, #8): their `ops` and `expect` blocks
-contradicted both their own case names and frozen doctrine ("blocked
-and done items do not count against caps"; a failed transition mutates
-nothing). They were corrected in place with `_corrected` annotations
-recording what changed and why. They remain `_status: proposed` —
-**operator review and freeze are still required**.
-
 ---
 
 ## 5. IPC contract
@@ -1008,20 +762,8 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `set_item_date` | `{ id, field, value }` | `Item` | `ITEM_NOT_FOUND` |
 | `delete_item` | `{ id }` | `void` | `ITEM_NOT_FOUND` |
 | `restore_item` | `{ id }` | `Item` | `ITEM_NOT_FOUND`, `NOT_DELETED`, `CAP_EXCEEDED` |
-| `batch_set_state` | `{ ids: string[], state, blocked_reason? }` | `{ affected_ids, spawned: Item[] }` | `ITEM_NOT_FOUND`, `INVALID_TRANSITION`, `REASON_REQUIRED`, `CAP_EXCEEDED` |
-| `batch_delete` | `{ ids: string[] }` | `{ affected_ids, spawned: [] }` | `ITEM_NOT_FOUND` |
-| `set_item_recurrence` | `{ id, rule: string \| null }` | `Item` | `ITEM_NOT_FOUND`, `INVALID_RULE`, `NO_OP` |
-| `set_first_step` | `{ id, step: string \| null }` | `Item` | `ITEM_NOT_FOUND`, `STEP_TOO_LONG`, `NO_OP` |
-| `add_to_today` | `{ id, date }` | `Item` | `ITEM_NOT_FOUND`, `NOT_ACTIVE`, `TODAY_FULL`, `BAD_DATE`, `NO_OP` |
-| `remove_from_today` | `{ id }` | `Item` | `ITEM_NOT_FOUND`, `NO_OP` |
-| `open_day` | `{ date, today_ids: string[] }` | `Item[]` (newly added) | `ITEM_NOT_FOUND`, `NOT_ACTIVE`, `TODAY_FULL`, `BAD_DATE` |
-| `close_day` | `{ date, tomorrow_first?, note? }` | `void` | `ITEM_NOT_FOUND`, `BAD_DATE` |
-| `roll_day` | `{ today }` | `{ expired_ids: string[] }` | `BAD_DATE` |
-| `get_day_state` | `{ date }` | `{ today_ids, day_opened, tomorrow_first }` | `BAD_DATE` |
-| `start_session` | `{ item_id }` | `Session` | `ITEM_NOT_FOUND`, `NOT_ACTIVE`, `SESSION_ALREADY_OPEN` |
-| `end_session` | `{ outcome, reason?, note? }` | `{ session, item, spawned: Item[] }` | `NO_OPEN_SESSION`, `REASON_REQUIRED`, `BAD_ARGS` |
-| `get_open_session` | — | `Session \| null` | — |
-| `get_mirror_stats` | `{ window_days? }` | `MirrorStats` (§12) | — |
+| `batch_set_state` | `{ ids: string[], state, blocked_reason? }` | `Item[]` | `ITEM_NOT_FOUND`, `INVALID_TRANSITION`, `REASON_REQUIRED`, `CAP_EXCEEDED` |
+| `batch_delete` | `{ ids: string[] }` | `void` | `ITEM_NOT_FOUND` |
 | `list_archived_items` | — | `Item[]` | — |
 | `get_events` | `{ item_id?, since_ts?, until_ts?, limit? }` | `Event[]` | — |
 | `search_events` | `{ query?, type?, item_id?, since_ts?, until_ts?, limit? }` | `Event[]` | — |
@@ -1036,15 +778,6 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `analyze` | `{ window_days? }` | `{ suggestion_event_id, observations: Observation[] }` | `LLM_UNREACHABLE`, `LLM_PARSE_ERROR`, `LLM_TIMEOUT` |
 | `accept_suggestion` | `{ suggestion_event_id, ops?: ReorgOp[] }` | `{ resulting_event_ids: number[] }` | `EVENT_NOT_FOUND`, `ITEM_NOT_FOUND`, `CAP_EXCEEDED` |
 | `reject_suggestion` | `{ suggestion_event_id, reason? }` | `void` | `EVENT_NOT_FOUND` |
-
-**Recurrence spawn + caps (v0.3, I-21).** Completing a recurring item
-spawns its next instance inside the same transaction. Cap rule: an
-**active** parent frees its own slot, so the child fits the parent's
-tier (net zero); a **blocked or done** parent never counted, so its
-child would add to the tier — if that tier is A/B at cap, the child
-routes to **Inbox** (doctrine-consistent overflow, so marking done can
-never fail). A batch-done shares one `SpawnAccounting` so multiple
-spawns stay cap-correct and get distinct end-of-tier ranks.
 
 **Capacity enforcement**: `create_item` and `move_item` both check caps server-side. Frontend also checks for responsive UI, but backend is the authority. `swap_move` skips the cap check on `entering_tier` since it's paired with an outgoing move in the same transaction. `restore_item` is cap-gated when the restored item is `active` (P2e fix (b)). `batch_set_state` and `accept_suggestion(ops)` enforce caps across the whole batch using incremental projected counters (§3.5), so neither can push a tier over cap; the whole batch is one transaction (one undoable action).
 
@@ -1128,23 +861,10 @@ src-tauri/src/
 │   │                            firewall: LLM events map to None via
 │   │                            to_projection_event()), as_sql/from_sql
 │   ├── rank.rs                — rank_between (fractional indexing; base-36)
-│   ├── recurrence.rs          — v0.3 (I-21): RRULE subset parse/canonicalize +
-│   │                            next_after (Hinnant civil-date math, day clamping)
-│   ├── session.rs             — v0.3: Session, SessionOutcome, INTERRUPT_REASONS
 │   └── capacity.rs            — A_CAP=5, B_CAP=12 constants
 │
-├── golden_runner.rs           — (cfg(test)) EXECUTES contracts/golden/*.json
-│                                against the real command layer (§4.7)
-│
 ├── commands/
-│   ├── mod.rs                 — module hub (capture, day, events, items, llm,
-│   │                            mirror, session, settings)
-│   ├── day.rs                 — v0.3: add/remove_from_today, open_day, close_day,
-│   │                            roll_day (the one actor:system write), get_day_state;
-│   │                            TODAY_CAP = 3 (active-only)
-│   ├── session.rs             — v0.3: start_session / end_session (done co-writes the
-│   │                            item state change + recurrence spawn) / get_open_session
-│   ├── mirror.rs              — v0.3: get_mirror_stats — one log pass + SQL, no LLM (§12)
+│   ├── mod.rs                 — module hub (re-exports capture, events, items, llm, settings)
 │   ├── items.rs               — create/edit/move/set_state/set_date/delete/restore
 │   │                            + swap_move_inner (atomic two-event swap);
 │   │                            each wraps a *_inner pure function for unit testing
@@ -1189,9 +909,6 @@ tauri-plugin-fs = "2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
-
-# v0.3 (ADR-008): SHA-256 for the event-envelope hash chain.
-sha2 = "0.10"
 
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -1727,34 +1444,6 @@ committed and green: cargo 152/152, vitest 93/93.
   (previously always empty). Firewall unchanged — the LLM proposes, the
   human accepts, the deterministic tier writes.
 
-### Post-v0.2.0 delivered (v0.3 "Execution", 2026-07-26)
-
-Authorized by the operator directive recorded in DECISIONS ADR-007 and
-scoped by `VISION.md` §8. Each increment shipped green and committed.
-
-- **Golden RUNNER** (§4.7). Cases execute under `cargo test`; three
-  defective proposed `caps.json` cases corrected (freeze pending).
-- **Migration 003 — event envelope v2** (§4.0). `txn_id`, `actor`,
-  `origin`, `device_id`, `schema_ver`, `prev_hash` + the `meta` table.
-  `sha2` runtime dep (ADR-008). Boot-time chain verification.
-- **Undo by transaction** (§3.6). `QUESTIONS.md` Q01 → CONFIRMED.
-  System and session transactions are not undo targets.
-- **I-21 recurring tasks** (§4.3, §5.1). Migration 004
-  (`items.recurrence`), `domain/recurrence.rs`, `set_item_recurrence`,
-  spawn-on-done in one transaction, Inbox overflow for blocked-parent
-  completions, `🔁` badge + Repeat menu.
-- **Execution core** (§3.7, §3.8). Migration 005 (`first_step`,
-  `today_on`) and 006 (`sessions`). `commands/day.rs`,
-  `commands/session.rs`; the Today lane, day-open picker, day-close
-  question, `FocusBar`, per-strip Start.
-- **Mirror v1** (§12). `commands/mirror.rs` + `MirrorView`.
-- Frontend: `Item` gains `recurrence` / `first_step` / `today_on`;
-  new `Session` + `EndSessionResult` schemas; 9 new `EventType`
-  strings; Mirror added to the switcher and the command palette.
-
-Test counts: **206 Rust** (from 152 at v0.2.0), **106 vitest** (from
-93). `PRAGMA user_version` 6. `cargo build` warning-clean.
-
 ### Still deferred (post-I-20)
 
 - Rank rebalance implementation (helper exists; no trigger per §10.4).
@@ -1937,41 +1626,4 @@ invariants mechanically unbreakable.
 
 ---
 
----
-
-## 12. Mirror — deterministic statistics (v0.3)
-
-`get_mirror_stats(window_days = 30)` computes every figure from
-recorded behavior in **one pass over the event log plus a handful of
-SQL aggregates**. No LLM is configured, called, or required (CLAUDE.md
-§9). The window gates what is *counted*; the log is always walked in
-full so an item created before the window still has a known creation
-time and A-entry.
-
-| field | definition |
-|---|---|
-| `wip` | active, non-deleted items per tier (point-in-time) |
-| `flow.created` / `.completed` | `ITEM_CREATED` / transitions to `done` inside the window |
-| `flow.throughput_per_week` | `completed × 7 ÷ window_days` |
-| `flow.lead_time_p50_days` / `_p90_` | creation → completion, over items completed in-window; linear-interpolated percentiles |
-| `flow.littles_law_days` | `(A + B active) ÷ throughput_per_week × 7` — the queueing-theory prediction, shown *beside* the measurement so a wide gap reads as "the board holds work you never start" |
-| `a_leak` | departures A → C/inbox in-window, and how many happened within **48h** of the item entering A (`rate` = fast ÷ departures) |
-| `avoidance` | active A/B items with **zero** sessions ever, oldest-untouched first (≤10) — the procrastination metric |
-| `blocks` | blocked-reason → (count, total days), still-open intervals counted to now, top 10 by duration |
-| `sessions` | count, total + median minutes, outcome split, interruption cause histogram |
-| `today` | `planned` (TODAY_ADDED), `finished` (done while on Today), `expired` (rolled over) — computed without timezone math, from event payloads |
-| `receipts` | last 10 completed items with days-to-done, session count, minutes |
-
-An un-done item (undo, or reactivation) clears its recorded completion
-so a later completion counts once, not twice. An empty log returns
-zeroes and `None` percentiles — never an error.
-
-**Editorial contract** (CLAUDE.md §9 — confront, never shame): the view
-states figures plainly, adds an interpretive sentence only when the
-data is unambiguous (e.g. the "A is functioning as a second inbox" line
-appears at ≥40% fast-leak rate), and reads calm on an empty log. No
-red, no badges, no streaks. Finished work stays visible as evidence.
-
----
-
-*End of SPEC.md. Current version: v1.8. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*
+*End of SPEC.md. Current version: v1.7. Prior versions in archive/. Revision protocol: append-only archive per pass, v-header at top, inline edits allowed within version bumps.*
