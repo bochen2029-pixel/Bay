@@ -1231,6 +1231,140 @@ mod tests {
     }
 
     #[test]
+    fn accept_reorg_mixed_move_and_done_commutes_over_all_orderings() {
+        // Pass 6 flagged this gap and it stayed open two rounds: the
+        // exhaustive permutation test above contains no `move` op, so
+        // the one op kind that RESHAPES the board mid-diff was never
+        // permuted. It matters twice over — a move rewrites the tier
+        // and rank that pass 2's contest key would read if it read the
+        // simulation (pass 5's defect), and interleavings like
+        // `[move x, done x, move y, done y]` mix the two op kinds in a
+        // way `[move x, move y, done x, done y]` never does.
+        //
+        // All 24 orderings must agree, including those completing an
+        // item BEFORE moving it: pass 2 reads the FINISHED simulation,
+        // so "done in C, then moved to A" and "moved to A, then done"
+        // are the same board and owe the same child.
+        use crate::commands::items::set_item_recurrence_inner;
+
+        // Deliberately omits `rank`, unlike the fingerprint above, and
+        // the reason is not the one that made an earlier version of
+        // that test vacuous. `next_rank` hands out end-of-tier ranks as
+        // the ops array is walked, so two moves into one tier land in
+        // listing order BY DESIGN — the human accepted "move both to
+        // A", and the model's listing is the only stated preference
+        // about which sits above the other. What must NOT follow the
+        // array is the CONTEST: which child takes the last A slot.
+        // Tier and state carry that, so this is a narrower claim than
+        // the one above, made on purpose. (See QUESTIONS Q02: whether
+        // intra-tier placement should also be board-derived is an
+        // operator call, not one to settle inside a test.)
+        fn fingerprint(pool: &SqlitePool) -> Vec<(String, String, String)> {
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content, tier, state FROM items WHERE deleted = 0 \
+                     ORDER BY content, tier, state",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        }
+
+        let build = || {
+            let pool = fresh_pool();
+            // Two recurring items in C with DECLARED ranks, so the
+            // contest has a knowable winner: `x` outranks `y` on the
+            // board the human reviewed.
+            let mut ids = Vec::new();
+            for (name, rank) in [("x", "a"), ("y", "z")] {
+                let it = create_item_inner(&pool, Tier::C, name.into(), None, None).unwrap();
+                set_item_recurrence_inner(&pool, it.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+                crate::commands::items::move_item_inner(
+                    &pool,
+                    it.id.clone(),
+                    Tier::C,
+                    Some(rank.into()),
+                    None,
+                )
+                .unwrap();
+                ids.push(it.id);
+            }
+            // A holds 4 actives. Both items move in and complete — a
+            // done item holds no slot — so exactly ONE of the two
+            // children fits and the other must overflow to Inbox.
+            for i in 0..(A_CAP - 1) {
+                create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            }
+            let sug = seed_suggestion(&pool);
+            (pool, ids[0].clone(), ids[1].clone(), sug)
+        };
+
+        let mut perms: Vec<[usize; 4]> = Vec::new();
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let p = [a, b, c, d];
+                        let mut seen = [false; 4];
+                        if p.iter().all(|i| !std::mem::replace(&mut seen[*i], true)) {
+                            perms.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(perms.len(), 24);
+
+        let mut results: Vec<(bool, Vec<(String, String, String)>)> = Vec::new();
+        for order in &perms {
+            let (pool, x, y, sug) = build();
+            let all_ops = [
+                move_op(&x, "A"),
+                move_op(&y, "A"),
+                done_op(&x),
+                done_op(&y),
+            ];
+            let ops: Vec<ReorgProposal> = order.iter().map(|i| all_ops[*i].clone()).collect();
+            let ok = apply_reorg_inner(&pool, sug, ops).is_ok();
+            results.push((ok, fingerprint(&pool)));
+        }
+        for (i, r) in results.iter().enumerate().skip(1) {
+            assert_eq!(
+                &results[0], r,
+                "permutation {:?} produced a different board than {:?} — mixing move and \
+                 done ops let the model's array order decide the outcome",
+                perms[i], perms[0]
+            );
+        }
+
+        assert!(results[0].0, "the diff is legal and must commit");
+        let board = &results[0].1;
+        // Who won, not merely that someone did.
+        let child_tier = |content: &str| -> String {
+            board
+                .iter()
+                .find(|r| r.0 == content && r.2 == "active")
+                .unwrap_or_else(|| panic!("no active child for {content}: {board:?}"))
+                .1
+                .clone()
+        };
+        assert_eq!(
+            child_tier("x"),
+            "A",
+            "the child of the item the human ranked HIGHER takes the last A slot"
+        );
+        assert_eq!(
+            child_tier("y"),
+            "inbox",
+            "and the lower-ranked item's child is the one exiled — decided on the \
+             pre-diff board, where both still sat in C"
+        );
+    }
+
+    #[test]
     fn accept_reorg_cross_tier_today_contest_favours_the_higher_tier() {
         // `board_order`'s TIER component was decoration: making it a
         // constant, or inverting it, left all 240 tests green. Every

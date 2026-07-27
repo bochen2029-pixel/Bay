@@ -62,3 +62,47 @@ Every speculation resolves to one of:
 
 The continuous verifier flags speculations older than 5 modules and
 assigns a target lifecycle state.
+
+## Q02 — intra-tier placement inside an accepted LLM diff: ops order or board order?
+
+**Status:** OPEN — reasonable default applied, flagged for operator
+review. Raised 2026-07-27 while closing the mixed-op permutation gap
+pass 6 flagged.
+
+**Context.** SPEC §8.7 requires an accepted diff to be a function of
+the op SET, not its order — the whole point being that the LLM must
+not gain a lever on the deterministic tier by choosing how it lists
+proposals. Seven cold passes hardened the *contests* accordingly: who
+takes the last A slot, who keeps the last Today slot. Both are now
+decided by `board_order` keyed on the PRE-DIFF board.
+
+One thing is still decided by the array: **intra-tier placement.**
+`next_rank` hands out end-of-tier ranks as the ops vector is walked, so
+accepting `[move x -> A, move y -> A]` leaves x above y, and the
+reversed listing leaves y above x. Same op set, two different boards.
+
+**Decision (default applied).** Left as is, and the new test
+`accept_reorg_mixed_move_and_done_commutes_over_all_orderings`
+deliberately excludes `rank` from its 24-permutation fingerprint,
+asserting only that tier and state commute. The reasoning: the human
+accepted "move both of these to A" and expressed no preference between
+them, so the model`s listing is the only stated ordering available, and
+using it is closer to honouring the diff than inventing an order. It is
+also visible and trivially draggable, unlike a lost Today slot.
+
+**Why it is a question anyway.** It is a real order-dependence in a
+path whose stated invariant is order-independence, which makes the
+invariant harder to state honestly ("the outcome does not depend on
+order — except for rank"). Two defensible alternatives:
+1. **Board-derive it too**: sort the moves by `board_order` on the
+   pre-diff board before allocating ranks, so a re-listed diff yields a
+   byte-identical board and the invariant needs no caveat.
+2. **Keep it, and say so in SPEC §8.7** — narrow the stated invariant
+   to "tier, state and scarce-slot contests", so nobody later reads the
+   broad claim and builds on it.
+
+Doing nothing is the one option that should not survive review: the
+invariant is currently stated more broadly than the code delivers.
+
+**Operator call.** Either alternative is a small change. (1) costs one
+sort and removes a caveat; (2) costs one paragraph and admits a limit.
