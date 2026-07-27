@@ -1430,6 +1430,37 @@ Return observations JSON.
 
 `{a_list}` format: `[{id, content, days_in_tier, state}]`, JSON-encoded. Similarly for B. C summarized as counts only to keep prompt short.
 
+**v0.3 — the behavior blocks.** Two sections were added once the log
+began recording work rather than only management:
+
+```
+=== ATTENTION (recorded focus sessions) ===
+- Sessions in window: {n} totalling {minutes} minutes
+- Session outcomes: done={n}, progress={n}, interrupted={n}
+- What broke focus: meeting={n}, person={n}, …
+- Today: {n} planned, {n} finished, {n} rolled over unfinished
+
+=== COMMITTED BUT NEVER STARTED (zero focus sessions, ever) ===
+  - id={} tier={} untouched={}d content={}
+```
+
+`never_started` is A/B active items with no session on record and is
+deliberately **not** windowed — the claim is "you have never started
+this", and a 30-day window would quietly weaken it to "not lately". It
+is capped at 10 rows.
+
+The system prompt gained three rules to match: prefer an observation
+grounded in what the user *did* over how the board *looks*; treat zero
+sessions as avoidance **with a cause** (too large, too vague, no first
+step) rather than as a character judgement; and **report, do not
+exhort** — no praise, no encouragement, no streaks or scores. The user
+asked for a mirror (CLAUDE.md §9), not a coach with opinions about
+their character.
+
+This is strictly more **context**, not more authority. The firewall is
+unchanged: the LLM proposes, the human accepts, the deterministic tier
+writes.
+
 ### 8.3 Event log compression
 
 `compression.rs` computes the aggregates server-side in SQL, never ships raw events to the LLM in v1. This:
@@ -1440,6 +1471,9 @@ Return observations JSON.
 v2 option: ship raw event sample when user requests deeper analysis. Not v1.
 
 Target input budget: ≤2500 tokens system+user. Target output: ≤500 tokens.
+The v0.3 behavior blocks are bounded (fixed-size aggregate lines plus
+≤10 never-started rows) and a test pins the budget against a full board
+(A and B at cap, 40 C, 40 inbox) so they cannot silently grow past it.
 
 ### 8.4 Output parsing
 

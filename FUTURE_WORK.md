@@ -54,14 +54,13 @@ variant (`stream: true`, SSE) and an `analyze_progress` `streaming`
 stage so observations render as they arrive. Keep the parse path
 strict: buffer, then parse the final JSON. No doctrine impact.
 
-### F-04 — Coach v2 (session-aware analysis)
-`llm/compression.rs` still summarizes only board topology. Feed it the
-v0.3 behavior aggregates (sessions per item, avoidance list, Today
-honesty, interruption taxonomy) so the coach can say "zero sessions on
-the item you called critical three weeks ago" instead of only "this
-item is stale". Firewall unchanged: propose → human accepts →
-deterministic tier writes. This is a prompt + compression change, not
-an architecture change.
+### ~~F-04 — Coach v2 (session-aware analysis)~~ — **done 2026-07-27**
+`compress` now carries sessions, outcomes, the interruption taxonomy,
+Today honesty, and `never_started` (A/B actives with zero sessions
+ever, un-windowed); the prompt renders them and instructs the model to
+ground observations in behavior, treat zero sessions as avoidance with
+a cause, and report rather than exhort. Token budget test included.
+Firewall unchanged — more context, not more authority.
 
 ---
 
