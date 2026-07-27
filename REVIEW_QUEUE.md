@@ -6,14 +6,13 @@
 > Ordered **cheapest-to-verify first**. Each item: what changed, how to
 > check it, and the exact revert.
 >
-> Gates: `cargo test` **252/252**, `cargo build` warning-clean,
+> Gates: `cargo test` **261/261**, `cargo build` warning-clean,
 > `pnpm build` clean, `pnpm test` **118/118**,
 > `node scripts/test-store-logic.mjs` green,
 > `python scripts/check-golden.py` green (5 files, 16 today cases),
 > `python scripts/verify-schema.py --fresh` green (13 objects, v6),
 > `python scripts/check-reachability.py` green (39/39),
-> `python scripts/check-mutations.py` green (**25/25 caught** at
-> `2b7d58f`; two more added since, re-running).
+> `python scripts/check-mutations.py` green (**33/33 caught**).
 >
 > One result worth pulling out of that list: the `caps/restore-ignores-cap`
 > mutation — which reintroduces P2e BLOCKING-2, where restoring from the
@@ -23,12 +22,12 @@
 > truth the agent did not write, catching a regression in the product's
 > central invariant. It is also the argument for freezing the rest.
 >
-> **Seven cold-context verifier passes ran, each reviewing the previous
-> one's fix. All seven found something.** Every finding is fixed and
+> **Nine cold-context verifier passes ran, each reviewing the previous
+> one's fix. All nine found something.** Every finding is fixed and
 > regression-tested. Read item 0 first — the chain is the most
 > informative artifact this run produced, more so than any feature in
-> it. The last two passes found **no incorrect behaviour in the shipped
-> code**; every finding was a hole in the safety net.
+> it. The last **four** passes found **no incorrect behaviour in the
+> shipped code**; every finding was a hole in the safety net.
 >
 > The run is **not released**: `.run-lock` remains, there is no tag, and
 > ~43 commits sit unpushed. This is a reviewable checkpoint.
@@ -42,11 +41,15 @@
 >    an agent edit silently disarming one of them.
 > 2. **Ratify CLAUDE laws 7 and 10** (caps bind flow; the system acts
 >    only on a human-set timer).
-> 3. **Answer QUESTIONS Q02** — intra-tier placement inside an accepted
->    diff still follows the model's listing order, which is a real
->    order-dependence in a path whose stated invariant is
->    order-independence. Two small fixes offered; doing nothing is the
->    one option that should not survive review.
+> 3. **QUESTIONS Q02 — optional, and no longer urgent.** Intra-tier
+>    placement inside an accepted diff follows the model's listing
+>    order. When I filed this I claimed SPEC overstated the invariant
+>    and that doing nothing "should not survive review"; **both were
+>    wrong** — SPEC §8.7 has documented this exact exception since
+>    `a0f4775`, and I asserted what SPEC said without reading it. Doing
+>    nothing is legitimate. The only live choice is whether to
+>    board-derive the rank too, which costs one sort and lets §8.7 drop
+>    its caveat.
 
 ## Commits this session (newest first)
 
@@ -83,7 +86,7 @@ Reverting is layered: I-21 and the execution core assume the envelope
 
 ### 0. The verification chain — **read this first**
 
-Three cold passes ran, each reviewing the previous one's output. The
+Nine cold passes ran, each reviewing the previous one's fix. The
 result is the most important thing on this page:
 
 | pass | subject | verdict |
@@ -96,7 +99,17 @@ result is the most important thing on this page:
 | 6 | pass 5's fix (`ea2fb64`) + the mutation gate | **FAIL** — 3 MAJOR, but *"no incorrect behaviour in the shipped code; every finding is a hole in the guard"* |
 | 7 | pass 6's fix + the guards the gate itself exposed | **PASS with 3 MAJOR** — *"no incorrect behaviour found in the shipped code"*; all three MAJORs are lines the round **leaned on** while adding guards beside them |
 | 8 | pass 7's fix (three guards + the gate's own repairs) | **FAIL, 2 MAJOR** — *"I found no incorrect behaviour in the shipped code"*; both MAJORs were the two blocked-reason doors the session had **already fixed independently** while the pass ran |
-| 9 | pass 8's fix + the sibling audit + the mixed-op permutations | dispatched |
+| 9 | pass 8's fix + the sibling audit + the mixed-op permutations | **PASS, 2 MAJOR, no BLOCKING** — *"I found no incorrect behaviour in the shipped code"*, fourth round running. Both MAJORs were guard holes: the **B** half of a cap counter whose **A** half I had guarded one commit earlier with an A-only fixture, and the row-hash digest (dropping `payload` survived the suite) |
+| 10 | pass 9's fix + the generated order-independence property | dispatched |
+
+**Pass 9 also corrected a factual error I put in front of you.**
+`QUESTIONS.md` Q02, as I filed it, asserted *"SPEC §8.7 currently claims
+more than the code delivers"* and concluded *"doing nothing is the one
+option that should not survive review."* Both false — §8.7 has named
+that exact rank exception since `a0f4775` (pass 4), before Q02 existed.
+I asserted what SPEC said without reading it, which would have had you
+deciding under an urgency I invented. Q02 now carries the correction
+and states plainly that **doing nothing is a legitimate outcome**.
 
 **Pass 8 is the one that converged.** Its two MAJORs — `session.rs:157`
 and `items.rs:993`, both unguarded doors of the P2e BLOCKING-1 class —
