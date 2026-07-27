@@ -64,6 +64,7 @@ DAY = "src-tauri/src/commands/day.rs"
 ITEMS = "src-tauri/src/commands/items.rs"
 DB = "src-tauri/src/db/mod.rs"
 GOLDEN_RUNNER = "src-tauri/src/golden_runner.rs"
+SESSION = "src-tauri/src/commands/session.rs"
 
 # Each mutation reintroduces a defect a cold review actually found.
 # `why` is the finding it guards; it is printed when the mutation
@@ -244,6 +245,56 @@ MUTATIONS = [
         "replace": """    let _ = move_item_inner(pool, item.id.clone(), item.tier, Some(rank.to_string()), None);
     let _ = case;""",
         "why": "a declared rank that cannot be applied would run the case against a board contradicting its own text — silently",
+    },
+    # ── The blocked-reason carry, at all four doors that write it ────
+    # Pass 7's lesson made concrete: this one fix lives at four call
+    # sites, and only the two a review happened to name were guarded.
+    # A mutation per door, so "fixed everywhere" and "guarded
+    # everywhere" cannot drift apart again.
+    {
+        "name": "items/single-unblock-drops-blocked-reason",
+        "file": ITEMS,
+        "find": """            "blocked_reason": if target_state == ItemState::Blocked {
+                blocked_reason.clone()
+            } else if current.state == ItemState::Blocked {
+                current.blocked_reason.clone()
+            } else {
+                None
+            },""",
+        "replace": """            "blocked_reason": if target_state == ItemState::Blocked {
+                blocked_reason.clone()
+            } else {
+                None
+            },""",
+        "why": "P2e BLOCKING-1 at the single-item door: undo of an unblock trips the migration-002 CHECK",
+    },
+    {
+        "name": "items/batch-unblock-drops-blocked-reason",
+        "file": ITEMS,
+        "find": """                "blocked_reason": if target_state == ItemState::Blocked {
+                    blocked_reason.clone()
+                } else if current.state == ItemState::Blocked {
+                    current.blocked_reason.clone()
+                } else {
+                    None
+                },""",
+        "replace": """                "blocked_reason": if target_state == ItemState::Blocked {
+                    blocked_reason.clone()
+                } else {
+                    None
+                },""",
+        "why": "P2e BLOCKING-1 at the batch door — same fix, no guard until the pass-7 sibling audit",
+    },
+    {
+        "name": "session/done-ending-drops-blocked-reason",
+        "file": SESSION,
+        "find": """                            "blocked_reason": if current.state == ItemState::Blocked {
+                                current.blocked_reason.clone()
+                            } else {
+                                None
+                            },""",
+        "replace": """                            "blocked_reason": None::<String>,""",
+        "why": "P2e BLOCKING-1 at the session door, reachable when an item is blocked mid-session and then finished",
     },
 ]
 

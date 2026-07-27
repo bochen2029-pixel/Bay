@@ -2596,6 +2596,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn batch_leaving_blocked_stays_undoable() {
+        // Sibling audit, prompted by v0.3 pass 7: the accept door's
+        // `Done` arm carried this fix with a test, a golden case AND a
+        // gate mutation, while its `Active` twin carried the fix with
+        // none of the three — and dropping the line there reproduced
+        // the BLOCKING bug. The same fix lives at four doors. This one
+        // (batch) and the session door had no guard either.
+        //
+        // Asserts what actually matters, which the single-item test
+        // above does not: not that the payload LOOKS right, but that
+        // undo SUCCEEDS. The failure mode is a migration-002 CHECK
+        // abort that rolls the undo back and leaves Ctrl+Z permanently
+        // dead on that transaction, since undo keeps re-targeting it.
+        for target in [ItemState::Done, ItemState::Active] {
+            let pool = fresh_pool();
+            let mut ids = Vec::new();
+            for i in 0..2 {
+                let it = create_item_inner(&pool, Tier::B, format!("t{i}"), None, None).unwrap();
+                set_item_state_inner(
+                    &pool,
+                    it.id.clone(),
+                    ItemState::Blocked,
+                    Some(format!("waiting on {i}")),
+                )
+                .unwrap();
+                ids.push(it.id);
+            }
+            batch_set_state_inner(&pool, ids.clone(), target, None).unwrap();
+
+            crate::commands::events::undo_last_action_inner(&pool)
+                .unwrap_or_else(|e| panic!("undo of a batch out of blocked -> {target:?} failed: {e}"));
+
+            let conn = pool.get().unwrap();
+            for (i, id) in ids.iter().enumerate() {
+                let (state, reason): (String, Option<String>) = conn
+                    .query_row(
+                        "SELECT state, blocked_reason FROM items WHERE id = ?1",
+                        [id],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .unwrap();
+                assert_eq!(state, "blocked", "target {target:?}: item {i} must return to blocked");
+                assert_eq!(
+                    reason.as_deref(),
+                    Some(format!("waiting on {i}").as_str()),
+                    "target {target:?}: each item keeps its OWN reason — a batch \
+                     carries N different ones, not a shared one"
+                );
+            }
+        }
+    }
+
     // ── I-21 recurring tasks ────────────────────────────────────────
 
     #[test]

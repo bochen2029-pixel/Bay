@@ -335,6 +335,49 @@ mod tests {
     }
 
     #[test]
+    fn done_ending_a_blocked_item_stays_undoable() {
+        // The fourth door carrying the blocked-reason fix, and the last
+        // one without a guard. Same sibling audit as the batch door:
+        // v0.3 pass 7 found the accept path's `Active` arm holding this
+        // fix with nothing testing it, so the other doors were checked
+        // the same way rather than assumed correct.
+        //
+        // `start_session_inner` refuses a non-active item (NOT_ACTIVE),
+        // so the only way to reach the `blocked` branch of the
+        // co-write is the one this function's own comment names: the
+        // item changes DURING the session. That is a real sequence —
+        // you sit down with something, discover it is waiting on
+        // someone, mark it blocked, then finish the last piece you
+        // could do anyway and tap Done.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "stuck work".into(), None, None).unwrap();
+        start_session_inner(&pool, item.id.clone()).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            item.id.clone(),
+            ItemState::Blocked,
+            Some("waiting on legal".into()),
+        )
+        .unwrap();
+        let result = end_session_inner(&pool, SessionOutcome::Done, None, None).unwrap();
+        assert_eq!(result.item.state, ItemState::Done);
+
+        crate::commands::events::undo_last_action_inner(&pool)
+            .expect("undo must never fail — a dropped reason aborts it on the migration-002 CHECK");
+
+        let conn = pool.get().unwrap();
+        let (state, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT state, blocked_reason FROM items WHERE id = ?1",
+                [&item.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "blocked");
+        assert_eq!(reason.as_deref(), Some("waiting on legal"));
+    }
+
+    #[test]
     fn undo_after_done_ending_reverts_board_but_keeps_the_behavior_record() {
         let pool = fresh_pool();
         let item = create_item_inner(&pool, Tier::A, "task".into(), None, None).unwrap();
