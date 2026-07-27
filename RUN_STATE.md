@@ -1,8 +1,8 @@
-# RUN_STATE — Bay v0.3 "Execution" run (2026-07-26)
+# RUN_STATE — Bay v0.3 "Execution" run (2026-07-27)
 
 > Postcard to future-self. Kept current enough to BE the compaction
 > brief. If this file is stale, the run is lost. Last updated:
-> 2026-07-26, session-end consolidation.
+> 2026-07-27, during the verification chain (pass 8 in flight).
 
 ## Run identity
 
@@ -38,35 +38,55 @@ Fable 5, continued on Claude Opus 5 after a mid-run quota limit.
 ## Current task
 
 **A chain of cold verification passes, each reviewing the last one's
-fix.** Record so far: **3 for 3** — every fix commit contained a new
-defect, with severity strictly decreasing.
+fix.** Record: **7 for 7** — every fix commit contained something.
+Severity fell monotonically, and the last two passes found **no
+incorrect behaviour in the shipped code at all**.
 
 | pass | subject | verdict |
 |---|---|---|
 | 1 | v0.3 feature work | FAIL — BLOCKING Today-cap bypass (open) |
 | 2 | `b884b4d` (pass-1 fix) | FAIL — BLOCKING cap **escape** introduced by the fix |
 | 3 | `8f4592e` (pass-2 fix) | FAIL — 3 MAJOR, order-dependence (fails closed) |
-| 4 | `0562957` (pass-3 fix) | dispatched |
+| 4 | `0562957` (pass-3 fix) | FAIL — BLOCKING: accepting `done` on a *blocked* item killed Ctrl+Z permanently |
+| 5 | `a0f4775` + `1e7467d` | FAIL — 2 MAJOR, no BLOCKING: the ordering *key* was still ops-derived |
+| 6 | `ea2fb64` + the mutation gate | FAIL — 3 MAJOR, all *guard* holes; "no incorrect behaviour in the shipped code" |
+| 7 | `82a2842` + `25e7138` | PASS w/ 3 MAJOR — again all guard holes, all at *siblings of a fixed door* |
+| 8 | `723a0bb` + `14b1111` | dispatched |
 
-Pass 3's structural repair: `apply_reorg_inner` now runs in **two
-passes** — pass 1 applies the human's ops (cap check on those alone),
-pass 2 resolves derived effects (recurrence spawns, Today overflow)
-from the FINISHED simulation. The outcome is a function of the op set,
-not its order, and a derived effect can never fail a legal diff.
+Two structural repairs carry the run. Pass 3's: `apply_reorg_inner` now
+runs in **two passes** — pass 1 applies the human's ops (cap check on
+those alone), pass 2 resolves derived effects (recurrence spawns, Today
+overflow) from the FINISHED simulation. The outcome is a function of
+the op set, not its order, and a derived effect can never fail a legal
+diff. Pass 5's: `board_order(orig, sim, id) -> (tier, rank, id)` keys
+every contest on the **pre-diff** board, so the model's listing order
+cannot decide who wins.
+
+**The pattern worth carrying (passes 6–7).** The defects have left the
+implementation and now live in the safety net: a bug gets fixed at
+every door at once, but the guards accrete only at the door the review
+named. Pass 7 found the accept path's `Done` arm holding a test, a
+golden case AND a mutation while its identical `Active` twin one match
+arm below held none. Same for `board_order`'s `id` tiebreak vs its
+`tier` sibling. **After fixing anything, grep for its siblings and
+guard each.**
 
 ## Next concrete actions
 
-1. **Read pass 4's findings** when they arrive; fix and re-gate. If it
-   comes back CLEAN, that is the first clean pass in the chain and the
-   point at which v0.3 can be called verified rather than converging.
-2. **F-01 (operator)**: freeze `caps.json` #5/#6/#8 and the new
-   `today.json` (13 cases). Until then the ground truth is
-   agent-authored — the condition the Externality Principle exists to
-   end.
-3. F-03 I-22 streaming; F-04 coach v2 over session aggregates.
-4. VISION v0.4 (wake dates, weekly review, C-bankruptcy, triage flow).
-5. Do NOT build T4 / T5 / T8 — still operator-gated (VISION §7).
-6. Before calling v0.3 permanent: dogfood a week and run the
+1. **Read pass 8's findings** when they arrive; fix and re-gate. Two
+   consecutive behaviourally-clean passes mean the chain is close to
+   its end condition — but "this verifier stopped finding things" is
+   not "the code is correct," and ending the chain is an operator call.
+2. **F-01 (operator, now the top blocker)**: freeze `caps.json`
+   #5/#6/#8 and all 16 `today.json` cases. Until then the ground truth
+   is agent-authored — the condition the Externality Principle exists
+   to end. Note the agent has since AUTHORED a growing share of those
+   cases, which sharpens the point.
+3. Ratify CLAUDE laws 7 and 10.
+4. F-03 I-22 streaming; F-04 coach v2 over session aggregates.
+5. VISION v0.4 (wake dates, weekly review, C-bankruptcy, triage flow).
+6. Do NOT build T4 / T5 / T8 — still operator-gated (VISION §7).
+7. Before calling v0.3 permanent: dogfood a week and run the
    `VISION.md` §9 falsification checks. No test suite can answer them.
 
 ## Blocking issues
@@ -107,17 +127,34 @@ None. The verifier gap is a quality gap, not a blocker.
 
 ## Runway snapshot
 
-Gates: cargo **216/216** (from 152), vitest **106/106** (from 93), both
-builds clean, warning-clean, store-logic + check-golden green,
-`verify-schema.py --fresh` green (13 objects, v6). Speculations: 0 open
-(Q01 CONFIRMED and closed). Blockers: 0. ~12 commits ahead of origin,
-**unpushed, untagged**.
+Gates: cargo **247/247** (from 152), vitest **118/118** (from 93), both
+builds clean, warning-clean, store-logic + check-golden (5 files, 16
+today cases), `verify-schema.py --fresh` (13 objects, v6),
+`check-reachability.py` 39/39, and **`scripts/check-mutations.py`
+20/20** — one mutation per defect a cold pass found, each caught by a
+specifically-named test, none by a mere compile error. Speculations: 0
+open (Q01 CONFIRMED and closed). Blockers: 0. ~20 commits ahead of
+origin, **unpushed, untagged**.
 
-Defects found + fixed this run: 3 defective golden cases (ground-truth,
-found by executing them); 1 BLOCKING + 1 MAJOR + 6 MINOR (found by the
-cold verifier); 3 in `verify-schema.py` (found by finally running it).
-**Every one of them was a check that existed but had never executed** —
-that is the lesson worth carrying into the next run.
+Defects found + fixed this run: 3 defective golden cases (ground truth,
+found by executing them); 3 BLOCKING, 11+ MAJOR and many MINOR across
+seven cold passes; 3 in `verify-schema.py` (found by finally running
+it); and several in the mutation gate itself (found by auditing the
+tool that judges the evidence).
+
+**Two lessons, in order of how expensive they were to learn.**
+(1) *A check that exists but never executes is not a check* — golden
+cases counted not run, `verify-schema.py` broken since migration 002,
+a cap enforced only at remembered doors, two registered commands with
+no UI. (2) *A check that executes but cannot fail is not a check
+either* — an order-independence property built on
+`proptest::sample::subsequence`, which preserves order and so compared
+one ordering against itself; a policy test that asserted a contest
+happened but never who won; and a correct fix that silently flipped a
+golden case's board so the item under test was never reached.
+`check-mutations.py` exists to make the second class detectable, and
+**the standing rule is: when a review finds a defect, add its
+mutation — and guard every sibling of the door it named.**
 
 ## Pointer back
 
