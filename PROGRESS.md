@@ -968,3 +968,51 @@ x]` (which must spawn nothing). All three closed.
 Gates: cargo **243/243** warning-clean; vitest 118/118; **mutations
 16/16 caught, each by a named test, none by compile error**; golden 5
 files / 16 today cases; verify-schema --fresh; reachability 39/39.
+
+## 2026-07-27 — Seventh cold pass: no behavioural finding, and a pattern named
+
+Pass 7: **PASS with 3 MAJOR — "no incorrect behaviour was found in the
+shipped code."** Two rounds running the verifier could not make the
+code misbehave. But all three MAJORs shared one shape, and it is the
+most useful thing this chain has produced:
+
+> **The bug was fixed at every door at once. The guards were only ever
+> added at the door the report happened to name.**
+
+- The accept door`s `Done` arm had a test, a golden case AND a gate
+  mutation for its blocked-reason carry. Its identical twin one match
+  arm down — `Active` — had none. Dropping the same line there
+  reproduces P2e BLOCKING-1 through the other door: undo of an unblock
+  trips the migration-002 CHECK and kills Ctrl+Z for that transaction.
+- `board_order`'s `tier` byte got two mutations last round. Its `id`
+  tiebreak — same tuple, same SPEC sentence — got none. Ranks are
+  per-tier sequences with no UNIQUE constraint, so two items can tie;
+  without the tiebreak the stable sort falls back to the ops array and
+  the model decides the contest. Both existing order-independence tests
+  use distinct ranks and miss it entirely.
+- `child.today_on = None` sat under a comment arguing it did not matter
+  ("invisible today; only tier+state are read") while
+  `effective_active_today` read it out of the same simulation one loop
+  later. An inherited day evicts a real reactivation.
+
+All three closed with a test AND a mutation, verified 1:1: each new
+mutation is caught by exactly the one new test written for it.
+
+**The gate audited itself and lost.** Its which-test-caught report —
+the output used last round to condemn three guards as decoration —
+printed only the alphabetically first failing test, hiding the re-armed
+golden runner behind a "+1". And any non-zero cargo exit scored as
+"caught", so a flake could certify an unguarded line. Now: every
+failing test reported, a red suite naming none is INCONCLUSIVE,
+baseline output printed on failure, and the dirty-tree refusal narrowed
+to TRACKED files (refusing on untracked scratch made it unrunnable
+during normal work, which is the surest way to make a gate unused).
+
+Also pinned: `cause: "user"` on the accept door (Mirror counts
+"expired" as roll-over slippage and feeds it to the coach, so
+mislabelling inflates a statistic the user is judged on), and
+`apply_declared_rank`'s fail-loud, which was an equivalent mutant.
+
+Gates: cargo **247/247** warning-clean; vitest 118/118; **mutations
+20/20**; golden 5 files / 16 today cases; verify-schema --fresh;
+reachability 39/39.

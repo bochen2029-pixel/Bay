@@ -56,7 +56,29 @@ result is the most important thing on this page:
 | 4 | pass 3's fix commit (`0562957`) | **FAIL** — 1 BLOCKING (accepting `done` on a *blocked* item killed Ctrl+Z permanently), 3 MAJOR (ordering, one layer down) |
 | 5 | pass 4's fix (`a0f4775`) + golden accept-door coverage (`1e7467d`) | **FAIL** — 2 MAJOR, **no BLOCKING**: the ordering *key* was still ops-derived, and the contest policy was indistinguishable from its inverse |
 | 6 | pass 5's fix (`ea2fb64`) + the mutation gate | **FAIL** — 3 MAJOR, but *"no incorrect behaviour in the shipped code; every finding is a hole in the guard"* |
-| 7 | pass 6's fix + the guards the gate itself exposed | dispatched |
+| 7 | pass 6's fix + the guards the gate itself exposed | **PASS with 3 MAJOR** — *"no incorrect behaviour found in the shipped code"*; all three MAJORs are lines the round **leaned on** while adding guards beside them |
+| 8 | pass 7's fix (three guards + the gate's own repairs) | dispatched |
+
+**Read passes 6 and 7 together.** Two rounds running, the cold verifier
+could not make the shipped code do anything wrong. The defects have
+migrated out of the implementation and into the safety net — and then,
+in pass 7, into a specific and embarrassing pattern:
+
+> The `Done` arm of the accept door had a test, a golden case *and* a
+> gate mutation for its blocked-reason carry. Its identical twin one
+> match arm down — `Active` — had none, and dropping the same line
+> there reproduces the same BLOCKING bug through the other door.
+
+The *bug* was fixed at every door at once. The *guards* were only ever
+added at the door the report happened to name. Same shape for
+`board_order`'s `id` tiebreak (its `tier` sibling got two mutations
+that round; the `id` got none) and for `child.today_on = None` (which
+sat under a comment arguing it did not matter — while
+`effective_active_today` read it out of the same map one loop later).
+
+Each of the three is now closed by a test **and** a mutation, verified
+1:1 — every new mutation is caught by exactly the one new test written
+for it, and by no other.
 
 **Pass 2 is the one to dwell on.** My fix for the BLOCKING Today-cap
 bug bolted the recurrence spawn onto `apply_reorg_inner` — which
@@ -348,16 +370,30 @@ longer fail. An operator-owned oracle went quiet as a side effect of a
 fix — and nothing would have told me, because it still passed.
 
 Then the gate found three of the guards I added *that same round* to be
-decoration, naming each one. All are closed; **16 mutations, every one
+decoration, naming each one. All are closed; **20 mutations, every one
 caught by a specifically-named test, none by a mere compile error.**
+
+Pass 7 then turned that same lens on the gate itself, and it deserved
+it. Its "which test caught this" report — the very output used to
+condemn three guards as decoration — printed only the
+*alphabetically first* failing test, which had been quietly hiding
+`golden_runner::golden_today_cases_execute` (the re-armed operator
+oracle, that round's headline fix) behind a "+1". Worse, **any**
+non-zero cargo exit scored as *caught*, so a flake could certify an
+unguarded line. Both fixed; the gate now reports every failing test and
+treats a red suite that names none as `INCONCLUSIVE`.
 
 Honest caveats that remain:
 
-- **The chain is 6 for 6 and pass 7 is dispatched.** Severity has
+- **The chain is 7 for 7 and pass 8 is dispatched.** Severity has
   fallen monotonically — BLOCKING-open, BLOCKING-closed, MAJOR,
-  BLOCKING-at-a-missed-door, MAJOR-only, guards-only — which is
-  convergence rather than correctness. Do not treat the newest commit
-  as verified.
+  BLOCKING-at-a-missed-door, MAJOR-only, guards-only, **guards-only
+  with no behavioural finding at all** — which is convergence rather
+  than correctness. Do not treat the newest commit as verified.
+- **Two rounds of "the code is right" is not proof the code is right.**
+  It is evidence that this particular verifier, reading these
+  particular files, has stopped finding things. That is exactly when a
+  chain should be ended by an operator, not by the agent running it.
 - The verifiers reviewed code, not behavior. Nothing here has been used
   by a person for a week; `VISION.md` §9 lists what would tell us the
   execution core is wrong, and no test suite can answer any of it.
