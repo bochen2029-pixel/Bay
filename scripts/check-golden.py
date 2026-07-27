@@ -34,6 +34,11 @@ CRITICAL_GOLDEN = {
     "swap.json": "commands::items::swap_move_inner",
     "caps.json": "commands::items::{create,move,set_item_state,swap_move}_inner",
     "rank.json": "domain::rank::rank_between",
+    # Added v0.3: the Today overlay had no golden coverage, and a cold
+    # review traced a BLOCKING cap bypass to exactly that absence — the
+    # law was in doctrine, enforced in code, and asserted nowhere an
+    # operator owned.
+    "today.json": "commands::day::{add_to_today,open_day,roll_day,today_overflow_draft}",
 }
 
 

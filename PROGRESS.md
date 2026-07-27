@@ -635,3 +635,24 @@ features.
 
 Gates: cargo **224/224** warning-clean, vitest 114/114, both builds
 clean, store-logic + check-golden + verify-schema --fresh green.
+
+## 2026-07-27 — contracts/golden/today.json: the missing externality
+
+The cold review''s diagnosis of the BLOCKING bug was structural, not
+incidental: the Today law was in doctrine (CLAUDE §7/§10), enforced in
+code, and **asserted nowhere an operator owned** — so no externality
+could catch a bypass. 13 proposed cases now cover it: the cap, the
+progress-visibility rule (done keeps membership, frees the slot), all
+three re-entry doors, open_day atomicity + idempotence, the date-move
+balance, the roll''s system-actor provenance, and both undo invariants.
+
+Crucially the file ships EXECUTED, not merely present — adding an
+unrun golden file would have recreated the exact pattern behind every
+defect this run. golden_runner gained a today.json executor (same
+panic-on-unknown-key discipline) and check-golden.py now requires it.
+
+**Negative control run:** disabling the overflow guard makes the case
+"REACTIVATION into a full day drops membership rather than failing"
+fail by name; restoring it passes. The assertion bites.
+
+Gates: cargo 225/225 warning-clean; check-golden 5 files / 80 cases.

@@ -31,6 +31,7 @@ use crate::domain::{EventType, ItemState, Tier};
 const PROJECTION_JSON: &str = include_str!("../../contracts/golden/projection.json");
 const SWAP_JSON: &str = include_str!("../../contracts/golden/swap.json");
 const CAPS_JSON: &str = include_str!("../../contracts/golden/caps.json");
+const TODAY_JSON: &str = include_str!("../../contracts/golden/today.json");
 
 // ── shared helpers ──────────────────────────────────────────────────
 
@@ -591,6 +592,223 @@ fn run_swap_case(case: &Value) {
             .query_row("SELECT tier FROM items WHERE id = ?1", [&entering_id], |r| r.get(0))
             .unwrap();
         assert_eq!(actual, t, "[{name}] entering item tier after swap");
+    }
+}
+
+// ── today.json ──────────────────────────────────────────────────────
+//
+// The Today overlay had no golden coverage until the v0.3 cold review
+// traced a BLOCKING cap bypass to exactly that absence: the law was in
+// doctrine, enforced in code, and asserted nowhere an operator owned.
+
+#[test]
+fn golden_today_cases_execute() {
+    let root: Value = serde_json::from_str(TODAY_JSON).expect("today.json parses");
+    let dates = root["_dates"].as_object().expect("today.json declares _dates");
+    let cases = root["cases"].as_array().expect("today.json has cases");
+    assert!(!cases.is_empty());
+    for case in cases {
+        run_today_case(case, dates);
+    }
+}
+
+const TODAY_CASE_KEYS: &[&str] = &[
+    "name",
+    "description",
+    "ops",
+    "expect_today_active",
+    "expect_today_total",
+    "expect_on_today",
+    "expect_event_counts",
+    "expect_last_today_removed_cause",
+    "expect_last_today_removed_actor",
+    "expect_last_today_removed_origin",
+    "expect_undone_event_types",
+];
+
+/// Symbolic date labels (`D1`, `D2`) keep the cases readable and keep
+/// real calendar dates out of assertions.
+fn resolve_date(dates: &serde_json::Map<String, Value>, label: &str) -> String {
+    dates
+        .get(label)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| panic!("golden today: undeclared date label {label:?}"))
+        .to_string()
+}
+
+fn run_today_case(case: &Value, dates: &serde_json::Map<String, Value>) {
+    let name = case["name"].as_str().expect("case name");
+    for key in case.as_object().unwrap().keys() {
+        assert!(
+            TODAY_CASE_KEYS.contains(&key.as_str()),
+            "[{name}] unhandled today case key {key:?} — extend the runner, never skip"
+        );
+    }
+
+    let pool = fresh_pool();
+    let mut ids: Vec<String> = Vec::new();
+    let mut last_undone: Vec<String> = Vec::new();
+
+    for op in case["ops"].as_array().expect("ops") {
+        let op_type = op["type"].as_str().expect("op type");
+        let expect_error = op["expect_error"].as_str();
+        let idx = |op: &Value| -> usize { op["item_index"].as_u64().unwrap() as usize };
+        let result: Result<(), String> = match op_type {
+            "create" => create_item_inner(
+                &pool,
+                tier_of(op["tier"].as_str().unwrap()),
+                op["content"].as_str().unwrap().to_string(),
+                None,
+                None,
+            )
+            .map(|item| ids.push(item.id)),
+            "set_state" => set_item_state_inner(
+                &pool,
+                ids[idx(op)].clone(),
+                state_of(op["state"].as_str().unwrap()),
+                op["blocked_reason"].as_str().map(String::from),
+            )
+            .map(|_| ()),
+            "delete" => delete_item_inner(&pool, &ids[idx(op)]),
+            "restore" => restore_item_inner(&pool, &ids[idx(op)]).map(|_| ()),
+            "today" => crate::commands::day::add_to_today_inner(
+                &pool,
+                ids[idx(op)].clone(),
+                resolve_date(dates, op["date"].as_str().unwrap()),
+            )
+            .map(|_| ()),
+            "remove_today" => {
+                crate::commands::day::remove_from_today_inner(&pool, ids[idx(op)].clone())
+                    .map(|_| ())
+            }
+            "open_day" => {
+                let chosen: Vec<String> = op["item_indices"]
+                    .as_array()
+                    .expect("open_day item_indices")
+                    .iter()
+                    .map(|v| ids[v.as_u64().unwrap() as usize].clone())
+                    .collect();
+                crate::commands::day::open_day_inner(
+                    &pool,
+                    resolve_date(dates, op["date"].as_str().unwrap()),
+                    chosen,
+                )
+                .map(|_| ())
+            }
+            "roll_day" => crate::commands::day::roll_day_inner(
+                &pool,
+                resolve_date(dates, op["date"].as_str().unwrap()),
+            )
+            .map(|_| ()),
+            "undo" => crate::commands::events::undo_last_action_inner(&pool).map(|r| {
+                last_undone = r.undone_event_types;
+            }),
+            other => panic!("[{name}] unhandled today op type {other:?} — extend the runner"),
+        };
+
+        match (expect_error, result) {
+            (Some(code), Err(actual)) => assert!(
+                error_matches(code, &actual),
+                "[{name}] op {op_type} expected error {code:?}, got {actual:?}"
+            ),
+            (Some(code), Ok(())) => {
+                panic!("[{name}] op {op_type} expected error {code:?} but succeeded")
+            }
+            (None, Err(actual)) => panic!("[{name}] op {op_type} unexpectedly failed: {actual}"),
+            (None, Ok(())) => {}
+        }
+    }
+
+    // ── expectations ────────────────────────────────────────────────
+    let conn = pool.get().unwrap();
+    let count_today = |state_filter: Option<&str>, date: &str| -> i64 {
+        match state_filter {
+            Some(s) => conn
+                .query_row(
+                    "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state = ?2 AND deleted = 0",
+                    rusqlite::params![date, s],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+            None => conn
+                .query_row(
+                    "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND deleted = 0",
+                    rusqlite::params![date],
+                    |r| r.get(0),
+                )
+                .unwrap(),
+        }
+    };
+
+    if let Some(map) = case["expect_today_active"].as_object() {
+        for (label, expected) in map {
+            let date = resolve_date(dates, label);
+            assert_eq!(
+                count_today(Some("active"), &date),
+                expected.as_i64().unwrap(),
+                "[{name}] active count on {label}"
+            );
+        }
+    }
+    if let Some(map) = case["expect_today_total"].as_object() {
+        for (label, expected) in map {
+            let date = resolve_date(dates, label);
+            assert_eq!(
+                count_today(None, &date),
+                expected.as_i64().unwrap(),
+                "[{name}] total membership on {label}"
+            );
+        }
+    }
+    if let Some(map) = case["expect_on_today"].as_object() {
+        for (index, expected) in map {
+            let id = &ids[index.parse::<usize>().expect("item index key")];
+            let actual: Option<String> = conn
+                .query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap();
+            let want = expected.as_str().map(|l| resolve_date(dates, l));
+            assert_eq!(actual, want, "[{name}] today_on for item {index}");
+        }
+    }
+    if let Some(map) = case["expect_event_counts"].as_object() {
+        for (event_type, expected) in map {
+            let actual: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE type = ?1",
+                    [event_type.as_str()],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                actual,
+                expected.as_i64().unwrap(),
+                "[{name}] {event_type} event count"
+            );
+        }
+    }
+    for (key, column) in [
+        ("expect_last_today_removed_cause", "json_extract(payload, '$.cause')"),
+        ("expect_last_today_removed_actor", "actor"),
+        ("expect_last_today_removed_origin", "origin"),
+    ] {
+        if let Some(expected) = case[key].as_str() {
+            let actual: String = conn
+                .query_row(
+                    &format!(
+                        "SELECT {column} FROM events WHERE type = 'TODAY_REMOVED' \
+                         ORDER BY id DESC LIMIT 1"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or_else(|e| panic!("[{name}] no TODAY_REMOVED to read {key}: {e}"));
+            assert_eq!(actual, expected, "[{name}] {key}");
+        }
+    }
+    if let Some(expected) = case["expect_undone_event_types"].as_array() {
+        let want: Vec<&str> = expected.iter().map(|v| v.as_str().unwrap()).collect();
+        let got: Vec<&str> = last_undone.iter().map(|s| s.as_str()).collect();
+        assert_eq!(got, want, "[{name}] undone event types");
     }
 }
 
