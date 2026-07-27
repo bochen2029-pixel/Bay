@@ -445,10 +445,19 @@ MUTATIONS = [
     {
         "name": "undo/restore-arm-missing",
         "file": UNDO,
+        # `if false` on the arm made the match non-exhaustive, so the
+        # gate caught it with a COMPILE ERROR — which proves the code
+        # changed, not that any assertion noticed. `continue` skips the
+        # arm while still compiling, which is the real defect shape.
         "find": """            EventType::ItemRestored => {
-                descriptions.push(format!("Undone ITEM_RESTORED on item {item_id}"));""",
-        "replace": """            EventType::ItemRestored if false => {
-                descriptions.push(format!("Undone ITEM_RESTORED on item {item_id}"));""",
+                descriptions.push(format!("Undone ITEM_RESTORED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemDeleted,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "soft": true }),
+                }
+            }""",
+        "replace": "            EventType::ItemRestored => continue,",
         "why": "BRICKS Ctrl+Z: undo returns NOTHING_TO_UNDO and keeps re-targeting the same txn",
     },
     {
