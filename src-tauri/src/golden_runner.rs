@@ -252,7 +252,12 @@ fn run_projection_case(case: &Value) {
             .map(|item| {
                 // Same reason as in the Today runner: a declared rank
                 // the runner discards makes the case describe the
-                // inverse of the board it builds.
+                // inverse of the board it builds. Unlike there, no
+                // projection case's OUTCOME currently turns on rank, so
+                // this call is fidelity-only — removing it leaves the
+                // suite green. Kept because the next case to depend on
+                // rank should inherit a runner that already tells the
+                // truth, but do not mistake it for something tested.
                 apply_declared_rank(&pool, op, &item, name);
                 ids.push(item.id);
             }),
@@ -618,6 +623,29 @@ fn golden_today_cases_execute() {
     }
 }
 
+#[test]
+#[should_panic(expected = "could not set declared rank")]
+fn declared_rank_that_cannot_be_applied_fails_loudly() {
+    // `apply_declared_rank` is the reason a golden case's declared
+    // ranks are real rather than decorative, and its `panic!` is the
+    // reason a rank that CANNOT be applied is not silently ignored.
+    // Nothing in the committed cases can fail it, so without this the
+    // fail-loud is an equivalent mutant: swallowing the error would run
+    // every case against a board contradicting its own text — the exact
+    // defect the helper was written to remove, one door over.
+    //
+    // An empty rank is rejected by the migration-002 CHECK, which is
+    // the cheapest way to reach the error arm.
+    let pool = fresh_pool();
+    let item = create_item_inner(&pool, Tier::B, "x".into(), None, None).unwrap();
+    apply_declared_rank(
+        &pool,
+        &serde_json::json!({ "rank": "" }),
+        &item,
+        "synthetic: unapplyable rank",
+    );
+}
+
 const TODAY_CASE_KEYS: &[&str] = &[
     "name",
     "description",
@@ -644,6 +672,13 @@ const TODAY_CASE_KEYS: &[&str] = &[
 /// because an operator reading the case would reason from a board that
 /// does not exist. Setting the declared rank explicitly makes the case
 /// text true.
+///
+/// The `panic!` is load-bearing rather than defensive. Swallowing the
+/// error would leave the case running against a board that silently
+/// disagrees with its own text — which is precisely the failure this
+/// helper exists to remove, re-entering through a different door. No
+/// currently-declared rank can fail, so only
+/// `declared_rank_that_cannot_be_applied_fails_loudly` observes it.
 fn apply_declared_rank(pool: &SqlitePool, op: &Value, item: &crate::domain::Item, case: &str) {
     let Some(rank) = op["rank"].as_str() else { return };
     if item.rank == rank {

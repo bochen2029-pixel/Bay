@@ -43,6 +43,7 @@ LLM = "src-tauri/src/commands/llm.rs"
 DAY = "src-tauri/src/commands/day.rs"
 ITEMS = "src-tauri/src/commands/items.rs"
 DB = "src-tauri/src/db/mod.rs"
+GOLDEN_RUNNER = "src-tauri/src/golden_runner.rs"
 
 # Each mutation reintroduces a defect a cold review actually found.
 # `why` is the finding it guards; it is printed when the mutation
@@ -214,6 +215,15 @@ MUTATIONS = [
         "replace": """            it.rank.clone(),
             String::new(),""",
         "why": "SPEC §8.7: without the id the contest key is not a total order, and tied ranks fall back to the model's ops order",
+    },
+    {
+        "name": "golden/declared-rank-failure-swallowed",
+        "file": GOLDEN_RUNNER,
+        "find": """    move_item_inner(pool, item.id.clone(), item.tier, Some(rank.to_string()), None)
+        .unwrap_or_else(|e| panic!("[{case}] could not set declared rank {rank:?}: {e}"));""",
+        "replace": """    let _ = move_item_inner(pool, item.id.clone(), item.tier, Some(rank.to_string()), None);
+    let _ = case;""",
+        "why": "a declared rank that cannot be applied would run the case against a board contradicting its own text — silently",
     },
 ]
 
