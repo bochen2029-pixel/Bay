@@ -1278,8 +1278,16 @@ mod tests {
             // Two recurring items in C with DECLARED ranks, so the
             // contest has a knowable winner: `x` outranks `y` on the
             // board the human reviewed.
-            let mut ids = Vec::new();
-            for (name, rank) in [("x", "a"), ("y", "z")] {
+            //
+            // `y` is created FIRST, deliberately. Ids are uuidv7 and so
+            // time-ordered, and the winner must be the better-RANKED
+            // item, not the older one. Create them the obvious way
+            // round and rank order and id order agree — which would let
+            // a contest keyed on raw id pass this test for the wrong
+            // reason. Here the two keys disagree, so only rank can
+            // produce the expected answer.
+            let mut ids = std::collections::HashMap::new();
+            for (name, rank) in [("y", "z"), ("x", "a")] {
                 let it = create_item_inner(&pool, Tier::C, name.into(), None, None).unwrap();
                 set_item_recurrence_inner(&pool, it.id.clone(), Some("FREQ=DAILY".into())).unwrap();
                 crate::commands::items::move_item_inner(
@@ -1290,8 +1298,10 @@ mod tests {
                     None,
                 )
                 .unwrap();
-                ids.push(it.id);
+                ids.insert(name, it.id);
             }
+            let (x, y) = (ids["x"].clone(), ids["y"].clone());
+            assert!(y < x, "fixture: `y` must hold the SMALLER id, so id order and rank order disagree");
             // A holds 4 actives. Both items move in and complete — a
             // done item holds no slot — so exactly ONE of the two
             // children fits and the other must overflow to Inbox.
@@ -1299,7 +1309,7 @@ mod tests {
                 create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
             }
             let sug = seed_suggestion(&pool);
-            (pool, ids[0].clone(), ids[1].clone(), sug)
+            (pool, x, y, sug)
         };
 
         let mut perms: Vec<[usize; 4]> = Vec::new();
