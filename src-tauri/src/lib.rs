@@ -9,6 +9,8 @@ use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
 mod capture;
 mod commands;
 mod db;
+#[cfg(test)]
+mod golden_runner;
 mod hotkey;
 mod keychain;
 mod llm;

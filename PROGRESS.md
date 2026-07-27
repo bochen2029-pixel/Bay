@@ -350,3 +350,19 @@
 - TASKLIST: P5a golden runner / P5b envelope 003 + undo-txn / P5c
   execution core added.
 - Bootstrap reality check: cargo 152/152 cold, tree clean at 709be5d.
+
+## 2026-07-26 — P5a: golden RUNNER — the exists-vs-executes gap closed
+
+- src-tauri/src/golden_runner.rs (cfg(test)): executes projection.json
+  (7 cases), swap.json (6), caps.json (12) against the real *_inner
+  command functions + projection on fresh in-memory DBs, in cargo test.
+  Unknown op types / expectation keys PANIC — no silent skips (silent
+  skips are how JOINT_WRONGs hide). rank.json already executes via the
+  fixture parity suites.
+- Execution design immediately surfaced 3 DEFECTIVE proposed caps
+  cases (#5, #6, #8): ops/expectations contradicted their own names AND
+  frozen doctrine (blocked/done do not count against caps; a failed
+  transition mutates nothing). Corrected as _status:proposed edits with
+  _corrected annotations; operator freeze requested on return.
+- Gates: cargo 155/155 (152 + 3 runner tests), build warning-clean,
+  check-golden.py OK, 4.07s test wall.

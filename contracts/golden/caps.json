@@ -26,13 +26,15 @@
     },
     {
       "name": "blocked item doesn't count: 5 active + 1 blocked in A, 6th active create rejected",
-      "input": { "ops": ["create A x5", "set_state a0 blocked 'reason'", "create A x1"] },
-      "expect": { "6th_active_create_error": "CAP_EXCEEDED", "a_active_after": 4, "a_blocked_after": 1, "a_total_after": 5 }
+      "_corrected": "2026-07-26 (P5a golden runner): the original ops blocked one of 5 A items and expected the very next create to CAP_EXCEEDED with a_active_after=4 — internally inconsistent with the case's own name ('5 active + 1 blocked') and with doctrine ('blocked does not count'; 4 active < cap, the create MUST succeed). Corrected ops create the 5th active AFTER the block (succeeds), then attempt a 6th active (fails). Still _status:proposed — operator review + freeze requested.",
+      "input": { "ops": ["create A x5", "set_state a0 blocked 'reason'", "create A x1", "create A x1"] },
+      "expect": { "6th_active_create_error": "CAP_EXCEEDED", "a_active_after": 5, "a_blocked_after": 1, "a_total_after": 6 }
     },
     {
       "name": "done item doesn't count: 5 active + 1 done in A, 6th active create rejected",
-      "input": { "ops": ["create A x5", "set_state a0 done", "create A x1"] },
-      "expect": { "6th_active_create_error": "CAP_EXCEEDED", "a_active_after": 4, "a_done_after": 1 }
+      "_corrected": "2026-07-26 (P5a golden runner): same defect class as the blocked case — original expected the create AFTER marking one done to fail at 4 active, contradicting 'done does not count'. Corrected: 5th active create succeeds, 6th fails.",
+      "input": { "ops": ["create A x5", "set_state a0 done", "create A x1", "create A x1"] },
+      "expect": { "6th_active_create_error": "CAP_EXCEEDED", "a_active_after": 5, "a_done_after": 1, "a_total_after": 6 }
     },
     {
       "name": "done->active undo at cap rejected: A full of active, mark one done, mark another done, undo the first -> still at cap",
@@ -41,8 +43,9 @@
     },
     {
       "name": "done->active undo refills slot: A full, mark one done (frees slot), create 6th (fills slot), undo the done -> CAP_EXCEEDED",
+      "_corrected": "2026-07-26 (P5a golden runner): original expected a_done_after=0, but the done->active transition FAILS (CAP_EXCEEDED), so a0 must REMAIN done — a failed transition cannot mutate state. a_done_after=1.",
       "input": { "ops": ["create A x5", "set_state a0 done", "create A x1", "set_state a0 active"] },
-      "expect": { "undo_a0_active_error": "CAP_EXCEEDED", "a_active_after": 5, "a_done_after": 0 }
+      "expect": { "undo_a0_active_error": "CAP_EXCEEDED", "a_active_after": 5, "a_done_after": 1 }
     },
     {
       "name": "cross-tier move into full A rejected: 5 active in A, move active B item to A -> CAP_EXCEEDED",
