@@ -221,6 +221,31 @@ def main() -> int:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if version != EXPECTED_VERSION:
             print(f"user_version mismatch: got {version}, want {EXPECTED_VERSION}")
+            # A BEHIND live DB is the overwhelmingly common case and is
+            # not a schema defect — it is a dev database that predates
+            # the newest migrations and will migrate itself on next
+            # launch. Saying only "mismatch" made a routine, expected
+            # state look like a failure of the thing being verified,
+            # which is how a gate earns a reputation for crying wolf
+            # and stops being run. This repo has already lost one gate
+            # that way: verify-schema itself sat broken from migration
+            # 002 until the v0.3 run, because nobody pointed it at a
+            # live DB and its failure was assumed to be noise.
+            if not fresh and version < EXPECTED_VERSION:
+                print(
+                    f"      {DB_PATH} is BEHIND by {EXPECTED_VERSION - version} "
+                    f"migration(s) — this is a stale dev database, not a schema\n"
+                    f"      defect. Launch the app to migrate it, or verify the "
+                    f"migration files alone with:\n"
+                    f"          python scripts/verify-schema.py --fresh"
+                )
+            elif not fresh:
+                print(
+                    f"      {DB_PATH} is AHEAD of the migration files — it was "
+                    f"written by a newer build.\n"
+                    f"      That is a real inconsistency: investigate before "
+                    f"trusting either side."
+                )
             return 1
 
         rows = conn.execute(
