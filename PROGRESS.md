@@ -732,3 +732,10 @@ exists but is never *invoked*. Worth keeping the sweep as a standing
 check.
 
 Gates: vitest 118/118, build clean.
+
+- Made the sweep permanent: `scripts/check-reachability.py` parses
+  `generate_handler!` and requires an `invoke("…")` call site in `src/`
+  for every command, with a short justified allowlist (`get_settings`
+  only). Negative-control verified: renaming the `set_first_step` call
+  site makes it fail by name. A one-off audit would have been another
+  check that ran once.
