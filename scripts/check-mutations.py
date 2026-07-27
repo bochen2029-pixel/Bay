@@ -296,6 +296,28 @@ MUTATIONS = [
         "replace": """                            "blocked_reason": None::<String>,""",
         "why": "P2e BLOCKING-1 at the session door, reachable when an item is blocked mid-session and then finished",
     },
+    # ── Caps: the product. Six doors, six SEPARATE implementations ──
+    # Every door has a test and caps.json has 12 golden cases, so this
+    # class is not in the state the blocked-reason carry was. These two
+    # cover the subtlest logic: the batch counter that must include the
+    # activations the batch is itself making, and the restore door that
+    # shipped with no cap check at all (P2e BLOCKING-2).
+    {
+        "name": "caps/batch-activation-not-accumulated",
+        "file": ITEMS,
+        "find": "                        active_a = Some(n + 1);",
+        "replace": "                        active_a = Some(n);",
+        "why": "a batch activating N items must count its OWN activations, or N reactivations slip past a cap with one free slot",
+    },
+    {
+        "name": "caps/restore-ignores-cap",
+        "file": ITEMS,
+        "find": """        // ITEM_RESTORED via write_events directly, not through here.)
+        if current.state == ItemState::Active {""",
+        "replace": """        // ITEM_RESTORED via write_events directly, not through here.)
+        if false {""",
+        "why": "P2e BLOCKING-2: restore had no cap check, so an archive-restore could exceed A/B (JOINT_WRONG vs caps.json #12)",
+    },
 ]
 
 
