@@ -682,9 +682,9 @@ pub(crate) fn build_recurrence_spawn(
     let child_rank = rank_between(last.as_deref(), None);
     acct.last_rank.insert(child_tier, Some(child_rank.clone()));
 
-    Ok(Some(recurrence_child_drafts(
-        parent, ts, rule, child_tier, child_rank,
-    )))
+    Ok(Some(
+        recurrence_child_drafts(parent, ts, rule, child_tier, child_rank).1,
+    ))
 }
 
 /// The parent's recurrence rule, if it has a parseable one.
@@ -708,18 +708,23 @@ pub(crate) fn recurrence_rule_of(parent: &Item) -> Option<Recurrence> {
 /// the child's content, its inherited recurrence, the advanced dates
 /// (due = rule.next_after(parent.due ?? now); start shifts
 /// symmetrically), its `active` birth state, and the audit link.
+///
+/// Returns the child's id alongside the drafts. Callers need that id
+/// (to model the child, or to announce it to the UI) and recovering it
+/// by draft position would be a trap: reorder the two drafts and the
+/// caller silently picks up the PARENT's id instead.
 pub(crate) fn recurrence_child_drafts(
     parent: &Item,
     ts: i64,
     rule: Recurrence,
     child_tier: Tier,
     child_rank: String,
-) -> Vec<EventDraft> {
+) -> (String, Vec<EventDraft>) {
     let child_id = Uuid::now_v7().to_string();
     let next_due = rule.next_after(parent.due_at.unwrap_or(ts));
     let child_start = parent.start_at.map(|s| rule.next_after(s));
 
-    vec![
+    let drafts = vec![
         EventDraft {
             event_type: EventType::ItemCreated,
             item_id: Some(child_id.clone()),
@@ -741,7 +746,8 @@ pub(crate) fn recurrence_child_drafts(
                 "next_due_at": next_due,
             }),
         },
-    ]
+    ];
+    (child_id, drafts)
 }
 
 /// Max length of a first step: one line, a doorknob, not a corridor.

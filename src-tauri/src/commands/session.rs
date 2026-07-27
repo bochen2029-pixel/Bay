@@ -203,14 +203,14 @@ pub fn end_session_inner(
         .map_err(|e| format!("read ended session: {e}"))?;
     let item = db::items::read_item_by_id_any_conn(&conn, &session.item_id)?
         .ok_or_else(|| "session item missing post-end".to_string())?;
-    // Checked in every build, not just debug: a stuck-open Now slot
-    // locks the user out of starting anything with no way back, and it
-    // is cheap to rule out. (Evaluating this inside `debug_assert!`
-    // would both skip the check in the shipped binary and give the
-    // error path different behavior in debug vs release.)
-    if db::items::open_session_conn(&conn)?.is_some() {
-        return Err("SESSION_STILL_OPEN: ending a session must free the Now slot".into());
-    }
+    // No post-commit invariant check here. "At most one open session"
+    // is guaranteed by `idx_sessions_one_open`, and this read happens
+    // AFTER the transaction committed — so the only thing it can
+    // actually observe is a *new* session legitimately started in
+    // between. Returning `Err` for that would report failure for a
+    // write that succeeded (breaking the convention that an `Err` from
+    // a command means nothing was written) and would leave the UI's
+    // focus bar stuck, which is the very state it purported to guard.
     let child_ids: Vec<String> = events
         .iter()
         .filter(|e| e.event_type == EventType::ItemCreated)

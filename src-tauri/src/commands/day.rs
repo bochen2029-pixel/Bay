@@ -56,23 +56,14 @@ pub struct TodayAccounting {
     net_active: std::collections::HashMap<String, i64>,
 }
 
-impl TodayAccounting {
-    /// Record that an item on `date` is LEAVING active in this same
-    /// transaction, freeing its slot.
-    ///
-    /// Only transactions that move items in both directions at once
-    /// need this — today only the accepted LLM re-org. Without it, a
-    /// diff like "finish X, reactivate Y (both on today)" reads the
-    /// pre-transaction count, sees a full day, and drops Y from Today
-    /// even though X's completion freed the slot: a `TODAY_REMOVED` the
-    /// human never caused. It is the exact mirror of the freed-slot bug
-    /// fixed in `build_recurrence_spawn`.
-    pub fn release(&mut self, item: &Item) {
-        if let Some(date) = &item.today_on {
-            *self.net_active.entry(date.clone()).or_insert(0) -= 1;
-        }
-    }
-}
+// NOTE: no `release()` counterpart. This accounting serves the
+// single-direction doors (a state change or restore that only ever
+// makes items active), where nothing frees a slot mid-transaction. The
+// one mixed-direction path — the accepted LLM re-org — resolves Today
+// overflow from its finished simulation instead
+// (`llm::effective_active_today`), which is order-independent; an
+// incremental counter there produced a result that depended on the
+// order the model happened to list its proposals.
 
 /// Enforce the Today cap on every path that makes an item ACTIVE again
 /// — reactivation from done/blocked, and archive-restore.

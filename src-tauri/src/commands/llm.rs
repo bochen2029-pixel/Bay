@@ -250,19 +250,13 @@ fn apply_reorg_inner(
         }
     }
 
-    // An item may appear at most once. Two ops on one item ("done, then
-    // active") are contradictory on their face, and processing both
-    // would double-count it in every ledger below — including spawning
-    // two recurrence children from one completion.
-    {
-        let mut seen = std::collections::HashSet::new();
-        for op in &ops {
-            if !seen.insert(op.item_id.as_str()) {
-                return Err("BAD_ARGS: duplicate item in ops".into());
-            }
-        }
-    }
-
+    // Several ops on one item are legal and coherent — "unblock it and
+    // demote it" is a proposal pair a model produces routinely, and the
+    // simulation applies them in order. (An earlier build rejected them
+    // outright, which turned one such pair into a total accept failure
+    // that discarded every other accepted op.) Repeated completions
+    // cannot double-spawn: `completed` is a set, resolved once, after
+    // every op has been applied.
     let mut affected: Vec<String> = Vec::new();
     let mut spawned_ids: Vec<String> = Vec::new();
     // Provenance: this is a HUMAN write (the user accepted); origin
@@ -300,7 +294,10 @@ fn apply_reorg_inner(
         // a later drag between the two collides. (There is no UNIQUE
         // constraint on (tier, rank); it commits silently.)
         let mut tier_last_rank: HashMap<Tier, Option<String>> = HashMap::new();
-        let mut today_acct = crate::commands::day::TodayAccounting::default();
+        // Items this diff leaves newly done / newly active. Derived
+        // effects are resolved from these AFTER every op is applied.
+        let mut completed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut reactivated: Vec<String> = Vec::new();
 
         // End-of-tier rank in the SIMULATED world.
         let next_rank = |tier: Tier,
@@ -348,69 +345,11 @@ fn apply_reorg_inner(
                     }
                     drafts.push(state_change_draft(&op.item_id, cur.state, ItemState::Done, None));
                     sim.get_mut(&op.item_id).unwrap().state = ItemState::Done;
-                    // This completion frees the item's Today slot for a
-                    // reactivation later in the same diff.
-                    if cur.state == ItemState::Active {
-                        today_acct.release(&cur);
-                    }
-
-                    // I-21: completing through the accept-diff must
-                    // behave like every other done-door, or a recurring
-                    // item accepted here would silently stop recurring.
-                    //
-                    // Placement is decided from the SIMULATION, not the
-                    // live projection: this transaction may already have
-                    // moved items into or out of the tier, and the final
-                    // cap check below reasons in simulated terms. Asking
-                    // the projection here would consult a ledger that
-                    // cannot see this one — and a child placed by the
-                    // blind ledger escapes both checks.
-                    if let Some(rule) = crate::commands::items::recurrence_rule_of(&cur) {
-                        // `sim` already has the parent marked done, so
-                        // its freed slot is counted.
-                        let parent_tier = cur.tier;
-                        let cap = match parent_tier {
-                            Tier::A => Some(A_CAP as i64),
-                            Tier::B => Some(B_CAP as i64),
-                            Tier::Inbox | Tier::C => None,
-                        };
-                        let child_tier = match cap {
-                            Some(cap) if effective_active(tx, &orig, &sim, parent_tier)? >= cap => {
-                                Tier::Inbox // doctrine-consistent overflow
-                            }
-                            _ => parent_tier,
-                        };
-                        let child_rank = next_rank(child_tier, &mut tier_last_rank, tx)?;
-                        let spawn = crate::commands::items::recurrence_child_drafts(
-                            &cur, ts, rule, child_tier, child_rank.clone(),
-                        );
-                        // Register the child in the simulation so the
-                        // final cap check counts it. It is deliberately
-                        // absent from `orig`, so it reads as a net +1.
-                        let child_id = spawn[0].item_id.clone().unwrap();
-                        let mut child = cur.clone();
-                        child.id = child_id.clone();
-                        child.tier = child_tier;
-                        child.rank = child_rank;
-                        child.state = ItemState::Active;
-                        child.today_on = None;
-                        sim.insert(child_id.clone(), child);
-                        spawned_ids.push(child_id);
-                        drafts.extend(spawn);
-                    }
+                    completed.insert(op.item_id.clone());
                 }
                 ProposalAction::Active => {
                     if cur.state == ItemState::Active {
                         continue;
-                    }
-                    // Today cap on this re-activation door (see
-                    // day::today_overflow_draft).
-                    if let Some(drop) = crate::commands::day::today_overflow_draft(
-                        tx,
-                        &cur,
-                        &mut today_acct,
-                    )? {
-                        drafts.push(drop);
                     }
                     // Preserve the outgoing blocked reason so an undo can
                     // restore the blocked row (migration-002 CHECK).
@@ -428,17 +367,106 @@ fn apply_reorg_inner(
                     let s = sim.get_mut(&op.item_id).unwrap();
                     s.state = ItemState::Active;
                     s.blocked_reason = None;
+                    completed.remove(&op.item_id); // done-then-active: not a completion
+                    if !reactivated.contains(&op.item_id) {
+                        reactivated.push(op.item_id.clone());
+                    }
                 }
             }
         }
 
-        // Cap check on the FINAL active counts of A and B. (Intermediate
-        // over-cap is fine — the projection has no cap constraint; only the
-        // committed end state must hold.) Spawned recurrence children are
-        // in `sim` and not in `orig`, so they count here.
+        // ── Cap check on the human's own ops ────────────────────────
+        // Intermediate over-cap is fine — the projection has no cap
+        // constraint; only the committed end state must hold. Derived
+        // effects (spawns) are resolved AFTER this and are placed where
+        // they fit, so they can never turn a legal diff into a failure.
         for (tier, cap) in [(Tier::A, A_CAP as i64), (Tier::B, B_CAP as i64)] {
             if effective_active(tx, &orig, &sim, tier)? > cap {
                 return Err("CAP_EXCEEDED".into());
+            }
+        }
+
+        // ── Pass 2: derived effects, from the FINISHED simulation ───
+        //
+        // Everything above is what the human accepted. Everything below
+        // is what those acceptances imply. Resolving the implications
+        // incrementally — inside the loop, against a half-applied
+        // simulation — made the outcome depend on the ORDER the model
+        // happened to list its proposals: an op not yet visited still
+        // reads as a no-op, so the same accepted set could commit or
+        // fail, and could keep or lose a Today slot, purely on array
+        // order. The LLM has no write path, but that would have handed
+        // it a lever on the deterministic tier's result, which is the
+        // spirit of the firewall if not its letter.
+
+        // I-21: a completed recurring item spawns its next instance
+        // here, exactly as every other done-door does. Placement reads
+        // the finished simulation, and a full tier overflows to Inbox
+        // (SPEC §8.7) — a spawn must NEVER fail the accept.
+        // Iterate ops for a deterministic order, but spawn once per
+        // ITEM: several ops may name the same item, and each completed
+        // item owes exactly one child.
+        let mut spawned_for: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for id in ops.iter().map(|o| &o.item_id) {
+            if !completed.contains(id) || !spawned_for.insert(id) {
+                continue;
+            }
+            let parent = sim.get(id).cloned().unwrap();
+            let rule = match crate::commands::items::recurrence_rule_of(&parent) {
+                Some(r) => r,
+                None => continue,
+            };
+            let cap = match parent.tier {
+                Tier::A => Some(A_CAP as i64),
+                Tier::B => Some(B_CAP as i64),
+                Tier::Inbox | Tier::C => None,
+            };
+            let child_tier = match cap {
+                Some(cap) if effective_active(tx, &orig, &sim, parent.tier)? >= cap => Tier::Inbox,
+                _ => parent.tier,
+            };
+            let child_rank = next_rank(child_tier, &mut tier_last_rank, tx)?;
+            let (child_id, spawn) = crate::commands::items::recurrence_child_drafts(
+                &parent, ts, rule, child_tier, child_rank.clone(),
+            );
+            // Register the child so a later sibling spawn counts it.
+            // Modelled faithfully rather than cloned wholesale: a stale
+            // date or first_step inherited here would be invisible today
+            // (only tier+state are read) and wrong the moment anything
+            // else consults the simulation.
+            let mut child = parent.clone();
+            child.id = child_id.clone();
+            child.tier = child_tier;
+            child.rank = child_rank;
+            child.state = ItemState::Active;
+            child.today_on = None;
+            child.first_step = None;
+            child.blocked_reason = None;
+            child.due_at = Some(rule.next_after(parent.due_at.unwrap_or(ts)));
+            child.start_at = parent.start_at.map(|s| rule.next_after(s));
+            child.created_at = ts;
+            child.updated_at = ts;
+            sim.insert(child_id.clone(), child);
+            spawned_ids.push(child_id);
+            drafts.extend(spawn);
+        }
+
+        // Today cap on the re-activation door. Counted against the
+        // finished simulation, so a slot freed by a completion in this
+        // same diff is available regardless of op order.
+        for id in &reactivated {
+            let item = sim.get(id).cloned().unwrap();
+            let date = match &item.today_on {
+                Some(d) => d.clone(),
+                None => continue,
+            };
+            if effective_active_today(tx, &orig, &sim, &date)? > crate::commands::day::TODAY_CAP {
+                drafts.push(EventDraft {
+                    event_type: EventType::TodayRemoved,
+                    item_id: Some(id.clone()),
+                    payload: json!({ "date": date, "cause": "user" }),
+                });
+                sim.get_mut(id).unwrap().today_on = None;
             }
         }
 
@@ -485,6 +513,25 @@ fn effective_active(
     let count_in = |m: &std::collections::HashMap<String, crate::domain::Item>| {
         m.values()
             .filter(|it| it.tier == tier && it.state == ItemState::Active)
+            .count() as i64
+    };
+    Ok(base - count_in(orig) + count_in(sim))
+}
+
+/// The same reckoning for a Today date: how many ACTIVE items this
+/// transaction will leave committed to `date`.
+fn effective_active_today(
+    tx: &rusqlite::Transaction<'_>,
+    orig: &std::collections::HashMap<String, crate::domain::Item>,
+    sim: &std::collections::HashMap<String, crate::domain::Item>,
+    date: &str,
+) -> Result<i64, String> {
+    let base = db::items::count_active_today(tx, date)?;
+    let count_in = |m: &std::collections::HashMap<String, crate::domain::Item>| {
+        m.values()
+            .filter(|it| {
+                it.today_on.as_deref() == Some(date) && it.state == ItemState::Active
+            })
             .count() as i64
     };
     Ok(base - count_in(orig) + count_in(sim))
@@ -769,6 +816,113 @@ mod tests {
         assert_eq!(count_active(&pool, Tier::A), 5, "net active count unchanged");
     }
 
+    /// THE property for this path: an accepted diff is a function of the
+    /// op SET, not its order. Both order-dependent defects pass 3 found
+    /// die here — the example-based tests around it each pin exactly one
+    /// ordering, which is how the defects survived a green suite.
+    ///
+    /// Exhaustive over all 3! orderings rather than sampled: with six
+    /// cases, "every permutation" is both stronger than a generator and
+    /// cheaper. (An earlier version of this test used
+    /// `proptest::sample::subsequence`, which preserves order — so it
+    /// compared `[0,1,2]` against `[0,1,2]` and asserted nothing. It
+    /// passed a negative control it should have failed, which is the
+    /// only reason the vacuity was noticed.)
+    #[test]
+    fn accept_reorg_outcome_is_a_function_of_the_op_set_not_its_order() {
+        use crate::commands::items::set_item_recurrence_inner;
+        const DATE: &str = "2026-07-26";
+
+        /// Order-insensitive board fingerprint.
+        fn fingerprint(pool: &SqlitePool) -> Vec<(String, String, String, Option<String>)> {
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content, tier, state, today_on FROM items \
+                     WHERE deleted = 0 ORDER BY content, tier, state, today_on",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        }
+
+        // A board where BOTH derived effects are live: A is exactly at
+        // cap with a recurring item on a full Today, and a blocked item
+        // (also on that Today) is waiting to come back.
+        let build = || {
+            let pool = fresh_pool();
+            let blocked = create_item_inner(&pool, Tier::A, "blocked".into(), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, blocked.id.clone(), DATE.into())
+                .unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                blocked.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            let rec = create_item_inner(&pool, Tier::A, "recurring".into(), None, None).unwrap();
+            set_item_recurrence_inner(&pool, rec.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, rec.id.clone(), DATE.into()).unwrap();
+            for i in 0..(A_CAP - 1) {
+                let f =
+                    create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+                if i < 2 {
+                    crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into())
+                        .unwrap();
+                }
+            }
+            let c1 = create_item_inner(&pool, Tier::C, "promote".into(), None, None).unwrap();
+            let sug = seed_suggestion(&pool);
+            (pool, rec.id, blocked.id, c1.id, sug)
+        };
+
+        const PERMUTATIONS: [[usize; 3]; 6] = [
+            [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
+        ];
+        let mut results: Vec<(bool, Vec<(String, String, String, Option<String>)>)> = Vec::new();
+        for order in PERMUTATIONS {
+            let (pool, rec_id, blocked_id, c1_id, sug) = build();
+            let all_ops = [
+                done_op(&rec_id),
+                ReorgProposal {
+                    item_id: blocked_id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+                move_op(&c1_id, "B"),
+            ];
+            let ops: Vec<ReorgProposal> = order.iter().map(|i| all_ops[*i].clone()).collect();
+            let ok = apply_reorg_inner(&pool, sug, ops).is_ok();
+            results.push((ok, fingerprint(&pool)));
+        }
+        for (i, r) in results.iter().enumerate().skip(1) {
+            assert_eq!(
+                &results[0], r,
+                "permutation {:?} produced a different board than {:?} — the model's \
+                 array order is deciding the outcome",
+                PERMUTATIONS[i], PERMUTATIONS[0]
+            );
+        }
+        // And sanity: the scenario really does exercise both effects.
+        assert!(results[0].0, "the diff is legal and must commit");
+        let (_, board) = &results[0];
+        assert_eq!(
+            board.iter().filter(|r| r.0 == "recurring").count(),
+            2,
+            "the recurring parent spawned a child (spawn path exercised)"
+        );
+        assert!(
+            board
+                .iter()
+                .any(|r| r.0 == "blocked" && r.2 == "active" && r.3.as_deref() == Some(DATE)),
+            "the reactivated item kept its Today slot (overflow path exercised)"
+        );
+    }
+
     #[test]
     fn accept_reorg_unknown_suggestion_is_event_not_found() {
         let pool = fresh_pool();
@@ -778,7 +932,145 @@ mod tests {
     }
 
     #[test]
-    fn accept_reorg_spawn_cannot_escape_the_tier_cap() {
+    fn accept_reorg_outcome_does_not_depend_on_op_order() {
+        // Pass 3's headline: derived effects used to be resolved
+        // incrementally, so an op not yet visited read as a no-op and
+        // the SAME accepted set could commit or fail depending on the
+        // order the model happened to list its proposals. The LLM has
+        // no write path, but that handed it a lever on the
+        // deterministic tier's result.
+        use crate::commands::items::set_item_recurrence_inner;
+        let build = || {
+            let pool = fresh_pool();
+            let blocked = create_item_inner(&pool, Tier::A, "blocked".into(), None, None).unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                blocked.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            let mut a_ids = Vec::new();
+            for i in 0..A_CAP {
+                a_ids.push(
+                    create_item_inner(&pool, Tier::A, format!("a-{i}"), None, None)
+                        .unwrap()
+                        .id,
+                );
+            }
+            set_item_recurrence_inner(&pool, a_ids[0].clone(), Some("FREQ=WEEKLY".into())).unwrap();
+            let sug = seed_suggestion(&pool);
+            (pool, a_ids, blocked.id, sug)
+        };
+
+        // Same set, both orders. Each must commit with identical shape.
+        for reversed in [false, true] {
+            let (pool, a_ids, blocked_id, sug) = build();
+            let mut ops = vec![
+                done_op(&a_ids[0]),
+                ReorgProposal {
+                    item_id: blocked_id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ];
+            if reversed {
+                ops.reverse();
+            }
+            let outcome = apply_reorg_inner(&pool, sug, ops)
+                .unwrap_or_else(|e| panic!("reversed={reversed}: accept must not fail: {e}"));
+            assert_eq!(outcome.spawned_ids.len(), 1, "reversed={reversed}");
+            assert_eq!(
+                count_active(&pool, Tier::A),
+                A_CAP as i64,
+                "reversed={reversed}: cap holds"
+            );
+            let conn = pool.get().unwrap();
+            let child_tier: String = conn
+                .query_row(
+                    "SELECT tier FROM items WHERE id = ?1",
+                    [&outcome.spawned_ids[0]],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            // SPEC §8.7: a spawn overflows to Inbox, it never fails the
+            // accept. An earlier build returned CAP_EXCEEDED here — and
+            // its own regression test enshrined that, against the SPEC
+            // line the commit message cited.
+            assert_eq!(child_tier, "inbox", "reversed={reversed}");
+        }
+    }
+
+    #[test]
+    fn accept_reorg_today_slot_freed_in_the_same_diff_survives_either_order() {
+        // The mirror-image ordering defect: "finish X, start Y" (both on
+        // one Today) kept Y's membership, while "start Y, finish X" —
+        // the identical set — dropped it with a TODAY_REMOVED the human
+        // never caused.
+        let date = "2026-07-26";
+        let build = || {
+            let pool = fresh_pool();
+            let mut ids = Vec::new();
+            for i in 0..3 {
+                let it = create_item_inner(&pool, Tier::A, format!("t{i}"), None, None).unwrap();
+                crate::commands::day::add_to_today_inner(&pool, it.id.clone(), date.into())
+                    .unwrap();
+                ids.push(it.id);
+            }
+            let y = create_item_inner(&pool, Tier::A, "y".into(), None, None).unwrap();
+            crate::commands::items::set_item_state_inner(&pool, y.id.clone(), ItemState::Done, None)
+                .unwrap();
+            {
+                let conn = pool.get().unwrap();
+                conn.execute(
+                    "UPDATE items SET today_on = ?1 WHERE id = ?2",
+                    rusqlite::params![date, &y.id],
+                )
+                .unwrap();
+            }
+            let sug = seed_suggestion(&pool);
+            (pool, ids, y.id, sug)
+        };
+
+        for reversed in [false, true] {
+            let (pool, ids, y_id, sug) = build();
+            let mut ops = vec![
+                done_op(&ids[0]),
+                ReorgProposal {
+                    item_id: y_id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ];
+            if reversed {
+                ops.reverse();
+            }
+            apply_reorg_inner(&pool, sug, ops).unwrap();
+
+            let conn = pool.get().unwrap();
+            let y_today: Option<String> = conn
+                .query_row("SELECT today_on FROM items WHERE id = ?1", [&y_id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(
+                y_today.as_deref(),
+                Some(date),
+                "reversed={reversed}: the freed slot is available in either order"
+            );
+            let active_today: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state='active' AND deleted=0",
+                    [date],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(active_today, 3, "reversed={reversed}: and the cap still holds");
+        }
+    }
+
+    #[test]
+    fn accept_reorg_spawn_never_fails_a_legal_diff() {
         // The v0.3 BLOCKING escape, verbatim from the cold review. The
         // spawn used to consult the live projection while the final cap
         // check reasoned over the simulation, so the child was invisible
@@ -807,8 +1099,11 @@ mod tests {
         let sug = seed_suggestion(&pool);
 
         // "Finish the recurring report, and unblock the other thing."
-        // Net: a-0 leaves active, blocked joins, child joins → 6.
-        let err = apply_reorg_inner(
+        // The human's own ops are net-neutral (one leaves active, one
+        // joins), so the diff is legal and MUST commit. Only the
+        // automatic spawn would push A over — and a spawn may never be
+        // the reason an accept fails (SPEC §8.7), so it overflows.
+        let outcome = apply_reorg_inner(
             &pool,
             sug,
             vec![
@@ -821,18 +1116,18 @@ mod tests {
                 },
             ],
         )
-        .unwrap_err();
-        assert_eq!(err, "CAP_EXCEEDED");
+        .expect("a legal diff must not be failed by its own derived spawn");
         assert_eq!(count_active(&pool, Tier::A), A_CAP as i64, "cap holds");
+        assert_eq!(outcome.spawned_ids.len(), 1);
         let conn = pool.get().unwrap();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))
+        let child_tier: String = conn
+            .query_row(
+                "SELECT tier FROM items WHERE id = ?1",
+                [&outcome.spawned_ids[0]],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(
-            total,
-            A_CAP as i64 + 1,
-            "no child was created — the whole transaction rolled back"
-        );
+        assert_eq!(child_tier, "inbox");
     }
 
     #[test]
@@ -964,14 +1259,60 @@ mod tests {
     }
 
     #[test]
-    fn accept_reorg_rejects_duplicate_ops_on_one_item() {
-        // "Done then active" is self-contradictory, and processing both
-        // double-counted the item in every ledger — including spawning
-        // two children from one completion.
+    fn accept_reorg_applies_two_coherent_ops_on_one_item() {
+        // "Unblock it and demote it" is a pair models produce routinely,
+        // and nothing tells them one proposal per item. An earlier build
+        // rejected the whole accept with BAD_ARGS, discarding every
+        // other accepted op — a worse failure than the double-count it
+        // was guarding against (which the two-pass structure now makes
+        // impossible anyway).
         let pool = fresh_pool();
         let a = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            a.id.clone(),
+            ItemState::Blocked,
+            Some("stuck".into()),
+        )
+        .unwrap();
         let sug = seed_suggestion(&pool);
-        let err = apply_reorg_inner(
+
+        apply_reorg_inner(
+            &pool,
+            sug,
+            vec![
+                ReorgProposal {
+                    item_id: a.id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+                move_op(&a.id, "B"),
+            ],
+        )
+        .expect("a coherent pair on one item must apply");
+
+        let conn = pool.get().unwrap();
+        let (tier, state): (String, String) = conn
+            .query_row("SELECT tier, state FROM items WHERE id = ?1", [&a.id], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((tier.as_str(), state.as_str()), ("B", "active"));
+    }
+
+    #[test]
+    fn accept_reorg_completing_an_item_twice_spawns_one_child() {
+        // The double-spawn the duplicate guard existed to prevent, now
+        // prevented structurally: completions are a SET, resolved once,
+        // after every op has been applied.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "weekly".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, a.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        let sug = seed_suggestion(&pool);
+
+        let outcome = apply_reorg_inner(
             &pool,
             sug,
             vec![
@@ -982,10 +1323,11 @@ mod tests {
                     to_tier: None,
                     rationale: None,
                 },
+                done_op(&a.id),
             ],
         )
-        .unwrap_err();
-        assert!(err.starts_with("BAD_ARGS"), "got {err}");
+        .unwrap();
+        assert_eq!(outcome.spawned_ids.len(), 1, "one completion, one child");
     }
 
     #[test]

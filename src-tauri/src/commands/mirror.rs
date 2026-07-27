@@ -463,11 +463,22 @@ pub fn get_mirror_stats_inner(
             .iter()
             .map(|(id, (done_at, lead))| (id, *done_at, *lead))
             .collect();
-        recent.sort_by(|a, b| b.1.cmp(&a.1));
-        recent.truncate(RECEIPT_LIMIT);
+        // Tie-break by id: batch completions share one `ts`, and
+        // `completions` is a HashMap, so without this the order within
+        // a tied group — and therefore which of them survives the
+        // limit — reshuffles between calls.
+        recent.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
 
+        // NOTE: no `truncate` before the loop. Soft-deleted items drop
+        // out below, so truncating first would let deletions shrink the
+        // list — delete the ten most recent completions and the panel
+        // would go empty while dozens of surviving ones sat in the
+        // window. Completed work stays visible as evidence (law 9).
         let mut out = Vec::new();
         for (id, done_at, lead_ms) in recent {
+            if out.len() >= RECEIPT_LIMIT {
+                break;
+            }
             let row: Option<(String, String, i64, i64)> = conn
                 .query_row(
                     "SELECT i.content, i.tier, \

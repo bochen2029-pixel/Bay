@@ -656,3 +656,52 @@ panic-on-unknown-key discipline) and check-golden.py now requires it.
 fail by name; restoring it passes. The assertion bites.
 
 Gates: cargo 225/225 warning-clean; check-golden 5 files / 80 cases.
+
+## 2026-07-27 — Third cold pass: order-dependence found and structurally removed
+
+Pass 3 (subject: the pass-2 fix `8f4592e` + today.json) returned FAIL:
+3 MAJOR, 5 MINOR, 3 NOTE. The BLOCKING cap escape from pass 2 IS fixed
+and no commit can exceed A/B — but the fix had made the accept path
+**order-dependent**: derived effects were resolved incrementally inside
+the op loop, so an op not yet visited read as a no-op.
+
+- **MAJOR (JOINT_WRONG vs SPEC §8.7)** — a recurrence spawn could abort
+  the whole accept with CAP_EXCEEDED, where SPEC says it must overflow
+  to Inbox and NEVER fail. Worse: my own regression test enshrined the
+  wrong behavior, against the SPEC line the commit message cited.
+  Reversing the two ops — the identical accepted set — committed.
+- **MAJOR** — `TodayAccounting::release` only worked when the
+  completion op preceded the reactivation; reversed, it dropped a
+  Today slot the human never asked to lose.
+- **MAJOR** — the duplicate-op guard I added rejected a coherent model
+  output ("unblock it and demote it"), failing the whole accept and
+  discarding every other op; and its stated justification did not hold
+  (HashMap keys already prevented the double-count it described).
+
+Fix: **two passes.** Pass 1 applies what the human accepted and records
+what ends newly done/active; the cap check runs on those ops alone.
+Pass 2 resolves the implications — spawns, Today overflow — from the
+FINISHED simulation. The outcome is now a function of the op SET, not
+its order, and a derived effect can never fail a legal diff. The
+duplicate guard is gone (completions are a set, resolved once).
+
+Also fixed: receipts no longer truncate before the deleted filter (10
+deletions could empty the panel — law 9); receipt ties break by id
+(HashMap order was nondeterministic); the post-commit SESSION_STILL_OPEN
+error removed (unreachable by the unique index, and returning Err after
+a successful write broke the command convention and stranded the focus
+bar); `recurrence_child_drafts` returns the child id instead of making
+callers recover it by draft position; the simulated child is modelled
+faithfully (dates/first_step/reason) rather than cloned wholesale;
+SPEC §5.1 + §8.7 updated.
+
+**A test of mine turned out to be decoration.** The order-independence
+property used `proptest::sample::subsequence`, which PRESERVES order —
+it compared [0,1,2] against itself and asserted nothing. The negative
+control caught it (it passed when it should have failed). Replaced with
+an exhaustive 3!-permutation test over a board that exercises both
+derived effects, and re-verified by injecting the real defect: it now
+fails under it and passes when restored.
+
+Gates: cargo **229/229** warning-clean; vitest 114/114; both builds
+clean; store-logic, check-golden (5 files), verify-schema --fresh green.

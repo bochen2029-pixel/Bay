@@ -1071,7 +1071,7 @@ spawns stay cap-correct and get distinct end-of-tier ranks.
 
 **Rank resolution**: when `to_rank` is omitted, backend places item at end of `to_tier`. Client may precompute rank via `rank_between` and pass explicitly for drag-drop precision.
 
-**`ReorgOp`** (`accept_suggestion`, I-20): `{ item_id: string; action: "move" | "done" | "active"; to_tier?: "A" | "B" | "C" }` — `to_tier` required when `action == "move"`. Each op maps to one deterministic event (`ITEM_MOVED` / `ITEM_STATE_CHANGED`); the returned `resulting_event_ids` are those events' ids. See §8.7.
+**`ReorgOp`** (`accept_suggestion`, I-20): `{ item_id: string; action: "move" | "done" | "active"; to_tier?: "A" | "B" | "C" }` — `to_tier` required when `action == "move"`. Each op maps to one deterministic event (`ITEM_MOVED` / `ITEM_STATE_CHANGED`), and an op may carry **derived** events too: a `done` on a recurring item adds `ITEM_CREATED` + `ITEM_RECURRED`, and an `active` whose Today date is full adds `TODAY_REMOVED`. `resulting_event_ids` covers every event the accept produced. Several ops may name the same item (they apply in order); a completed item still spawns exactly one child. See §8.7.
 
 ### 5.2 Events (backend → frontend)
 
@@ -1484,6 +1484,24 @@ proposes, the human accepts, the deterministic tier writes.
   the events those ops produced (§4.3 — previously always empty). An
   empty `ops` (observations-only acknowledgement) yields the empty-array
   case unchanged.
+- The accept runs in **two passes, and the split is load-bearing**.
+  Pass 1 applies what the human accepted, mutating the simulation and
+  recording which items end newly done or newly active. The cap check
+  then runs on those ops alone. Pass 2 resolves what those acceptances
+  *imply* — recurrence spawns and Today overflow — reading the
+  **finished** simulation.
+  Resolving implications incrementally instead (inside the op loop,
+  against a half-applied simulation) makes an unvisited op read as a
+  no-op, so the same accepted set could **commit or fail, and keep or
+  lose a Today slot, purely on the order the model listed its
+  proposals**. The LLM has no write path, but that is a lever on the
+  deterministic tier's result, which is the spirit of the firewall if
+  not its letter. The outcome must be a function of the accepted
+  *set*.
+- **A derived effect may never fail the accept.** Pass 2 places a
+  spawned child where it fits and overflows to Inbox otherwise; it
+  never returns `CAP_EXCEEDED`. A human diff that is legal on its face
+  must not be rejected because of an automatic consequence of itself.
 - Caps are enforced across the whole accepted batch; a re-org cannot
   push A/B over cap. **This path uses ONE ledger — its own simulation
   of the accepted diff — for every decision**: the final cap check,
@@ -1501,8 +1519,10 @@ proposes, the human accepts, the deterministic tier writes.
   done-door, and the spawned children are announced to the UI via
   `item_created` (the panel closes without refetching, so an
   unannounced child would exist only in the database until restart).
-- An item may appear in `ops` at most once (`BAD_ARGS`); contradictory
-  duplicates would otherwise double-count in every ledger.
+- Several ops may name one item — "unblock it and demote it" is a pair
+  models produce routinely, and nothing instructs them otherwise. They
+  apply in order against the simulation. A repeated completion still
+  yields one child, because pass 2 resolves completions as a set.
 - This is **not** a firewall change: still no LLM write path, still no
   auto-apply, still no silent edits. The prohibitions in §8 / CLAUDE.md
   (auto-tiering, silent re-org, capture-time tier suggestions) all hold —
