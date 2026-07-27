@@ -54,7 +54,8 @@ result is the most important thing on this page:
 | 2 | pass 1's fix commit (`b884b4d`) | **FAIL** — the fix introduced a **worse** bug than it fixed |
 | 3 | pass 2's fix commit (`8f4592e`) + `today.json` | **FAIL** — 3 MAJOR, 5 MINOR: the cap escape was gone, but the fix had made the accept path *order-dependent* |
 | 4 | pass 3's fix commit (`0562957`) | **FAIL** — 1 BLOCKING (accepting `done` on a *blocked* item killed Ctrl+Z permanently), 3 MAJOR (ordering, one layer down) |
-| 5 | pass 4's fix (`a0f4775`) + golden accept-door coverage (`1e7467d`) | dispatched |
+| 5 | pass 4's fix (`a0f4775`) + golden accept-door coverage (`1e7467d`) | **FAIL** — 2 MAJOR, **no BLOCKING**: the ordering *key* was still ops-derived, and the contest policy was indistinguishable from its inverse |
+| 6 | pass 5's fix (`ea2fb64`) + the mutation gate | dispatched |
 
 **Pass 2 is the one to dwell on.** My fix for the BLOCKING Today-cap
 bug bolted the recurrence spawn onto `apply_reorg_inner` — which
@@ -315,17 +316,31 @@ they are the difference between an assertion and a comment.**
 
 A fifth pattern, and the one I would act on first if you only change
 one thing: **every round's defect lived in the blind spot of the test
-added that same round.** Four for four. The tests were not weak in
+added that same round.** Five for five. The tests were not weak in
 general — each was negative-controlled and each caught its own target.
 They were weak in the same *direction* as my attention, because I wrote
 both. The counter-measure that has actually worked is not a better
 test; it is a reader who did not write the fix.
 
+Pass 5 sharpened that into something actionable. It showed that the
+contest policy I had just written into SPEC could be **inverted — or
+replaced with a raw UUID sort — with all 237 tests green**, because my
+test asserted *that* a contest happened and never *who won*. A
+cross-permutation comparison is satisfied by any deterministic rule,
+including the wrong one.
+
+So the negative controls I had been running by hand all session are now
+a gate: **`scripts/check-mutations.py`** carries one mutation per
+defect these reviews found, and the suite must catch every one. It
+found a survivor on its first run — a fix from pass 2 that had never
+had a test — which is exactly the class it exists for. The standing
+rule is now: *when a review finds a defect, add its mutation.*
+
 Honest caveats that remain:
 
-- **The chain is 4 for 4 and pass 5 is dispatched.** Severity has
-  fallen each round, which is convergence rather than correctness. Do
-  not treat the newest commit as verified.
+- **The chain is 5 for 5 and pass 6 is dispatched.** Severity has
+  fallen each round and pass 5 found no BLOCKING, which is convergence
+  rather than correctness. Do not treat the newest commit as verified.
 - The verifiers reviewed code, not behavior. Nothing here has been used
   by a person for a week; `VISION.md` §9 lists what would tell us the
   execution core is wrong, and no test suite can answer any of it.
