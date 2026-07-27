@@ -1230,6 +1230,139 @@ mod tests {
         }
     }
 
+    /// THE property of this path, generated rather than hand-built.
+    ///
+    /// Every defect the v0.3 verification chain found lived here: the
+    /// accepted diff's committed result must be a function of the op
+    /// SET, never of the order the model happened to list its
+    /// proposals in. Until now that was pinned by example — one
+    /// exhaustive 24-permutation fixture over one board. A fixture can
+    /// only ever fail on the board someone thought to build, and the
+    /// chain's own record is that the defects lived in exactly the
+    /// configurations nobody thought to build.
+    ///
+    /// The board is generated: how many recurring items move into A and
+    /// complete (so their children contest the last A slot), how many
+    /// blocked items reactivate onto one date (so they contest the last
+    /// Today slot), and how full A and that date already are. The
+    /// ordering is generated too.
+    ///
+    /// `rank` is excluded from the fingerprint for the reason recorded
+    /// in QUESTIONS Q02 — `next_rank` allocates end-of-tier ranks in
+    /// ops-array order by design — NOT because excluding it makes the
+    /// test pass. Tier, state and Today membership carry every contest.
+    #[test]
+    fn prop_accept_reorg_result_is_a_function_of_the_op_set() {
+        use crate::commands::items::set_item_recurrence_inner;
+        use proptest::prelude::*;
+        const DATE: &str = "2026-07-26";
+
+        fn fingerprint(pool: &SqlitePool) -> Vec<(String, String, String, Option<String>)> {
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content, tier, state, today_on FROM items WHERE deleted = 0 \
+                     ORDER BY content, tier, state, today_on",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        }
+
+        proptest!(
+            ProptestConfig::with_cases(48),
+            |(n_rec in 1usize..3, n_blk in 1usize..3, a_fill in 0usize..4,
+              t_fill in 0usize..3, keys in prop::collection::vec(0u32..10_000, 6))| {
+            // Build the same board twice and run two different orderings
+            // of the same op set over it.
+            let build = || {
+                let pool = fresh_pool();
+                // Blocked items join the date BEFORE blocking — joining
+                // is itself cap-gated, and a blocked item holds no slot.
+                let mut blocked = Vec::new();
+                for i in 0..n_blk {
+                    let it =
+                        create_item_inner(&pool, Tier::B, format!("blk-{i}"), None, None).unwrap();
+                    crate::commands::day::add_to_today_inner(&pool, it.id.clone(), DATE.into())
+                        .unwrap();
+                    crate::commands::items::set_item_state_inner(
+                        &pool,
+                        it.id.clone(),
+                        ItemState::Blocked,
+                        Some("stuck".into()),
+                    )
+                    .unwrap();
+                    blocked.push(it.id);
+                }
+                // Recurring items in C: the ops move each into A and
+                // complete it, so each owes a child that competes for
+                // whatever A has left.
+                let mut recurring = Vec::new();
+                for i in 0..n_rec {
+                    let it =
+                        create_item_inner(&pool, Tier::C, format!("rec-{i}"), None, None).unwrap();
+                    set_item_recurrence_inner(&pool, it.id.clone(), Some("FREQ=DAILY".into()))
+                        .unwrap();
+                    recurring.push(it.id);
+                }
+                for i in 0..a_fill {
+                    create_item_inner(&pool, Tier::A, format!("afill-{i}"), None, None).unwrap();
+                }
+                for i in 0..t_fill {
+                    let f =
+                        create_item_inner(&pool, Tier::B, format!("tfill-{i}"), None, None).unwrap();
+                    crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into())
+                        .unwrap();
+                }
+                let sug = seed_suggestion(&pool);
+                (pool, recurring, blocked, sug)
+            };
+
+            let ops_for = |recurring: &[String], blocked: &[String]| -> Vec<ReorgProposal> {
+                let mut v = Vec::new();
+                for r in recurring {
+                    v.push(move_op(r, "A"));
+                    v.push(done_op(r));
+                }
+                for b in blocked {
+                    v.push(ReorgProposal {
+                        item_id: b.clone(),
+                        action: ProposalAction::Active,
+                        to_tier: None,
+                        rationale: None,
+                    });
+                }
+                v
+            };
+
+            // Ordering A: as built. Ordering B: sorted by the generated
+            // keys, index breaking ties so the permutation is total.
+            let (pool_a, rec_a, blk_a, sug_a) = build();
+            let ops_a = ops_for(&rec_a, &blk_a);
+            let ok_a = apply_reorg_inner(&pool_a, sug_a, ops_a.clone()).is_ok();
+
+            let (pool_b, rec_b, blk_b, sug_b) = build();
+            let mut ops_b: Vec<(u32, usize, ReorgProposal)> = ops_for(&rec_b, &blk_b)
+                .into_iter()
+                .enumerate()
+                .map(|(i, op)| (keys[i % keys.len()], i, op))
+                .collect();
+            ops_b.sort_by_key(|(k, i, _)| (*k, *i));
+            let ok_b =
+                apply_reorg_inner(&pool_b, sug_b, ops_b.into_iter().map(|(_, _, o)| o).collect())
+                    .is_ok();
+
+            prop_assert_eq!(ok_a, ok_b, "one ordering committed and the other did not");
+            prop_assert_eq!(
+                fingerprint(&pool_a),
+                fingerprint(&pool_b),
+                "reordering the same accepted op set changed the committed board"
+            );
+        });
+    }
+
     #[test]
     fn accept_reorg_today_cap_is_counted_per_date_not_across_dates() {
         // `effective_active_today` filters `today_on == Some(date)`. Drop
