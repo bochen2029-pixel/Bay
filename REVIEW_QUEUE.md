@@ -1,107 +1,136 @@
-# REVIEW_QUEUE — resumed run, session ending 2026-06-17
+# REVIEW_QUEUE — v0.3 "Execution" run, 2026-07-26
 
-> Active-review accept/reject queue for the autonomous work done after the
-> prior substrate (GLM-5.2) exhausted its quota mid-I-19. Ordered
-> cheapest-to-verify-first. Each item: what changed, how to verify, and
-> the exact revert. This session did NOT fully close the run (.run-lock
-> stays; no `v0.2.0` tag — I-21/I-22/Phase 6 remain). It's a session
-> checkpoint, not a release.
+> Accept/reject queue for the autonomous work done under the operator
+> directive of 2026-07-26 ("proceed at your best recommendation — most
+> ambitious and most aggressive while maintaining highest quality").
+> Ordered **cheapest-to-verify first**. Each item: what changed, how to
+> check it, and the exact revert.
 >
-> All gates green at session end: `cargo test` 152/152, `cargo build`
-> warning-clean, `pnpm build` clean, `pnpm test` 93/93,
-> `node scripts/test-store-logic.mjs` green.
+> Gates at session end: `cargo test` **206/206**, `cargo build`
+> warning-clean, `pnpm build` clean, `pnpm test` **106/106**,
+> `node scripts/test-store-logic.mjs` green,
+> `python scripts/check-golden.py` green.
+>
+> The run is **not released**: `.run-lock` remains, there is no tag, and
+> ~9 commits sit unpushed. This is a reviewable checkpoint.
 
 ## Commits this session (newest first)
 
 | sha | what | revert |
 |---|---|---|
-| (docs) | consolidation: doctrine v1.8/v1.7/v1.5, README, FUTURE_WORK, memory | `git revert <sha>` |
-| cbad5b2 | feat(I-20): LLM re-org proposals — human-accepted atomic diff | `git revert cbad5b2` |
-| fa77ebb | fix(P2e): two BLOCKING bugs from cold-context verification | `git revert fa77ebb` |
-| ac5d6e7 | feat(I-19): batch operations | `git revert ac5d6e7` |
+| (docs) | README v0.3 + FUTURE_WORK rewrite + this queue | `git revert <sha>` |
+| 3b0c0ea | docs(v1.9): doctrine co-pass (CLAUDE v1.9 / SPEC v1.8 / PROMPTS v1.6) | `git revert 3b0c0ea` |
+| daad097 | feat(P5c): Mirror v1 + Today lane + day ceremonies | `git revert daad097` |
+| fd2ac23 | feat(P5c): sessions + FocusBar | `git revert fd2ac23` |
+| 5812d39 | feat(P5c): execution core 1 — first_step, Today overlay, day rituals | `git revert 5812d39` |
+| 82f7372 | feat(I-21): recurring tasks | `git revert 82f7372` |
+| 686af06 | feat(P5b): undo groups by txn_id (Q01 closed) | `git revert 686af06` |
+| aba6082 | feat(P5b): migration 003 — event envelope v2 | `git revert aba6082` |
+| de37921 | feat(P5a): golden RUNNER | `git revert de37921` |
+| 1e9ae4f | chore(run): resume + ADR-007 + VISION.md | `git revert 1e9ae4f` |
 
-(Prior commits `c2d4278`..`6307b7c` = I-15..I-18, landed by the prior
-substrate before the handoff; `0522cec`..`4078c8b` = P0–P3.)
+Reverting is layered: I-21 and the execution core assume the envelope
+(003). Revert from the top down, not out of the middle.
+
+---
 
 ## Review items — cheapest to verify first
 
-### 1. Docs / doctrine (verify: read) — cheapest
-- CLAUDE.md v1.8 "Current state" rewritten to reflect I-15..I-20 + P2e.
-- SPEC.md → v1.7, PROMPTS.md → v1.5 (drafted by a subagent: resulting_
-  event_ids now populated; LLM scope "observe → observe+propose"; batch
-  ops in §3; I-15..I-20 increment prompts). Old versions in `archive/`.
-- README v0.2.0 features; `FUTURE_WORK.md` (remaining scope + designs);
-  memory `project_bay_state.md` updated.
-- **Decision to review:** the system prompt evolved from "observe only"
-  to "observe + optionally propose a re-org." I read this as fulfilling
-  the doctrine's preserved v2 surface (CLAUDE.md §2), NOT a firewall
-  change. If you disagree, revert the prompt hunk in cbad5b2.
-- Revert: `git revert <docs-sha>` (docs only; no code impact).
+### 1. Corrected golden cases — **the one thing only you can settle**
+`contracts/golden/caps.json` cases #5, #6, #8 were *proposed*, never
+frozen — and executing them (item 2) showed all three contradicted both
+their own case names and frozen doctrine:
 
-### 2. dedup_preserving_order at batch boundaries (verify: read; trivial)
-- Defensive de-dup of batch ids (the frontend already sends a Set).
-- In ac5d6e7, `commands/items.rs`. Cosmetic; harmless to keep or drop.
+- **#5** "blocked item doesn't count: 5 active + 1 blocked in A" — the
+  original ops blocked one of five A items and then expected the very
+  next create to `CAP_EXCEEDED` at 4 active. Doctrine says blocked
+  doesn't count, so 4 active < 5 and that create **must succeed**.
+- **#6** — same defect for done items.
+- **#8** — expected `a_done_after: 0` after a transition that
+  `CAP_EXCEEDED`s; a failed transition mutates nothing, so the item
+  stays done.
 
-### 3. affected_ids accuracy (verify: read the diff)
-- batch_set_state/batch_delete now derive affected_ids from the returned
-  events (NO_OP items excluded) rather than echoing the input. ac5d6e7.
+Each carries a `_corrected` note recording what changed and why.
+**Verify:** read the three cases against CLAUDE.md §1 ("blocked and
+done items do not count against caps"). **Then freeze them** (set
+`_status: "frozen"`) — or correct them differently if my doctrine
+reading is wrong, which is exactly the JOINT_WRONG this mechanism
+exists to catch. Revert: `git checkout de37921~1 -- contracts/golden/caps.json`.
 
-### 4. Frontend batch UI (verify: `pnpm test` + run the app)
-- store multi-select (selectedIds/lastSelectedId + toggle/range/clear),
-  Strip checkbox + shift-click, BatchActionBar. 5 vitest specs. ac5d6e7.
+### 2. Golden RUNNER (verify: `cargo test golden_`)
+`src-tauri/src/golden_runner.rs` executes projection (7), swap (6), and
+caps (12) cases against the real `*_inner` functions. Panics on any
+unrecognized op or expectation key — no silent skips. This closes the
+gap that let the P2e JOINT_WRONG through: `check-golden.py` only ever
+checked that cases *existed*. In de37921.
 
-### 5. Batch cap-enforcement fix (verify: the regression test)
-- The inherited uncommitted batch backend cap-checked against the
-  pre-batch count for every item (write_events builds all drafts before
-  applying any) → a batch could overflow A/B. Fixed with incremental
-  projected counters. Test: `cargo test batch_set_state_to_active_rolls_back_on_cap_overflow`.
-  In ac5d6e7. **This was a real bug in the inherited code.**
+### 3. Two new doctrine laws to ratify (verify: read CLAUDE.md §7, §10)
+- **§7 caps bind flow** — Today ≤3 active, one open session. I argue
+  this is not a second prioritization scheme (no new axis; a day-scoped
+  WIP limit over the existing one), but it is the closest this run
+  comes to the cut list, so it deserves your explicit yes or no.
+- **§10 system-actor timer** — the day-roll is the first machine write
+  in Bay's history. It touches Today membership only, is always logged,
+  and undo ignores it. The alternative (expire lazily on next open, no
+  system actor at all) is a ~20-line change if you'd rather have zero
+  machine writes.
 
-### 6. P2e BLOCKING-2 — restore cap gate (verify: test + caps.json #12)
-- `restore_item_inner` now refuses restoring an ACTIVE item into a full
-  A/B (was unchecked — a JOINT_WRONG vs `contracts/golden/caps.json`
-  #12). Tests: `restore_active_item_into_full_a_is_cap_exceeded`,
-  `restore_blocked_item_into_full_a_succeeds`. In fa77ebb. **Pre-existing
-  bug since v0.1.x.** If you'd rather allow archive-restore to exceed cap,
-  this is the hunk to revert (and amend caps.json #12).
+### 4. Frontend surfaces (verify: `pnpm test`, then run the app)
+FocusBar, Today lane + picker + day-close, MirrorView, Strip ▶/🔁, the
+Repeat menu. 11 new vitest specs. In fd2ac23 / daad097.
 
-### 7. P2e BLOCKING-1 — unblock-reason preservation (verify: tests)
-- set_item_state/batch_set_state now record the OUTGOING blocked_reason
-  in the ITEM_STATE_CHANGED payload when leaving blocked, so undo can
-  restore a blocked row without tripping the migration-002 CHECK. Tests:
-  `leaving_blocked_records_outgoing_reason_in_event_payload`,
-  `undo_after_unblock_does_not_violate_check_constraint`. In fa77ebb.
-  **Pre-existing bug since I-17.** Payload shape unchanged (SPEC §4.3
-  already allows blocked_reason: string|null).
+### 5. Mirror definitions (verify: read SPEC §12, then the code)
+Every figure is defined in SPEC §12. The judgment calls worth checking:
+the A-leak window is **48h**; avoidance means **zero sessions ever**
+(not "none this window"); still-open block intervals count to now; the
+"A is a second inbox" sentence fires at **≥40%**. All are one-line
+changes. In daad097.
 
-### 8. Undo (ts,type) action grouping (verify: QUESTIONS Q01 + undo tests)
-- undo generalized from "single event or swap-pair" to "most-recent
-  events sharing (ts,type)" → delivers batch-undo, subsumes swap-undo.
-  ac5d6e7. **Documented limitation in QUESTIONS Q01** (over-groups two
-  distinct same-type commands in the same ms — production-unreachable in
-  a single-user GUI). The precise fix is a txn_id column (deferred —
-  see item 10). Tests: undo_batch_delete/undo_batch_set_state/undo_swap.
+### 6. I-21 cap semantics (verify: `cargo test recurr`, `cargo test spawn`)
+An **active** parent frees its own slot so the child fits its tier; a
+**blocked/done** parent's child would add to the tier, so at cap it
+routes to **Inbox** rather than failing the completion. The alternative
+(refuse the completion) would make "mark done" fail, which I judged
+worse than an Inbox landing. In 82f7372.
 
-### 9. I-20 accept-reorg (verify: the 5 accept-reorg tests)
-- accept_suggestion(ops) applies a human-accepted re-org as ONE atomic,
-  cap-enforced write_events tx; populates resulting_event_ids (predicted
-  via MAX(id)+k, safe because events is append-only). Net-final cap check
-  allows a demote+promote swap. cbad5b2. Tests:
-  `cargo test accept_reorg`. **Most complex change — review closely.**
+### 7. Undo semantics (verify: `cargo test undo`)
+Three classes are no longer undo targets: LLM advisory rows (unchanged),
+`actor: system` transactions, and **session events**. The last is a
+philosophical call worth your eye: undo reverts what a session *did* to
+the board, never the record that you spent the time. In 686af06 /
+fd2ac23.
 
-### 10. Deferral decision (verify: read FUTURE_WORK.md + QUESTIONS Q01) — a NON-action to ratify
-- I did NOT build I-21 (recurring) or the txn_id schema change, because
-  recurring-task completion is a mixed-type atomic action whose correct
-  undo needs txn_id — a schema change to the append-only `events` table
-  that the charter flags for operator review. I judged "stop clean at the
-  I-20 boundary" higher-quality than "force an events schema change
-  autonomously at the tail of a long run." **If you want recurring
-  shipped, the next session should do txn_id first (Q01) — it also
-  resolves the Q01 limitation in item 8.**
+### 8. Envelope + hash chain — **the largest single change**
+(verify: `cargo test envelope`, `cargo test chain`, then launch the app
+and check the console line "event chain verified: N rows")
+Migration 003 adds six nullable columns + a `meta` table via `ALTER ADD
+COLUMN` (never a rebuild of `events`). `sha2` is a new **runtime**
+dependency (ADR-008). Legacy rows stay valid and are tolerated at the
+chain head. If you want the smaller change, the txn_id column alone
+suffices for Q01 — the other five columns buy provenance, sync-
+readiness, payload evolution, and tamper-evidence. In aba6082.
+
+### 9. QUESTIONS Q01 → CONFIRMED (verify: read QUESTIONS.md)
+The heuristic is gone; grouping is exact. This is the decision you
+explicitly deferred at the last boundary, now taken under your
+directive and recorded in ADR-007.
+
+### 10. Deferrals to ratify (a NON-action)
+Not built, still gated: **T4** LLM Today-draft (adjacent to the
+capture-time-suggestion ban), **T5** calendar ICS read (touches "no
+network dependency"), **T8** sync. Each needs a doctrine line before
+build. Also not done: a **cold-context verifier pass** over these diffs
+— dispatched twice, the first died on a substrate quota limit. That is
+the top item in FUTURE_WORK (F-02) and the main reason I'd call this
+"reviewable" rather than "verified".
 
 ## Complacency canary
-The cold-context P2e verifiers found 2 BLOCKING bugs that 143 passing
-tests had missed (items 6 + 7). Lesson re-confirmed: green tests are not
-proof of correctness; the operator golden cases are an unenforced
-externality (`scripts/check-golden.py` checks existence, not execution —
-a generic golden runner is the highest-value untaken P2c follow-up).
+
+Every gate is green, and green gates have lied before in this repo
+(P2e: 143 passing tests, two BLOCKING bugs). What actually earned trust
+this run: **executing** the golden cases immediately found three broken
+ground-truth cases, and the new property tests (Today cap under any
+interleaving; chain verification over any write sequence) are the kind
+of assertion that fails when I'm wrong rather than when I'm sloppy. The
+missing leg is the cold verifier — until F-02 runs, treat items 5–8 as
+plausible rather than confirmed.

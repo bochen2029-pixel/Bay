@@ -1,83 +1,107 @@
-# RUN_STATE — Bay v0.3 execution run (2026-07-26)
+# RUN_STATE — Bay v0.3 "Execution" run (2026-07-26)
 
 > Postcard to future-self. Kept current enough to BE the compaction
-> brief. If this file is stale, the run is lost. Updated every save
-> point. Last updated: 2026-07-26 (run resume).
+> brief. If this file is stale, the run is lost. Last updated:
+> 2026-07-26, session-end consolidation.
 
 ## Run identity
 
-Resumed from the clean I-20 pause under **operator directive 2026-07-26**
-("proceed at your best recommendation — most ambitious, highest
-quality"): see DECISIONS ADR-007 for the full dispositions (REVIEW_QUEUE
-#1 ratified; envelope-003 authorized; VISION T1/T2/T3/T6/T7/T9 in scope;
-T4/T5/T8 still gated). Substrate: Claude Fable 5. VISION.md (written
-this session, non-doctrine) is the design source; FUTURE_WORK.md has the
-I-21 spec; plan order = VISION §8.
+Resumed from the clean I-20 pause under the **operator directive of
+2026-07-26** ("proceed at your best recommendation — most ambitious and
+most aggressive while maintaining highest quality"). Dispositions in
+DECISIONS **ADR-007**; the `sha2` dep in **ADR-008**. Design source:
+`VISION.md` (written this session, non-doctrine). Substrate: Claude
+Fable 5, continued on Claude Opus 5 after a mid-run quota limit.
+
+## What shipped this run (all committed, all green)
+
+1. **P5a golden RUNNER** (de37921) — `contracts/golden/*.json` execute
+   under `cargo test`; found + corrected 3 defective *proposed* caps
+   cases (freeze pending).
+2. **P5b migration 003 envelope v2** (aba6082) — txn_id / actor /
+   origin / device_id / schema_ver / prev_hash + `meta` + SHA-256 chain
+   + boot verification. `sha2` runtime dep.
+3. **P5b undo by txn_id** (686af06) — **QUESTIONS Q01 CONFIRMED**.
+   System + session txns are not undo targets.
+4. **I-21 recurring tasks** (82f7372) — migration 004, RRULE subset,
+   spawn-on-done in one txn, Inbox overflow, 🔁 UI.
+5. **P5c execution core 1** (5812d39) — migration 005, first_step,
+   Today overlay (cap 3), day open/close/roll (the one system write).
+6. **P5c sessions + FocusBar** (fd2ac23) — migration 006, `sessions` as
+   a second projection table, ≤1 open (index-enforced).
+7. **P5c Mirror v1 + Today lane** (daad097) — deterministic stats, no
+   LLM; TodayLane, day ceremonies UI, MirrorView.
+8. **Doctrine co-pass** (3b0c0ea) — CLAUDE v1.9 (laws 7–10) / SPEC v1.8
+   (§4.0 envelope, §4.7 runner, §3.7 Today, §3.8 sessions, §12 Mirror) /
+   PROMPTS v1.6 (six shipped increment prompts).
 
 ## Current task
 
-**P5a — golden runner.** Execute contracts/golden/*.json in cargo test.
-Execution design already surfaced THREE defective proposed caps cases
-(#5 blocked-doesn't-count, #6 done-doesn't-count, #8 done_after
-miscount) — internally inconsistent with their own names + doctrine;
-being corrected as proposal edits (they were never frozen) and flagged
-for operator freeze in REVIEW_QUEUE.
+**Session close.** README + FUTURE_WORK + REVIEW_QUEUE + run-state +
+memory updated. One thing still in flight: the **cold-context verifier**
+over `de37921..HEAD` (dispatched twice; the first died on a substrate
+quota limit). Its findings are the last gate before this run should be
+called verified rather than merely green.
 
 ## Next concrete actions
 
-1. P5a golden runner (in progress) → commit.
-2. P5b migration 003 envelope + undo-by-txn_id (Q01 closes CONFIRMED).
-   sha2 dep needs ADR-008 + SPEC: tag. Then two-pass verify (write_events
-   is critical module #1).
-3. P5 I-21 recurring per FUTURE_WORK spec (unblocked by txn_id).
-4. P5c execution core: first_step → Today/Now + day-roll → sessions +
-   focus → day open/close → Mirror v1. Backend-first, each increment
-   green + committed.
-5. P9-equivalent: doctrine co-pass (CLAUDE v1.9 / SPEC v1.8 / PROMPTS
-   v1.6) + SPEC_AMENDMENT third pass + REVIEW_QUEUE rebuild + memory.
+1. **F-02**: run the cold-context verifier over the v0.3 diffs (areas
+   listed in REVIEW_QUEUE items 5–8). Fix anything BLOCKING, then
+   re-run gates.
+2. **F-01 (operator)**: freeze the corrected `caps.json` cases.
+3. F-03 I-22 streaming; F-04 coach v2 over session aggregates.
+4. VISION v0.4 (wake dates, weekly review, C-bankruptcy, triage flow).
+5. Do NOT build T4 / T5 / T8 — still operator-gated (VISION §7).
 
 ## Blocking issues
 
-None.
+None. The verifier gap is a quality gap, not a blocker.
 
 ## Subtleties to preserve across compaction
 
-- All prior subtleties from the 2026-06-17 RUN_STATE still hold
-  (write_events only write path; ProjectionEvent firewall; restore
-  reuses item_created Tauri event BY DESIGN; rank fixtures regen only
-  via rank_fixture_gen + SPEC: tag; pre-arch-edit hook needs
-  SPEC_AMENDMENT.md for doctrine edits — it EXISTS, extend don't delete).
-- Golden files: rank.json FROZEN (untouchable); projection/swap/caps
-  are _status:proposed → agent may edit as proposals, flag for freeze.
-- caps.json cases 5/6/8 were DEFECTIVE as authored (see REVIEW_QUEUE
-  on return); corrected versions are doctrine-derived (blocked/done
-  don't count; failed transition leaves state unchanged).
-- Undo semantics after 003: group by txn_id (fallback (ts,type) for
-  legacy NULL); undo SKIPS actor='system' txns and non-projection
-  events inside a txn; compensating events get origin 'undo:<txn_id>'.
-- Envelope population: txn_id = one uuidv7 per write_events call;
-  actor default 'human', 'system' only for day-roll; origin threaded
-  where trivially known (lan, llm_accept:<id>, undo:<txn>, day_roll);
-  device_id from settings (generated once, not user-editable);
-  schema_ver = 1 constant for now; prev_hash = SHA-256 chain computed
-  inside the write tx (read last event's hash under the same tx).
-- I-21: child spawn cap-overflow routes to INBOX (doctrine-consistent);
-  ITEM_RECURRED is audit-only (to_projection_event -> None; update the
-  doc-comment so None reads "no projection effect", firewall = no LLM
-  variants still).
-- Today is an OVERLAY (items.today_on date column), NOT a tier. Cap 3.
-  DAY_ROLLED per-item events are TODAY_REMOVED{cause:expired} with
-  actor system; DAY_OPENED/DAY_CLOSED are audit events with NULL
-  item_id (first null-item_id events in the log — SPEC §4.3 note).
-- Sessions: at most ONE open session; sessions table is a projection
-  (rebuild_projection must rebuild it too — extends critical module #6).
+- **Envelope**: `write_events_ctx` stamps one `txn_id` per call;
+  payload is serialized ONCE and the same bytes are inserted + hashed;
+  the chain tail is read INSIDE the write tx. Legacy (NULL-envelope)
+  rows are tolerated only at the chain HEAD.
+- **Undo**: groups by `txn_id`; the legacy `(ts,type)` fallback is
+  fenced with `txn_id IS NULL`. Skips `actor='system'`, LLM rows, and
+  SESSION_* rows. Audit rows (`ITEM_RECURRED`, `DAY_*`) are skipped
+  during compensation but do not prevent targeting their txn.
+- **Recurrence caps**: active parent frees its own slot → child fits;
+  blocked/done parent at cap → child to **Inbox**. `SpawnAccounting`
+  is shared across a batch (net-active per tier + rank chaining).
+- **Today**: an OVERLAY (`items.today_on`), never a tier. Cap 3
+  **active** — a done Today item keeps membership but frees its slot.
+  The FRONTEND owns the local date; Rust never computes calendar days.
+- **Sessions**: `sessions` is a projection table — `rebuild_projection`
+  truncates and replays BOTH tables. ≤1 open via a partial UNIQUE index
+  over a constant. Behavior records are never undone.
+- **Firewall**: `ProjectionEvent` has 13 variants, zero LLM. The `None`
+  arm now means "no projection effect" and covers LLM advisory +
+  audit/link events. Do not read that as a firewall weakening.
+- `SCHEMA_VERSION` derives from `MIGRATIONS` — new migrations no longer
+  require touching version-pin tests.
+- Test-pool gotcha: `max_size(1)` in tests means an open `conn` blocks
+  the next write. `drop(conn)` before a subsequent command call.
+- All pre-existing subtleties from the v0.2.0 run still hold
+  (write_events is the only write path; restore reuses `item_created`
+  BY DESIGN; rank fixtures regen only via `rank_fixture_gen` + `SPEC:`;
+  the `pre-arch-edit` hook needs `SPEC_AMENDMENT.md` — it EXISTS, with
+  a third pass appended; extend it, don't delete it).
 
-## Last save point
+## Runway snapshot
 
-Run resume commit (this one). Prior baseline: 709be5d, cargo 152/152 +
-vitest 93/93 verified cold 2026-07-26.
+Gates: cargo **206/206** (from 152), vitest **106/106** (from 93), both
+builds clean, warning-clean, store-logic + check-golden green.
+`user_version` 6 (migrations 001–006). Speculations: 0 open (Q01
+CONFIRMED and closed). Blockers: 0. ~9 commits ahead of origin,
+**unpushed, untagged**. Bugs found + fixed this run: 3 defective golden
+cases (ground-truth defects, not code bugs).
 
 ## Pointer back
 
-TASKLIST.md (P5a/P5b/P5c added) and PROGRESS.md are canonical.
-AUTONOMY_CHARTER governs. VISION.md is design-source, not doctrine.
+TASKLIST.md (P5a/P5b/P5c DONE) and PROGRESS.md are canonical.
+AUTONOMY_CHARTER governs. REVIEW_QUEUE.md is the operator's entry
+point. FUTURE_WORK.md scopes what's left; VISION.md is design source,
+not doctrine — including §9, which states what would falsify each
+mechanism this run shipped.

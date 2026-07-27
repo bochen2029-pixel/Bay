@@ -504,3 +504,21 @@
 - Mirror added to the view switcher + command palette.
 - Tests: cargo 206/206 warning-clean; vitest 106/106 (+11: FocusBar 5,
   MirrorView 6); pnpm build clean; store-logic + check-golden green.
+
+## 2026-07-26 — v0.3 session close: doctrine, docs, run-state
+
+- Doctrine co-pass committed (3b0c0ea): CLAUDE v1.9 (four new laws),
+  SPEC v1.8 (envelope/runner/Today/sessions/Mirror), PROMPTS v1.6 (six
+  shipped increment prompts). Archived v1.8/v1.7/v1.5. SPEC_AMENDMENT
+  third pass appended.
+- README rewritten for v0.3 (ten principles; Today/sessions/first-step/
+  repeat/Mirror usage; sharpened non-goals incl. no gamification, no
+  auto-planning, no estimates; versioning history).
+- FUTURE_WORK.md rewritten post-v0.3: F-01 golden freeze (operator),
+  F-02 cold verifier, F-03 streaming, F-04 coach v2, then VISION v0.4/
+  v0.5/Phase 6.
+- REVIEW_QUEUE.md rebuilt cheapest-first with exact reverts; the
+  complacency canary names the missing leg (no cold verifier yet, so
+  items 5-8 are plausible not confirmed).
+- TASKLIST P5a/P5b/P5c -> DONE; RUN_STATE + memory refreshed.
+- Session gates: cargo 206/206, vitest 106/106, builds clean.

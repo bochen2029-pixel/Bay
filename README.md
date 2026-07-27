@@ -17,23 +17,37 @@ swap items rather than add them indefinitely. The ATC strip-bay metaphor is
 load-bearing — controllers don't pretend they have more capacity than they
 have, and neither should you.
 
-Six load-bearing design principles (see [CLAUDE.md](CLAUDE.md) for the full
-doctrine):
+Ten load-bearing design principles (see [CLAUDE.md](CLAUDE.md) for the full
+doctrine; 1–6 are original, 7–10 arrived with v0.3):
 
 1. **Capacity bounds.** A=5, B=12 (active items only; blocked and done don't
    count). C and Inbox unbounded. Removing the caps is scope creep.
 2. **LLM firewalled out of state.** Optional LLM analysis is advisory only —
-   it observes patterns in the event log and surfaces observations. It
-   never mutates items.
-3. **Event log is the product.** `events` is append-only. `items` is a
-   materialized projection, fully rebuildable from the log. Undo,
-   time-travel, and analysis are all queries against the log.
+   it observes patterns in the event log and may propose a re-org you accept
+   or reject. It never mutates items; the type system won't let it.
+3. **Event log is the product.** `events` is append-only, and since v0.3
+   hash-chained, so tampering is *evident*, not merely forbidden. `items` and
+   `sessions` are projections, fully rebuildable from the log. Undo,
+   time-travel, analysis, and the Mirror are all queries against it.
 4. **Blocked state is real.** Work A unless every A item is blocked or done,
    then work B. Blocked items don't count toward caps.
 5. **Capture is load-bearing.** Global hotkey (default Ctrl+Alt+N) and an
    optional LAN server for phone capture. Both go to Inbox.
 6. **Asymmetric cross-tier friction.** Intra-tier drag is free; cross-tier
    drag requires a reason modal (and a swap if the target is at cap).
+7. **Caps bind flow, not just stock.** Today holds at most 3 active items,
+   chosen once in the morning so the rest of the day is re-decision-free;
+   at most one focus session runs at a time.
+8. **Starting is the cheapest verb, and Bay never interrupts.** A one-line
+   *first step* per item, one-click Start, and "tomorrow's first move" chosen
+   at day-close. No notifications, badges, or streaks — ever.
+9. **The mirror is deterministic and never shames.** Throughput, lead time,
+   leak rates, and what you've been avoiding are computed from your own
+   recorded behavior with no model configured. Finished work stays visible
+   as evidence.
+10. **The system acts alone only to execute a timer you set.** Exactly one
+    machine write exists — the nightly expiry of Today membership. It's
+    logged, it never touches tier or state, and undo ignores it.
 
 ## Install & run
 
@@ -78,6 +92,41 @@ pick which existing item leaves.
 **Work.** A is what you're working. B is parked-ready. C is someday.
 Everything else is Inbox. Items can be blocked (with a reason), done, or
 deleted. Delete shows an undo toast for 10 seconds.
+
+**Today (≤3).** The lane above the board holds the day's commitments. Hit
+"Plan today…", pick at most three active A/B items, and that decision is
+made — no re-choosing every time you glance at the board. Membership expires
+at the day boundary automatically; nothing rolls over and nothing scolds you,
+but the expiry is recorded, and the Mirror will show you the gap between what
+you planned and what you finished.
+
+**Focus sessions.** Hover any active item and hit ▶ (or Start from the Today
+lane). A bar appears with the item, its first step, and elapsed time. End it
+one of three ways: **Done** (finishes the item — and spawns its next
+occurrence if it repeats), **Pause** (honest, work advanced), or
+**Interrupt** with a reason from a fixed five-word list. Only one session runs
+at a time. Undo can revert what a session did to the board, but never the
+record that you spent the time.
+
+**First step.** Each item can carry one line — the next *physical* action
+("open contract.pdf", "dial Marco"). It's deliberately one line, not a
+checklist: a checklist is a place to hide from work, a first step is a place
+to start it.
+
+**Day close.** One question: what's tomorrow's first move? Answer it tonight
+and it's waiting for you at tomorrow's plan-today. That's the whole ritual.
+
+**Repeating items.** Set an item to repeat daily, weekly, or monthly from its
+⋯ menu. Marking it done finishes it and creates the next instance in the same
+atomic step, with the due date advanced (Jan 31 + 1 month lands on Feb 28, or
+the 29th in a leap year). One Ctrl+Z undoes the whole thing.
+
+**Mirror.** Your own numbers, computed locally with no model involved:
+throughput and lead time, how often A-items get demoted within 48 hours of
+arriving (i.e. whether A has quietly become a second inbox), which committed
+items have *zero* recorded focus sessions, what your blocks actually cost in
+days, where your interruptions come from, Today planned-vs-finished, and a
+running list of what you've finished with the journey each item took.
 
 **Dates.** Each item can carry optional start and due dates. Items render
 their dates as badges (`▸ start`, `● due`); overdue active items show red.
@@ -135,6 +184,7 @@ hardening for coffee-shop WiFi.
 | `Esc` in any modal / clears a selection | Cancel |
 | `Shift+Enter` in textareas | Newline |
 | Strip checkbox (`Shift`-click) | Multi-select for batch ops |
+| Strip `▶` (on hover) | Start a focus session |
 | Drag grip `≡` | Reorder / move |
 
 ## Architecture
@@ -222,24 +272,37 @@ Prior doctrine versions are archived under [archive/](archive/).
 Explicitly out of scope in v1, by design:
 
 - Tags / labels / categories beyond A/B/C/Inbox
-- Subtasks or checklists within items
+- Subtasks or checklists within items (a *first step* is one line, on purpose)
 - Cloud sync, accounts, multi-user, or any network dependency beyond the
   optional LLM endpoint
 - Eisenhower matrix, urgency × importance scoring, any second prioritization
   axis
-- Recurring / repeating tasks
 - LLM auto-tiering or any LLM write path — the firewall is absolute
-- Email / SMS / push notifications
+- Email / SMS / push notifications — Bay never pings you
+- Gamification: points, streaks, levels, confetti. A streak turns one bad
+  Tuesday into cascading shame; the receipts list is the honest version
+- Auto-planning: the machine never fills your Today or orders your day
+- Manual time estimates — sessions measure, so nothing needs guessing
 - Custom tier schemes (A/B/C/D, user-defined names)
 - Dark-mode toggles, theme customization, icon packs (system theme
   followed, nothing more)
 
-Some are reasonable v2 candidates (LLM re-org proposals as atomic accept/
-reject diffs, recurring tasks, archive view). None belong in v1.
+Recurring tasks were on this list through v0.2 as a sanctioned v2 candidate;
+they shipped in v0.3. The rest stand.
 
 ## Versioning
 
 - v0.1.0 — initial release. All 14 increments from the build plan.
+- v0.1.1 — cleanup pass: frontend test harness, rank parity tests, archive
+  view, LAN-capture toast, close-to-tray toggle.
+- v0.2.0 — correctness layer (property tests, DB-enforced invariants,
+  operator golden cases, type-level LLM firewall) plus command palette,
+  undo, audit search, batch operations, and LLM re-org proposals.
+- v0.3 (unreleased) — **Execution.** Golden cases now execute in CI; the
+  event log gained a provenance envelope and a hash chain (tamper-evident,
+  not just append-only); undo groups by transaction; recurring tasks;
+  and the execution core — Today, focus sessions, first steps, day
+  rituals, and the Mirror.
 
 ## License
 
