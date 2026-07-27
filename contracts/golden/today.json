@@ -165,12 +165,12 @@
     },
     {
       "name": "ACCEPT-DIFF: a finished item keeps its Today membership",
-      "description": "Case 3's rule, asserted at the door that broke it. An item unblocked AND completed in one accepted re-org is not competing for a Today slot (done items hold none), so its membership must survive — and no TODAY_REMOVED may be written for it. The runner could not reach accept_suggestion before, which is exactly why a violation shipped while case 3 passed.",
+      "description": "Case 3's rule, asserted at the door that broke it. An item unblocked AND completed in one accepted re-org is not competing for a Today slot (done items hold none), so its membership must survive — and no TODAY_REMOVED may be written for it. The runner could not reach accept_suggestion before, which is exactly why a violation shipped while case 3 passed. NOTE the ranks: `y` (the completed one) is deliberately the WORST-ranked contender, so the eviction loop reaches it FIRST and must skip it for being done. Rank them the other way and the case still passes while the rule is broken — it evicts `z`, satisfies the cap, and never evaluates `y` at all.",
       "ops": [
-        { "type": "create", "tier": "B", "content": "y", "rank": "m" },
+        { "type": "create", "tier": "B", "content": "y", "rank": "n" },
         { "type": "today", "item_index": 0, "date": "D2" },
         { "type": "set_state", "item_index": 0, "state": "blocked", "blocked_reason": "stuck" },
-        { "type": "create", "tier": "B", "content": "z", "rank": "n" },
+        { "type": "create", "tier": "B", "content": "z", "rank": "m" },
         { "type": "today", "item_index": 1, "date": "D2" },
         { "type": "set_state", "item_index": 1, "state": "blocked", "blocked_reason": "stuck" },
         { "type": "create", "tier": "A", "content": "f0", "rank": "m" },

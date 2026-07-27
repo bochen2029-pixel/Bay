@@ -596,12 +596,22 @@ day-roll (system)  → roll_day(today)      : N × TODAY_REMOVED{expired}, ONE t
   slot.
 - **The cap binds on the re-entry doors too.** Because a done/blocked
   item keeps its membership while freeing its slot, every path that
-  makes it active again (`set_item_state`, `batch_set_state`,
-  `restore_item`, and an accepted `active` re-org op) consults
-  `day::today_overflow_draft`. When the date is full, that path
-  **drops the item's Today membership** — emitting `TODAY_REMOVED`
-  with `cause: "user"` in the same transaction — rather than refusing
-  the transition. Two reasons, in order of weight:
+  makes it active again drops the item's Today membership when the date
+  is full — emitting `TODAY_REMOVED` with `cause: "user"` in the same
+  transaction — rather than refusing the transition.
+  The single-item doors (`set_item_state`, `batch_set_state`,
+  `restore_item`) consult `day::today_overflow_draft`, which counts the
+  live projection plus this transaction's own additions. The **accepted
+  re-org** does not: it resolves overflow from its finished simulation
+  via `llm::effective_active_today` (§8.7), because it is the one
+  transaction that can move items in both directions at once, and an
+  incremental counter there produced an answer that depended on the
+  order the model listed its proposals. The two doors therefore differ
+  in one visible way: unblocking three items one at a time keeps the
+  first, while accepting the same three as one diff keeps the
+  **highest-ranked**. That is deliberate — a diff is judged as a whole
+  against the board — but it is a real divergence, not an oversight.
+  Two reasons for dropping rather than refusing, in order of weight:
   1. **Undo must never fail.** Undoing a completion re-activates the
      item and takes exactly this path; a `TODAY_FULL` here would break
      Ctrl+Z, which the event-sourced design promises always works.
@@ -609,8 +619,9 @@ day-roll (system)  → roll_day(today)      : N × TODAY_REMOVED{expired}, ONE t
      "mark active" on account of it would be surprising.
   The drop is always logged, so the board never silently disagrees
   with the log. A transaction that both completes and re-activates
-  items on one date (only an accepted re-org can) accounts for the
-  freed slot via `TodayAccounting::release`.
+  items on one date (only an accepted re-org can) sees the freed slot
+  because §8.7's pass 2 counts the finished simulation, in which the
+  completion has already been applied.
 - **Changing an item's Today date emits both events.** `add_to_today`
   and `open_day` write `TODAY_REMOVED{old date, cause: "user"}` before
   `TODAY_ADDED{new date}` in one transaction, so add/remove pairs

@@ -1098,17 +1098,18 @@ mod tests {
             for id in [&top.id, &bottom.id] {
                 set_item_recurrence_inner(&pool, id.clone(), Some("FREQ=DAILY".into())).unwrap();
             }
-            // Fill A to cap, so the two completions free exactly two
-            // slots and the two children need two — but one filler is
-            // reactivated below? No: here A ends with 3 fills + 2
-            // children = 5 = cap only if one child overflows.
+            // Arithmetic of the fixture: A holds 2 recurring + 3 fills
+            // = 5 active = A_CAP. The diff completes both recurring
+            // items (−2) and reactivates one blocked item INTO A via a
+            // move (+1), so A ends at 4 — exactly ONE free slot for TWO
+            // children. Without that reactivation the two completions
+            // would free two slots and both children would fit, and
+            // there would be no contest to observe.
             for i in 0..(A_CAP - 2) {
                 create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
             }
-            // A active = 5. Completing both frees 2 → 3 active, so BOTH
-            // children fit (5). To force scarcity, block one filler back
-            // in: instead, complete only one slot's worth by also
-            // reactivating a blocked A item.
+            // Created in B and moved into A by the diff (A is at cap, so
+            // it could not be created there).
             let blocked =
                 create_item_inner(&pool, Tier::B, "blocked-a".into(), None, None).unwrap();
             crate::commands::items::set_item_state_inner(
@@ -1221,6 +1222,133 @@ mod tests {
                 "the lower-ranked item is the one that yields"
             );
         }
+    }
+
+    #[test]
+    fn accept_reorg_cross_tier_today_contest_favours_the_higher_tier() {
+        // `board_order`'s TIER component was decoration: making it a
+        // constant, or inverting it, left all 240 tests green. Every
+        // contest fixture put both contenders in the SAME tier, so the
+        // highest-order byte of the key was never observed.
+        //
+        // Here the two contenders are in different tiers. A commitment
+        // in A outranks one in B, so the B item is the one that yields
+        // its Today slot.
+        const DATE: &str = "2026-07-26";
+        let pool = fresh_pool();
+        let mut ids = Vec::new();
+        for (name, tier) in [("in-a", Tier::A), ("in-b", Tier::B)] {
+            let it = create_item_inner(&pool, tier, name.into(), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, it.id.clone(), DATE.into()).unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                it.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            ids.push(it.id);
+        }
+        let (in_a, in_b) = (ids[0].clone(), ids[1].clone());
+        // Two actives already on the date → exactly one free slot.
+        for i in 0..2 {
+            let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into()).unwrap();
+        }
+        let sug = seed_suggestion(&pool);
+        let active_op = |id: &String| ReorgProposal {
+            item_id: id.clone(),
+            action: ProposalAction::Active,
+            to_tier: None,
+            rationale: None,
+        };
+        // The expected winner is listed FIRST, so ops order would give
+        // the opposite answer.
+        apply_reorg_inner(&pool, sug, vec![active_op(&in_a), active_op(&in_b)]).unwrap();
+
+        let conn = pool.get().unwrap();
+        let today_of = |id: &String| -> Option<String> {
+            conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            today_of(&in_a).as_deref(),
+            Some(DATE),
+            "the A-tier commitment keeps the day"
+        );
+        assert_eq!(
+            today_of(&in_b),
+            None,
+            "the B-tier item yields — tier is the highest-order component of the contest key"
+        );
+    }
+
+    #[test]
+    fn accept_reorg_today_contest_reads_the_pre_diff_board() {
+        // The Today door's `orig`-keying had no independent pin: the
+        // gate's key mutation swapped the lookup GLOBALLY and was caught
+        // only through the spawn door, so changing the Today sort alone
+        // survived.
+        //
+        // Fixture built so the two rules DISAGREE. `q` outranks `p`,
+        // both blocked in C, both on a date with one free slot. The
+        // diff also moves `p` into A.
+        //   pre-diff board  (correct): both are C items; `p` is
+        //     lower-ranked, so `p` yields.
+        //   post-diff board (wrong):  `p` reads as an A item and `q` as
+        //     a C item, so `q` would yield instead.
+        const DATE: &str = "2026-07-26";
+        let pool = fresh_pool();
+        // create_item_inner places top-of-tier, so create p first to
+        // leave q better-ranked.
+        let mut made = Vec::new();
+        for name in ["p", "q"] {
+            let it = create_item_inner(&pool, Tier::C, name.into(), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, it.id.clone(), DATE.into()).unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                it.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            made.push(it);
+        }
+        let (p, q) = (made[0].clone(), made[1].clone());
+        assert!(q.rank < p.rank, "fixture: q must outrank p in C");
+        for i in 0..2 {
+            let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into()).unwrap();
+        }
+        let sug = seed_suggestion(&pool);
+        let active_op = |id: &String| ReorgProposal {
+            item_id: id.clone(),
+            action: ProposalAction::Active,
+            to_tier: None,
+            rationale: None,
+        };
+        apply_reorg_inner(
+            &pool,
+            sug,
+            vec![move_op(&p.id, "A"), active_op(&p.id), active_op(&q.id)],
+        )
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let today_of = |id: &String| -> Option<String> {
+            conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(
+            today_of(&q.id).as_deref(),
+            Some(DATE),
+            "q outranked p on the board the human reviewed, so q keeps the day"
+        );
+        assert_eq!(
+            today_of(&p.id),
+            None,
+            "p yields — its move to A in this same diff must not buy it priority"
+        );
     }
 
     #[test]

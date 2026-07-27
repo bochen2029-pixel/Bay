@@ -249,7 +249,13 @@ fn run_projection_case(case: &Value) {
                 None,
                 None,
             )
-            .map(|item| ids.push(item.id)),
+            .map(|item| {
+                // Same reason as in the Today runner: a declared rank
+                // the runner discards makes the case describe the
+                // inverse of the board it builds.
+                apply_declared_rank(&pool, op, &item, name);
+                ids.push(item.id);
+            }),
             "edit" => edit_item_inner(
                 &pool,
                 ids[op["item_index"].as_u64().unwrap() as usize].clone(),
