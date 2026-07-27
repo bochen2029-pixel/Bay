@@ -140,3 +140,41 @@ a `ProjectionEvent` variant, which the compiler flags at every match.
 **Consequences:** `apply_event_to_projection` signature unchanged
 (still takes `&Event`); the conversion happens inside. All existing
 tests pass (behavior identical). 3 new tests pin the firewall.
+
+## ADR-007 — Operator directive 2026-07-26: resume run, proceed at best recommendation
+**Date:** 2026-07-26
+**Status:** Active
+**Context:** The run paused cleanly at the I-20 boundary (STOP_ACK) with
+two decisions deferred to operator review (REVIEW_QUEUE #1 prompt
+evolution; #10 txn_id/I-21 deferral, QUESTIONS Q01). This session, the
+operator received VISION.md (first-principles remake brainstorm, incl.
+§8 priority: golden runner → envelope 003 → undo-by-txn_id → I-21 →
+execution core → doctrine co-pass) and directed: "proceed at your best
+recommendation; most ambitious and most aggressive while maintaining
+highest quality."
+**Decision:**
+(a) Directive read as operator sign-off for the recommended path,
+including the `events` schema change that Q01 explicitly gated on
+operator review. STOP_ACK deleted; run resumed under run-lock
+`2026-07-26-T00-00`.
+(b) REVIEW_QUEUE #1 RATIFIED: the system prompt's "observe → observe +
+optionally propose" evolution stands as the doctrine-preserved v2
+surface, not a firewall change.
+(c) Migration 003 ships the **full envelope** (txn_id, actor, origin,
+device_id, schema_ver, prev_hash), not txn_id alone: all columns
+additive + nullable (legacy rows valid); actor/origin are consumed
+within this run (undo grouping, system day-roll, provenance);
+device_id/schema_ver/prev_hash prepare continuity (VISION §3.0, T1)
+at near-zero marginal cost now vs. a second schema pass later.
+(d) VISION tension items built this run: T1 (envelope), T2 (day-roll as
+`actor: system`, Today-membership only), T3 (Today overlay, cap 3), T6
+(sessions/rituals/Mirror), T7 (I-21), T9 (bankruptcy batch-archive if
+reached). NOT built, still operator-gated: T4 (LLM Today draft), T5
+(ICS overlay), T8 (sync).
+**Alternatives rejected:** txn_id-only migration (re-opens the events
+schema again next increment); ignoring the directive's ambition and
+shipping only I-21 (under-delivers the explicit ask).
+**Consequences:** Doctrine co-pass this run must encode the new
+surfaces (CLAUDE v1.9 / SPEC v1.8 / PROMPTS v1.6); REVIEW_QUEUE rebuilt
+for return review; every increment stays gate-green and committed
+separately with exact reverts.

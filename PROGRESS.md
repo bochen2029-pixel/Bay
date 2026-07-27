@@ -334,3 +334,19 @@
   still works explicitly.
 - Verified: `cargo metadata` → `default_run: "bay"`; `cargo build --bin
   bay` clean. The ambiguity is now structurally impossible.
+
+## 2026-07-26 — Run resumed under operator directive (v0.3 execution run)
+
+- Operator: "proceed at your best recommendation — most ambitious and
+  most aggressive while maintaining highest quality." ADR-007 records
+  the dispositions: REVIEW_QUEUE #1 (prompt observe→propose) RATIFIED;
+  envelope migration 003 AUTHORIZED (supersedes the txn_id-only plan;
+  Q01 closes when it lands); VISION T1/T2/T3/T6/T7/T9 in scope this
+  run; T4 (LLM Today draft) / T5 (ICS) / T8 (sync) remain gated.
+- VISION.md committed — non-doctrine first-principles design source
+  (three loops, ten laws, event taxonomy v2, tension ledger, phasing).
+- STOP_ACK deleted (its own instruction for resume); .run-lock
+  refreshed (run 2026-07-26-T00-00, substrate Claude Fable 5).
+- TASKLIST: P5a golden runner / P5b envelope 003 + undo-txn / P5c
+  execution core added.
+- Bootstrap reality check: cargo 152/152 cold, tree clean at 709be5d.

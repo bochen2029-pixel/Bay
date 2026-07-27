@@ -129,6 +129,36 @@ items:
     critical: false
     oracle: [characterization]
     notes: "I-20 DONE (cbad5b2): LLM re-org accept-path, resulting_event_ids wired, firewall intact, 12 tests. I-21 (recurring) DEFERRED: correct undo of a recurring-completion (mixed-type atomic action) needs the events txn_id column (QUESTIONS Q01) — a schema change deferred to operator review; full design + the txn_id fix are in FUTURE_WORK.md. I-22 (streaming) not started. Next session: txn_id first, then I-21."
+  - id: P5a
+    description: "Golden RUNNER: execute contracts/golden/{projection,swap,caps}.json in cargo test (closes the exists-but-never-executed gap behind the P2e JOINT_WRONG); fix defective proposed cases found by execution"
+    status: NOT_STARTED
+    dependency: []
+    blocks: [P5b]
+    fan_out: 1
+    verifiability: AUTONOMOUSLY_VERIFIABLE
+    cost_estimate: 2h
+    critical: true
+    oracle: [golden]
+  - id: P5b
+    description: "Migration 003 event envelope v2 (txn_id, actor, origin, device_id, schema_ver, prev_hash) + write-path population + undo grouped by txn_id (closes QUESTIONS Q01) — operator-authorized via ADR-007"
+    status: NOT_STARTED
+    dependency: [P5a]
+    blocks: [P5, P5c]
+    fan_out: 2
+    verifiability: AUTONOMOUSLY_VERIFIABLE
+    cost_estimate: 3h
+    critical: true
+    oracle: [property, golden, runtime]
+  - id: P5c
+    description: "VISION v0.3 execution core: first_step + Today/Now overlay (cap 3) + day roll (actor system) + sessions/focus mode + day open/close + Mirror v1 (deterministic stats) — ADR-007 (d)"
+    status: NOT_STARTED
+    dependency: [P5b]
+    blocks: [P7]
+    fan_out: 3
+    verifiability: AUTONOMOUSLY_VERIFIABLE
+    cost_estimate: 8h
+    critical: true
+    oracle: [property, characterization]
   - id: P6
     description: "Full v2 modernization: I-23 sync, I-24 multi-profile, I-25 theming, I-26 plugin surface, I-27 mobile companion"
     status: NOT_STARTED

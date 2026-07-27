@@ -1,102 +1,83 @@
-# RUN_STATE — Bay v0.2.0 revamp run
+# RUN_STATE — Bay v0.3 execution run (2026-07-26)
 
 > Postcard to future-self. Kept current enough to BE the compaction
 > brief. If this file is stale, the run is lost. Updated every save
-> point. Last updated: 2026-06-17T20:30:00Z (session-end consolidation).
+> point. Last updated: 2026-07-26 (run resume).
 
-## Run resumed (substrate handoff)
+## Run identity
 
-The prior substrate (GLM-5.2) hit its quota mid-I-19. Run resumed by
-Claude (Opus). Phases P0–P3 + I-15..I-18 were committed by the prior
-run; I-19 was uncommitted/incomplete. I-19 is now complete (see below).
-Charter is honored as operator intent (not edited).
+Resumed from the clean I-20 pause under **operator directive 2026-07-26**
+("proceed at your best recommendation — most ambitious, highest
+quality"): see DECISIONS ADR-007 for the full dispositions (REVIEW_QUEUE
+#1 ratified; envelope-003 authorized; VISION T1/T2/T3/T6/T7/T9 in scope;
+T4/T5/T8 still gated). Substrate: Claude Fable 5. VISION.md (written
+this session, non-doctrine) is the design source; FUTURE_WORK.md has the
+I-21 spec; plan order = VISION §8.
 
 ## Current task
 
-**Session-end consolidation (clean checkpoint).** Phase 4 (I-15..I-19),
-P2e (2 BLOCKING bugs fixed), and Phase 5 I-20 (LLM re-org accept-path)
-are all DONE and committed. Doctrine reconciled to v1.8/v1.7/v1.5;
-README, FUTURE_WORK.md, REVIEW_QUEUE.md, and memory updated. Gates:
-cargo 152/152, vitest 93/93, warning-clean.
+**P5a — golden runner.** Execute contracts/golden/*.json in cargo test.
+Execution design already surfaced THREE defective proposed caps cases
+(#5 blocked-doesn't-count, #6 done-doesn't-count, #8 done_after
+miscount) — internally inconsistent with their own names + doctrine;
+being corrected as proposal edits (they were never frozen) and flagged
+for operator freeze in REVIEW_QUEUE.
 
-## Next concrete action (next session)
+## Next concrete actions
 
-**Do txn_id first, then I-21.** Per QUESTIONS Q01 + FUTURE_WORK.md:
-recurring-task completion is a mixed-type atomic action whose correct
-undo requires a transaction-id column on `events` (migration 003) — a
-schema change to the append-only core that was deferred to operator
-review rather than self-authorized at the tail of this run. With txn_id
-in place, the (ts,type) undo limitation (Q01) is also resolved. Then
-build I-21 (recurrence design fully specced in FUTURE_WORK.md), then
-I-22 streaming, then Phase 6 (operator sign-off recommended — several
-items re-litigate the "Cut from v1" list). Highest-value standalone
-follow-up: a generic golden-case runner (check-golden.py only checks
-existence, not execution — why the P2e JOINT_WRONG slipped past green
-tests).
+1. P5a golden runner (in progress) → commit.
+2. P5b migration 003 envelope + undo-by-txn_id (Q01 closes CONFIRMED).
+   sha2 dep needs ADR-008 + SPEC: tag. Then two-pass verify (write_events
+   is critical module #1).
+3. P5 I-21 recurring per FUTURE_WORK spec (unblocked by txn_id).
+4. P5c execution core: first_step → Today/Now + day-roll → sessions +
+   focus → day open/close → Mirror v1. Backend-first, each increment
+   green + committed.
+5. P9-equivalent: doctrine co-pass (CLAUDE v1.9 / SPEC v1.8 / PROMPTS
+   v1.6) + SPEC_AMENDMENT third pass + REVIEW_QUEUE rebuild + memory.
 
 ## Blocking issues
 
-None on current task.
-
-## Active subagents / worktrees
-
-None yet. Phase 2e (two-pass verification) will dispatch the
-`verifier` subagent against the 6 critical modules.
+None.
 
 ## Subtleties to preserve across compaction
 
-- The four load-bearing invariants (events append-only; projection
-  pure; swap atomic; caps active-only) are currently convention +
-  unit tests. Phase 2 makes them mechanical (property tests + DB
-  triggers + type-level firewall + golden cases).
-- `db::write_events` is the ONLY write path. `apply_event_to_projection`
-  is exhaustive match on `EventType`. Don't break either.
-- `swap_move_inner` emits two `ITEM_MOVED` events in one tx with one
-  ts. Tests at `commands/items.rs:937+` pin this.
-- The LLM firewall is absolute. `apply_event_to_projection`'s LLM-event
-  arms are `Ok(())`; Phase 2d promotes this to a type-level
-  `ProjectionEvent` boundary.
-- SPEC §6 module layout is STALE (lists 9 files that don't exist;
-  tree is flatter). Phase 3 reconciles. Don't trust §6 until then.
-- `package.json` does NOT list `@tauri-apps/plugin-global-shortcut`
-  (SPEC §6.2 is stale). Hotkey is Rust-side. Don't add the JS dep.
-- `restore_item` reusing `item_created` Tauri event is DOCUMENTED
-  (items.rs:462-466), not a bug. Don't "fix" it.
-- `set_item_state` done-to-active at cap correctly CAP_EXCEEDEDs
-  (items.rs:329-343). Not a bug.
-- `bootstrap` returns `{items, settings}` not `{items, settings, lanCapture}`
-  — SPEC drift, Phase 3 reconciles (likely amend SPEC, not code).
-- Rank fixtures at `scripts/rank-fixtures.json` are operator-owned
-  golden cases. Don't edit directly; regen via
-  `cargo run --bin rank_fixture_gen` with `SPEC:` tag.
-- **Baseline (Phase 0 close):** cargo build warning-clean, cargo test
-  91/91, pnpm build clean, pnpm test 85/85, store-logic 55/55. After
-  Phase 1: cargo test 91/91 still (prompt.rs fix doesn't add tests).
-- **Hooks are in place** (.claude/hooks/). `pre-arch-edit.sh` BLOCKS
-  edits to doctrine docs / golden cases / archive / 001_initial.sql
-  unless SPEC_AMENDMENT.md exists at repo root. To edit those, write
-  SPEC_AMENDMENT.md first.
-- **Phase 2b will add migration 002_invariants.sql** including an
-  append-only trigger on `events`. After that, any code path trying
-  `UPDATE/DELETE FROM events` will ABORT at runtime. The only write
-  path is `db::write_events` -> `events::append_event` (INSERT only).
+- All prior subtleties from the 2026-06-17 RUN_STATE still hold
+  (write_events only write path; ProjectionEvent firewall; restore
+  reuses item_created Tauri event BY DESIGN; rank fixtures regen only
+  via rank_fixture_gen + SPEC: tag; pre-arch-edit hook needs
+  SPEC_AMENDMENT.md for doctrine edits — it EXISTS, extend don't delete).
+- Golden files: rank.json FROZEN (untouchable); projection/swap/caps
+  are _status:proposed → agent may edit as proposals, flag for freeze.
+- caps.json cases 5/6/8 were DEFECTIVE as authored (see REVIEW_QUEUE
+  on return); corrected versions are doctrine-derived (blocked/done
+  don't count; failed transition leaves state unchanged).
+- Undo semantics after 003: group by txn_id (fallback (ts,type) for
+  legacy NULL); undo SKIPS actor='system' txns and non-projection
+  events inside a txn; compensating events get origin 'undo:<txn_id>'.
+- Envelope population: txn_id = one uuidv7 per write_events call;
+  actor default 'human', 'system' only for day-roll; origin threaded
+  where trivially known (lan, llm_accept:<id>, undo:<txn>, day_roll);
+  device_id from settings (generated once, not user-editable);
+  schema_ver = 1 constant for now; prev_hash = SHA-256 chain computed
+  inside the write tx (read last event's hash under the same tx).
+- I-21: child spawn cap-overflow routes to INBOX (doctrine-consistent);
+  ITEM_RECURRED is audit-only (to_projection_event -> None; update the
+  doc-comment so None reads "no projection effect", firewall = no LLM
+  variants still).
+- Today is an OVERLAY (items.today_on date column), NOT a tier. Cap 3.
+  DAY_ROLLED per-item events are TODAY_REMOVED{cause:expired} with
+  actor system; DAY_OPENED/DAY_CLOSED are audit events with NULL
+  item_id (first null-item_id events in the log — SPEC §4.3 note).
+- Sessions: at most ONE open session; sessions table is a projection
+  (rebuild_projection must rebuild it too — extends critical module #6).
 
 ## Last save point
 
-I-20 close: `feat(I-20): LLM re-org proposals` (cbad5b2). Then P2e fixes
-(fa77ebb) and the consolidation docs commit. All gates green: cargo
-152/152, vitest 93/93, builds clean, store-logic smoke OK.
-
-## Runway snapshot
-
-Resumed run, session ending. Speculations: 1 (Q01, default applied).
-Blockers: 0. Bugs found+fixed: 3 (batch cap enforcement on resume; +2
-BLOCKING from P2e cold-context verification — undo-unblock CHECK,
-restore cap gap). Shipped: Phase 4 (I-15..I-19) completion of I-19, P2e,
-I-20. Deferred (clean foundational-blocker stop): I-21 (needs txn_id),
-I-22, Phase 6. See REVIEW_QUEUE.md for the operator accept/reject queue.
+Run resume commit (this one). Prior baseline: 709be5d, cargo 152/152 +
+vitest 93/93 verified cold 2026-07-26.
 
 ## Pointer back
 
-TASKLIST.md and PROGRESS.md are canonical. AUTONOMY_CHARTER governs.
-run-metrics.jsonl is the ledger.
+TASKLIST.md (P5a/P5b/P5c added) and PROGRESS.md are canonical.
+AUTONOMY_CHARTER governs. VISION.md is design-source, not doctrine.
