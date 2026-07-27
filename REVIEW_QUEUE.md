@@ -1,4 +1,4 @@
-# REVIEW_QUEUE — v0.3 "Execution" run, 2026-07-26
+# REVIEW_QUEUE — v0.3 "Execution" run, 2026-07-26 → 27
 
 > Accept/reject queue for the autonomous work done under the operator
 > directive of 2026-07-26 ("proceed at your best recommendation — most
@@ -6,25 +6,54 @@
 > Ordered **cheapest-to-verify first**. Each item: what changed, how to
 > check it, and the exact revert.
 >
-> Gates at session end: `cargo test` **216/216**, `cargo build`
-> warning-clean, `pnpm build` clean, `pnpm test` **106/106**,
+> Gates: `cargo test` **248/248**, `cargo build` warning-clean,
+> `pnpm build` clean, `pnpm test` **118/118**,
 > `node scripts/test-store-logic.mjs` green,
-> `python scripts/check-golden.py` green,
-> `python scripts/verify-schema.py --fresh` green (13 objects, v6).
+> `python scripts/check-golden.py` green (5 files, 16 today cases),
+> `python scripts/verify-schema.py --fresh` green (13 objects, v6),
+> `python scripts/check-reachability.py` green (39/39),
+> `python scripts/check-mutations.py` green (**20/20 caught**).
 >
-> **A cold-context verifier ran and returned FAIL.** Every finding is
-> fixed and regression-tested (item 0 below). That pass is the reason
-> this queue is worth reading rather than skimming.
+> **Seven cold-context verifier passes ran, each reviewing the previous
+> one's fix. All seven found something.** Every finding is fixed and
+> regression-tested. Read item 0 first — the chain is the most
+> informative artifact this run produced, more so than any feature in
+> it. The last two passes found **no incorrect behaviour in the shipped
+> code**; every finding was a hole in the safety net.
 >
 > The run is **not released**: `.run-lock` remains, there is no tag, and
-> ~9 commits sit unpushed. This is a reviewable checkpoint.
+> ~43 commits sit unpushed. This is a reviewable checkpoint.
+>
+> **What actually needs you** (nothing else is blocked on a human):
+> 1. **Freeze the golden cases** — `caps.json` #5/#6/#8 and all 16
+>    `today.json` cases are `_status: proposed`, so the system's ground
+>    truth is still agent-authored. Sharpened by the chain: the agent
+>    has since authored a growing share of "the only assertions in the
+>    system the agent did not author," and pass 6's headline finding was
+>    an agent edit silently disarming one of them.
+> 2. **Ratify CLAUDE laws 7 and 10** (caps bind flow; the system acts
+>    only on a human-set timer).
+> 3. **Answer QUESTIONS Q02** — intra-tier placement inside an accepted
+>    diff still follows the model's listing order, which is a real
+>    order-dependence in a path whose stated invariant is
+>    order-independence. Two small fixes offered; doing nothing is the
+>    one option that should not survive review.
 
 ## Commits this session (newest first)
 
 | sha | what | revert |
 |---|---|---|
-| (chore) | drop stray `__pycache__`, ignore it | `git revert <sha>` |
-| b884b4d | **fix: cold-verifier findings** (BLOCKING + MAJOR + 6 MINOR) | `git revert b884b4d` |
+| 0c5813b | fix(ci): make the mutation window visible to concurrent readers | `git revert 0c5813b` |
+| 06d1f55 · da799ae | test: permute MOVE ops too (pass-6 gap); file **QUESTIONS Q02** | `git revert <sha>` |
+| 723a0bb · 14b1111 | **test: pass-7 guards** — the unblock door, `child.today_on`, the id tiebreak | `git revert <sha>` |
+| 82a2842 · 25e7138 | **fix: pass-6** — re-arm the disarmed golden case; pin the tier key + Today door | `git revert <sha>` |
+| ea2fb64 · c46128b | **fix: pass-5** — contests keyed on the pre-diff board; **mutation gate added** | `git revert <sha>` |
+| a0f4775 · 1e7467d | **fix: pass-4 BLOCKING** — undo-killing `blocked_reason` drop; golden accept door | `git revert <sha>` |
+| 0562957 | **fix: pass-3** — derived effects from the finished simulation | `git revert 0562957` |
+| 8f4592e · 55fcc02 | **fix: pass-2 BLOCKING** — one ledger per transaction; `today.json` created | `git revert <sha>` |
+| 0b225bc | feat(F-04): coach v2 — recorded behaviour in the analyze context | `git revert 0b225bc` |
+| 912c3b7 · 4701d76 · 2432ded | fix(ui): `first_step` + `add_to_today` were unreachable; **reachability gate** | `git revert <sha>` |
+| b884b4d | **fix: pass-1 BLOCKING** — Today-cap re-entry bypass + accept-reorg recurrence | `git revert b884b4d` |
 | 887c8c1 | docs: README v0.3 + FUTURE_WORK rewrite + this queue | `git revert 887c8c1` |
 | 3b0c0ea | docs(v1.9): doctrine co-pass (CLAUDE v1.9 / SPEC v1.8 / PROMPTS v1.6) | `git revert 3b0c0ea` |
 | daad097 | feat(P5c): Mirror v1 + Today lane + day ceremonies | `git revert daad097` |
