@@ -6,13 +6,13 @@
 > Ordered **cheapest-to-verify first**. Each item: what changed, how to
 > check it, and the exact revert.
 >
-> Gates: `cargo test` **261/261**, `cargo build` warning-clean,
+> Gates: `cargo test` **271/271**, `cargo build` warning-clean,
 > `pnpm build` clean, `pnpm test` **118/118**,
 > `node scripts/test-store-logic.mjs` green,
 > `python scripts/check-golden.py` green (5 files, 16 today cases),
 > `python scripts/verify-schema.py --fresh` green (13 objects, v6),
 > `python scripts/check-reachability.py` green (39/39),
-> `python scripts/check-mutations.py` green (**33/33 caught**).
+> `python scripts/check-mutations.py` green (**46/46 caught**).
 >
 > One result worth pulling out of that list: the `caps/restore-ignores-cap`
 > mutation — which reintroduces P2e BLOCKING-2, where restoring from the
@@ -22,15 +22,15 @@
 > truth the agent did not write, catching a regression in the product's
 > central invariant. It is also the argument for freezing the rest.
 >
-> **Nine cold-context verifier passes ran, each reviewing the previous
-> one's fix. All nine found something.** Every finding is fixed and
+> **Ten cold-context verifier passes ran, each reviewing the previous
+> one's fix. All ten found something.** Every finding is fixed and
 > regression-tested. Read item 0 first — the chain is the most
 > informative artifact this run produced, more so than any feature in
-> it. The last **four** passes found **no incorrect behaviour in the
+> it. The last **five** passes found **no incorrect behaviour in the
 > shipped code**; every finding was a hole in the safety net.
 >
 > The run is **not released**: `.run-lock` remains, there is no tag, and
-> ~43 commits sit unpushed. This is a reviewable checkpoint.
+> **82 commits** sit unpushed. This is a reviewable checkpoint.
 >
 > **What actually needs you** (nothing else is blocked on a human):
 > 1. **Freeze the golden cases** — `caps.json` #5/#6/#8 and all 16
@@ -50,6 +50,14 @@
 >    nothing is legitimate. The only live choice is whether to
 >    board-derive the rank too, which costs one sort and lets §8.7 drop
 >    its caveat.
+> 4. **Decide whether the verification chain ends here.** Ten passes ran;
+>    the last five found no incorrect behaviour in the shipped code, and
+>    pass 10's subject range contained no product code at all. Both that
+>    verifier and I think the format is spent, and that the honest next
+>    step is **dogfooding against `VISION.md` §9's kill conditions** —
+>    the one source of information no further pass can produce. Nothing
+>    is blocked on this; it is a question of where to spend the next
+>    hour.
 
 ## Commits this session (newest first)
 
@@ -86,7 +94,7 @@ Reverting is layered: I-21 and the execution core assume the envelope
 
 ### 0. The verification chain — **read this first**
 
-Nine cold passes ran, each reviewing the previous one's fix. The
+Ten cold passes ran, each reviewing the previous one's fix. The
 result is the most important thing on this page:
 
 | pass | subject | verdict |
@@ -100,7 +108,25 @@ result is the most important thing on this page:
 | 7 | pass 6's fix + the guards the gate itself exposed | **PASS with 3 MAJOR** — *"no incorrect behaviour found in the shipped code"*; all three MAJORs are lines the round **leaned on** while adding guards beside them |
 | 8 | pass 7's fix (three guards + the gate's own repairs) | **FAIL, 2 MAJOR** — *"I found no incorrect behaviour in the shipped code"*; both MAJORs were the two blocked-reason doors the session had **already fixed independently** while the pass ran |
 | 9 | pass 8's fix + the sibling audit + the mixed-op permutations | **PASS, 2 MAJOR, no BLOCKING** — *"I found no incorrect behaviour in the shipped code"*, fourth round running. Both MAJORs were guard holes: the **B** half of a cap counter whose **A** half I had guarded one commit earlier with an A-only fixture, and the row-hash digest (dropping `payload` survived the suite) |
-| 10 | pass 9's fix + the generated order-independence property | dispatched |
+| 10 | pass 9's fix + the generated order-independence property | **PASS, 4 MAJOR, no BLOCKING** — fifth clean round; the subject range held **zero production lines**. Headline finding was against **the gate itself**: it scored an environmental build failure as "caught", printing *"All 33 mutations caught"* with 14 never exercised |
+
+**Pass 10 is where the chain told me to stop, and I agree with it.**
+Its own words: the cold-pass *format* has reached diminishing returns —
+five rounds with no behavioural defect, and a subject range containing
+no product code at all. The evidence it gave is the part that
+convinced me: **12 of its own 23 mutations survived** in modules
+nothing had ever probed (`capture/`, `settings.rs`, `prompt.rs`, four
+undo arms), versus a near-zero survival rate inside `apply_reorg_inner`
+— the one function ten passes have been circling.
+
+So the remaining risk was never *depth* on the reviewed code. It was
+**breadth**, and breadth is mechanical work, not a job for another
+reviewer's judgement. That sweep is now done (see the commits above).
+
+What no further pass can produce is the thing that actually matters:
+whether any of this helps a person get work done. `VISION.md` §9 lists
+what would falsify each v0.3 mechanism. **Dogfooding is the next
+step, not verification.**
 
 **Pass 9 also corrected a factual error I put in front of you.**
 `QUESTIONS.md` Q02, as I filed it, asserted *"SPEC §8.7 currently claims
