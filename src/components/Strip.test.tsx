@@ -108,9 +108,9 @@ describe("Strip — overflow menu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("opens the popover with the nine menu items on ⋯ click", async () => {
-    // Nine for a non-recurring item; a tenth ("Stop repeating") appears
-    // only when the item has a recurrence rule (I-21).
+  it("opens the popover with the ten menu items on ⋯ click", async () => {
+    // Ten for a non-recurring item; an eleventh ("Stop repeating")
+    // appears only when the item has a recurrence rule (I-21).
     seed(makeActiveA());
     render(<Strip itemId="itm-1" />);
     await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
@@ -118,9 +118,10 @@ describe("Strip — overflow menu", () => {
     const menu = screen.getByRole("menu");
     expect(menu).toBeInTheDocument();
     const items = screen.getAllByRole("menuitem");
-    expect(items).toHaveLength(9);
+    expect(items).toHaveLength(10);
     expect(items.map((b) => b.textContent)).toEqual([
       "Edit",
+      "Set first step…",
       "Set start date…",
       "Set due date…",
       "Mark done",
@@ -130,6 +131,50 @@ describe("Strip — overflow menu", () => {
       "Repeat monthly",
       "Delete",
     ]);
+  });
+
+  it("first step is settable, and the item shows it once set", async () => {
+    // Regression: `set_first_step` shipped with the field rendered in
+    // three places (strip, Today lane, focus bar) and the Mirror even
+    // reporting "no first step" — but no way to SET one. The command was
+    // unreachable from the app.
+    const item = makeActiveA();
+    seed(item);
+    render(<Strip itemId="itm-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Set first step…" }),
+    );
+
+    const input = screen.getByRole("textbox", { name: "First step" });
+    await userEvent.type(input, "open contract.pdf");
+    // `updated_at` must advance: the store's onItemUpdated is idempotent
+    // on it, so a reply carrying the old timestamp is correctly ignored.
+    invokeMock.mockResolvedValueOnce({
+      ...item,
+      first_step: "open contract.pdf",
+      updated_at: item.updated_at + 1,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    expect(invokeMock).toHaveBeenCalledWith("set_first_step", {
+      id: "itm-1",
+      step: "open contract.pdf",
+    });
+    expect(await screen.findByText(/open contract\.pdf/)).toBeInTheDocument();
+  });
+
+  it("an item with a first step offers to change or clear it", async () => {
+    seed({ ...makeActiveA(), first_step: "dial Marco" });
+    render(<Strip itemId="itm-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Change first step…" }),
+    );
+    expect(screen.getByRole("textbox", { name: "First step" })).toHaveValue(
+      "dial Marco",
+    );
+    expect(screen.getByRole("button", { name: "Clear" })).toBeInTheDocument();
   });
 
   it("recurring item shows the active rule checked plus Stop repeating (I-21)", async () => {
@@ -142,7 +187,7 @@ describe("Strip — overflow menu", () => {
     expect(
       screen.getByRole("menuitem", { name: "Stop repeating" }),
     ).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem")).toHaveLength(10);
+    expect(screen.getAllByRole("menuitem")).toHaveLength(11);
   });
 
   it("Repeat weekly fires invoke('set_item_recurrence') with the rule", async () => {

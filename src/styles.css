@@ -2163,3 +2163,31 @@ button:hover {
   height: 100%;
   background: color-mix(in srgb, CanvasText 45%, transparent);
 }
+
+/* v0.3 first step — one line, the next physical action. */
+.strip-first-step {
+  opacity: 0.7;
+  font-size: 0.85rem;
+}
+
+.strip-first-step-input {
+  display: flex;
+  gap: 0.3rem;
+  align-items: center;
+  flex: 1 1 100%;
+  margin-top: 0.25rem;
+}
+
+.strip-first-step-input input {
+  font: inherit;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.15rem 0.4rem;
+}
+
+.strip-first-step-input button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}

@@ -25,6 +25,7 @@ export function Strip({ itemId }: { itemId: string }) {
   const settings = useStore((s) => s.settings);
   const isEditing = useStore((s) => s.editingItemId === itemId);
   const [dateField, setDateField] = useState<"start" | "due" | null>(null);
+  const [editingFirstStep, setEditingFirstStep] = useState(false);
   const setEditingItemId = useStore((s) => s.setEditingItemId);
   const openBlockModal = useStore((s) => s.openBlockModal);
   const setSelectedItemId = useStore((s) => s.setSelectedItemId);
@@ -37,7 +38,10 @@ export function Strip({ itemId }: { itemId: string }) {
   const isNow = useStore((s) => s.openSession?.item_id === itemId);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: itemId, disabled: isEditing || dateField !== null });
+    useSortable({
+      id: itemId,
+      disabled: isEditing || dateField !== null || editingFirstStep,
+    });
 
   if (!item) return null;
 
@@ -128,6 +132,12 @@ export function Strip({ itemId }: { itemId: string }) {
               🔁 {recurrenceLabel(item.recurrence)}
             </span>
           ) : null}
+          {item.first_step ? (
+            <span className="strip-first-step" title="First step">
+              {" → "}
+              {item.first_step}
+            </span>
+          ) : null}
         </span>
       )}
 
@@ -136,6 +146,14 @@ export function Strip({ itemId }: { itemId: string }) {
           item={item}
           field={dateField}
           onDone={() => setDateField(null)}
+          onUpdated={onItemUpdated}
+        />
+      ) : null}
+
+      {editingFirstStep ? (
+        <StripFirstStepInput
+          item={item}
+          onDone={() => setEditingFirstStep(false)}
           onUpdated={onItemUpdated}
         />
       ) : null}
@@ -170,6 +188,7 @@ export function Strip({ itemId }: { itemId: string }) {
       <StripMenu
         item={item}
         onEdit={() => setEditingItemId(item.id)}
+        onSetFirstStep={() => setEditingFirstStep(true)}
         onSetDate={(f) => setDateField(f)}
         onToggleDone={async () => {
           try {
@@ -303,6 +322,7 @@ function StripInlineEdit({
 function StripMenu({
   item,
   onEdit,
+  onSetFirstStep,
   onSetDate,
   onToggleDone,
   onToggleBlocked,
@@ -311,6 +331,7 @@ function StripMenu({
 }: {
   item: Item;
   onEdit: () => void;
+  onSetFirstStep: () => void;
   onSetDate: (field: "start" | "due") => void;
   onToggleDone: () => void;
   onToggleBlocked: () => void;
@@ -355,6 +376,9 @@ function StripMenu({
         <div className="strip-menu-popover" role="menu">
           <button type="button" role="menuitem" onClick={() => run(onEdit)}>
             Edit
+          </button>
+          <button type="button" role="menuitem" onClick={() => run(onSetFirstStep)}>
+            {item.first_step ? "Change first step…" : "Set first step…"}
           </button>
           <button
             type="button"
@@ -420,6 +444,88 @@ function StripMenu({
           </button>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** The activation-energy handle: one line, the next PHYSICAL action.
+ *  Deliberately a single input and not a list — a checklist is a place
+ *  to hide from work, a first step is a place to start it. */
+function StripFirstStepInput({
+  item,
+  onDone,
+  onUpdated,
+}: {
+  item: Item;
+  onDone: () => void;
+  onUpdated: (item: Item) => void;
+}) {
+  const [draft, setDraft] = useState(item.first_step ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const ref = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    ref.current?.focus();
+    ref.current?.select();
+  }, []);
+
+  async function commit(next: string | null) {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const raw = await invoke<unknown>("set_first_step", {
+        id: item.id,
+        step: next,
+      });
+      onUpdated(Item.parse(raw));
+      onDone();
+    } catch (err) {
+      const msg = typeof err === "string" ? err : String(err);
+      if (msg === "NO_OP") onDone();
+      else {
+        setError(msg === "STEP_TOO_LONG" ? "Keep it to one line (140 characters)." : msg);
+        setBusy(false);
+      }
+    }
+  }
+
+  return (
+    <div
+      className="strip-first-step-input"
+      onKeyDown={(e) => {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          onDone();
+        } else if (e.key === "Enter") {
+          e.preventDefault();
+          void commit(draft.trim() || null);
+        }
+      }}
+    >
+      <input
+        ref={ref}
+        type="text"
+        maxLength={140}
+        value={draft}
+        placeholder="Next physical action — e.g. “open contract.pdf”"
+        aria-label="First step"
+        onChange={(e) => setDraft(e.target.value)}
+        disabled={busy}
+      />
+      <button type="button" onClick={() => void commit(draft.trim() || null)} disabled={busy}>
+        Save
+      </button>
+      {item.first_step ? (
+        <button type="button" onClick={() => void commit(null)} disabled={busy}>
+          Clear
+        </button>
+      ) : null}
+      <button type="button" onClick={onDone} disabled={busy}>
+        Cancel
+      </button>
+      {error ? <div className="modal-error">{error}</div> : null}
     </div>
   );
 }
