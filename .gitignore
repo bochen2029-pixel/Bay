@@ -41,3 +41,4 @@ WixTools/
 # Python bytecode from scripts/
 __pycache__/
 *.pyc
+.mutation-in-progress

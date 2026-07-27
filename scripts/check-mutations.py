@@ -28,6 +28,23 @@ Usage:
 Adding a mutation: when a cold review finds a defect, add the mutation
 that reintroduces it. That is the cheapest way to guarantee the class
 cannot silently come back.
+
+!! THIS SCRIPT EDITS THE REAL WORKING TREE, one file at a time, for the
+!! whole of a run — which is minutes, not seconds. While it runs, the
+!! checkout is DELIBERATELY WRONG. Do not run it concurrently with
+!! anything that reads this repo: a cold-context reviewer that happens
+!! to open a mutated file will report a defect that does not exist, and
+!! nothing in its output would distinguish that from a real one. It
+!! writes `.mutation-in-progress` (naming the live mutation) for the
+!! duration, so a concurrent reader has something to check. A `git
+!! clone` is safe — clones read committed objects, not the worktree.
+!!
+!! It also cannot clean up after SIGKILL, a CI cancellation, or a
+!! harness timeout. That is not hypothetical: a 10-minute tool timeout
+!! killed a run mid-mutation during the v0.3 chain and left the
+!! swallowed-panic mutation sitting in `golden_runner.rs`. The
+!! clean-tree refusal below is what makes that state visible, and
+!! `git checkout -- <file>` is what fixes it.
 """
 
 import argparse
@@ -38,6 +55,9 @@ import sys
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 MANIFEST = os.path.join(REPO_ROOT, "src-tauri", "Cargo.toml")
+# Present only while a mutation is applied. Gitignored: it is a runtime
+# flag for concurrent readers, not a tracked artifact.
+MARKER = os.path.join(REPO_ROOT, ".mutation-in-progress")
 
 LLM = "src-tauri/src/commands/llm.rs"
 DAY = "src-tauri/src/commands/day.rs"
@@ -333,6 +353,12 @@ def main() -> int:
             continue
         mutated = original.replace(m["find"], m["replace"], 1)
         try:
+            # Announce the wrongness while it exists. A reviewer or
+            # editor that opens `m["file"]` in this window sees code
+            # that is intentionally broken, and would have no way to
+            # tell that from a genuine defect.
+            with open(MARKER, "w", encoding="utf-8") as f:
+                f.write(f"{m['name']} -> {m['file']}\n")
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(mutated)
             passed, failing, out = run_suite()
@@ -340,6 +366,8 @@ def main() -> int:
             # Restore unconditionally.
             with open(path, "w", encoding="utf-8", newline="") as f:
                 f.write(original)
+            if os.path.exists(MARKER):
+                os.remove(MARKER)
         if not passed and not failing:
             # A red suite with no parseable test name is not evidence of
             # a guard — cargo can exit non-zero for reasons that have
