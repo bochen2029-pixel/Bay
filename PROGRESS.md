@@ -787,3 +787,53 @@ cache. Nothing covered that combination.
   REPLACE fails both device tests by name).
 
 Gates: cargo 235/235 warning-clean.
+
+## 2026-07-27 — Fourth cold pass: BLOCKING undo bug + ordering, one layer down
+
+Pass 4 (subject: the pass-3 fix `0562957`) returned FAIL: 1 BLOCKING,
+3 MAJOR. Chain is 4 for 4.
+
+- **BLOCKING (llm.rs) — accepting `done` on a BLOCKED item permanently
+  killed Ctrl+Z.** The accept path was the LAST done-door still
+  dropping the outgoing `blocked_reason`; undo then wrote
+  `state='blocked'` with a null reason, tripped the migration-002
+  CHECK, and rolled back. Because undo keeps targeting the same
+  transaction, it stayed dead until the user did something else
+  undoable. Pre-existing since I-20 — but removing the duplicate-op
+  guard in the previous commit ADDED a second route to it. One-line
+  fix, mirroring items.rs/session.rs.
+- **MAJOR x3, all order-dependence one layer down from where pass 3
+  fixed it**: (a) with TWO recurring completions contending for one
+  free A slot, the ops array decided which child overflowed; (b) with
+  TWO reactivations contending for one Today slot, the ops array
+  decided which lost it; (c) an item reactivated AND completed in the
+  same diff stayed in `reactivated`, so pass 2 stripped a FINISHED
+  item''s Today membership — freeing nothing (done items aren''t
+  counted) and contradicting golden `today.json` case 3. That last one
+  is a JOINT_WRONG the golden runner cannot catch, because it never
+  drives `accept_suggestion`.
+
+Fix: pass 2 now iterates by **board position** (`board_order`: tier,
+rank, id), never by the ops array — the higher-ranked parent''s child
+takes the free slot; the lower-ranked reactivation gives up the Today
+slot. Both are answers the human can predict from their own board.
+`reactivated` is filtered to items that actually END active.
+
+**My permutation test''s blind spot contained all three MAJORs**: its
+scenario had exactly one spawn and one reactivation — the configuration
+where no winner has to be picked. Rebuilt with TWO of each contending
+for one slot apiece (24 permutations), `rank` added to the fingerprint,
+and sanity assertions that the contests actually occur. My own sanity
+check then caught that the first rebuild didn''t create contention.
+
+SPEC §8.7 narrowed honestly: order-independence covers commit/fail and
+tier/state/Today/spawn placement; the relative RANK of several items
+moved into one tier follows the human''s review order.
+
+Negative controls on all three fixes. One of them PASSED first time —
+the Today test didn''t depend on the filter it was meant to pin, so it
+was rebuilt to the verifier''s actual probe shape and now fails without
+the fix.
+
+Gates: cargo **237/237** warning-clean; vitest 118/118; golden 5 files;
+verify-schema --fresh; reachability 39/39.

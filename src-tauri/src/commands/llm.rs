@@ -343,7 +343,27 @@ fn apply_reorg_inner(
                     if cur.state == ItemState::Done {
                         continue;
                     }
-                    drafts.push(state_change_draft(&op.item_id, cur.state, ItemState::Done, None));
+                    // Carry the OUTGOING blocked reason, exactly as
+                    // every other done-door does (items.rs single +
+                    // batch, session.rs). Without it, undoing a
+                    // blocked→done accept writes `state = 'blocked'`
+                    // with a null reason, trips the migration-002 CHECK,
+                    // and the undo transaction rolls back — leaving
+                    // Ctrl+Z permanently dead on that transaction, since
+                    // undo keeps targeting it. This is the P2e
+                    // BLOCKING-1 bug class, and it was the last door
+                    // still missing the fix.
+                    let reason = if cur.state == ItemState::Blocked {
+                        cur.blocked_reason.clone()
+                    } else {
+                        None
+                    };
+                    drafts.push(state_change_draft(
+                        &op.item_id,
+                        cur.state,
+                        ItemState::Done,
+                        reason,
+                    ));
                     sim.get_mut(&op.item_id).unwrap().state = ItemState::Done;
                     completed.insert(op.item_id.clone());
                 }
@@ -403,14 +423,17 @@ fn apply_reorg_inner(
         // here, exactly as every other done-door does. Placement reads
         // the finished simulation, and a full tier overflows to Inbox
         // (SPEC §8.7) — a spawn must NEVER fail the accept.
-        // Iterate ops for a deterministic order, but spawn once per
-        // ITEM: several ops may name the same item, and each completed
-        // item owes exactly one child.
-        let mut spawned_for: std::collections::HashSet<&String> = std::collections::HashSet::new();
-        for id in ops.iter().map(|o| &o.item_id) {
-            if !completed.contains(id) || !spawned_for.insert(id) {
-                continue;
-            }
+        //
+        // Ordered by BOARD POSITION, not by the ops array. When two
+        // recurring items complete into a tier with one free slot,
+        // somebody's child overflows to Inbox — and that decision must
+        // not be the model's to make by listing order. Sorting by
+        // (tier, rank) gives the slot to the item the HUMAN ranked
+        // higher, which is both deterministic and the answer they would
+        // defend.
+        let mut spawn_candidates: Vec<&String> = completed.iter().collect();
+        spawn_candidates.sort_by(|a, b| board_order(&sim, a).cmp(&board_order(&sim, b)));
+        for id in spawn_candidates {
             let parent = sim.get(id).cloned().unwrap();
             let rule = match crate::commands::items::recurrence_rule_of(&parent) {
                 Some(r) => r,
@@ -454,7 +477,28 @@ fn apply_reorg_inner(
         // Today cap on the re-activation door. Counted against the
         // finished simulation, so a slot freed by a completion in this
         // same diff is available regardless of op order.
-        for id in &reactivated {
+        //
+        // Two filters and an ordering, each load-bearing:
+        //  * only items that actually END active — an item reactivated
+        //    and then completed in the same diff is NOT competing for a
+        //    Today slot, and dropping it would strip a finished item's
+        //    membership (contradicting golden today.json case 3, "a
+        //    finished Today item keeps its membership") while freeing
+        //    nothing, since done items are not counted.
+        //  * WORST board position first, because this loop drops until
+        //    the date fits: the item the human ranked lowest should be
+        //    the one that loses the slot, and the choice must not come
+        //    from the model's array order.
+        let mut today_candidates: Vec<&String> = reactivated
+            .iter()
+            .filter(|id| {
+                sim.get(*id)
+                    .map(|it| it.state == ItemState::Active && it.today_on.is_some())
+                    .unwrap_or(false)
+            })
+            .collect();
+        today_candidates.sort_by(|a, b| board_order(&sim, b).cmp(&board_order(&sim, a)));
+        for id in today_candidates {
             let item = sim.get(id).cloned().unwrap();
             let date = match &item.today_on {
                 Some(d) => d.clone(),
@@ -516,6 +560,33 @@ fn effective_active(
             .count() as i64
     };
     Ok(base - count_in(orig) + count_in(sim))
+}
+
+/// A total order over items by their position on the BOARD: tier
+/// first, then rank, then id as the tiebreak.
+///
+/// Used to order pass-2's derived effects. Anything that must pick a
+/// winner between two items — which spawn keeps the last tier slot,
+/// which reactivation loses its Today slot — has to pick by something
+/// the human controls. Iterating the ops array instead lets the model
+/// decide by listing order, which SPEC §8.7 forbids.
+fn board_order(
+    sim: &std::collections::HashMap<String, crate::domain::Item>,
+    id: &str,
+) -> (u8, String, String) {
+    match sim.get(id) {
+        Some(it) => (
+            match it.tier {
+                Tier::A => 0,
+                Tier::B => 1,
+                Tier::C => 2,
+                Tier::Inbox => 3,
+            },
+            it.rank.clone(),
+            it.id.clone(),
+        ),
+        None => (u8::MAX, String::new(), id.to_string()),
+    }
 }
 
 /// The same reckoning for a Today date: how many ACTIVE items this
@@ -833,40 +904,76 @@ mod tests {
         use crate::commands::items::set_item_recurrence_inner;
         const DATE: &str = "2026-07-26";
 
-        /// Order-insensitive board fingerprint.
-        fn fingerprint(pool: &SqlitePool) -> Vec<(String, String, String, Option<String>)> {
+        /// Order-insensitive board fingerprint. Includes `rank`: an
+        /// earlier version omitted it, which made rank-order defects
+        /// invisible to a test whose whole purpose is order-sensitivity.
+        fn fingerprint(
+            pool: &SqlitePool,
+        ) -> Vec<(String, String, String, Option<String>, String)> {
             let conn = pool.get().unwrap();
             let mut stmt = conn
                 .prepare(
-                    "SELECT content, tier, state, today_on FROM items \
-                     WHERE deleted = 0 ORDER BY content, tier, state, today_on",
+                    "SELECT content, tier, state, today_on, rank FROM items \
+                     WHERE deleted = 0 ORDER BY content, tier, state, today_on, rank",
                 )
                 .unwrap();
-            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
-                .unwrap()
-                .collect::<Result<_, _>>()
-                .unwrap()
+            stmt.query_map([], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap()
         }
 
-        // A board where BOTH derived effects are live: A is exactly at
-        // cap with a recurring item on a full Today, and a blocked item
-        // (also on that Today) is waiting to come back.
+        // The scenario has to make the derived effects CONTEND for a
+        // scarce slot, or ordering cannot manifest. An earlier version
+        // used one recurring completion and one reactivation — exactly
+        // the configuration in which no winner has to be picked — and
+        // its blind spot turned out to contain three real defects.
+        //
+        // Here: TWO recurring items complete into an A tier with one
+        // free slot (so one child must overflow to Inbox), and TWO
+        // blocked items reactivate onto a Today holding one free slot
+        // (so one must lose its membership). Both winners must be
+        // decided by the board, never by the ops array.
         let build = || {
             let pool = fresh_pool();
-            let blocked = create_item_inner(&pool, Tier::A, "blocked".into(), None, None).unwrap();
-            crate::commands::day::add_to_today_inner(&pool, blocked.id.clone(), DATE.into())
+            // Two blocked items on the same Today date — one in A (so
+            // its reactivation also consumes an A slot), one in B (so
+            // it competes only for Today). Created FIRST, because
+            // creation is itself cap-gated.
+            let mut blocked = Vec::new();
+            for (i, tier) in [Tier::A, Tier::B].into_iter().enumerate() {
+                let b = create_item_inner(&pool, tier, format!("blocked-{i}"), None, None).unwrap();
+                crate::commands::day::add_to_today_inner(&pool, b.id.clone(), DATE.into()).unwrap();
+                crate::commands::items::set_item_state_inner(
+                    &pool,
+                    b.id.clone(),
+                    ItemState::Blocked,
+                    Some("stuck".into()),
+                )
                 .unwrap();
-            crate::commands::items::set_item_state_inner(
-                &pool,
-                blocked.id.clone(),
-                ItemState::Blocked,
-                Some("stuck".into()),
-            )
-            .unwrap();
-            let rec = create_item_inner(&pool, Tier::A, "recurring".into(), None, None).unwrap();
-            set_item_recurrence_inner(&pool, rec.id.clone(), Some("FREQ=DAILY".into())).unwrap();
-            crate::commands::day::add_to_today_inner(&pool, rec.id.clone(), DATE.into()).unwrap();
-            for i in 0..(A_CAP - 1) {
+                blocked.push(b.id);
+            }
+            // Two recurring items, active in A.
+            let mut recurring = Vec::new();
+            for i in 0..2 {
+                let r =
+                    create_item_inner(&pool, Tier::A, format!("recurring-{i}"), None, None).unwrap();
+                set_item_recurrence_inner(&pool, r.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+                recurring.push(r.id);
+            }
+            // Fill A to cap; put two fills on Today.
+            //
+            // The arithmetic is the whole point of the fixture:
+            //   A active before = 2 recurring + 3 fills = 5 = A_CAP.
+            //   After the diff  = 5 − 2 (completions) + 1 (blocked-0
+            //                     reactivating in A) = 4, i.e. ONE free
+            //                     slot for TWO children.
+            //   Today active before = 2 fills; after = 2 + 2
+            //                     reactivations = 4 > 3, i.e. ONE of the
+            //                     two must lose its membership.
+            for i in 0..(A_CAP - 2) {
                 let f =
                     create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
                 if i < 2 {
@@ -874,26 +981,46 @@ mod tests {
                         .unwrap();
                 }
             }
-            let c1 = create_item_inner(&pool, Tier::C, "promote".into(), None, None).unwrap();
             let sug = seed_suggestion(&pool);
-            (pool, rec.id, blocked.id, c1.id, sug)
+            (pool, recurring, blocked, sug)
         };
 
-        const PERMUTATIONS: [[usize; 3]; 6] = [
-            [0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0],
-        ];
-        let mut results: Vec<(bool, Vec<(String, String, String, Option<String>)>)> = Vec::new();
-        for order in PERMUTATIONS {
-            let (pool, rec_id, blocked_id, c1_id, sug) = build();
+        // All 4! orderings of [done(r0), done(r1), active(b0), active(b1)].
+        let mut perms: Vec<[usize; 4]> = Vec::new();
+        for a in 0..4 {
+            for b in 0..4 {
+                for c in 0..4 {
+                    for d in 0..4 {
+                        let p = [a, b, c, d];
+                        let mut seen = [false; 4];
+                        if p.iter().all(|i| !std::mem::replace(&mut seen[*i], true)) {
+                            perms.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(perms.len(), 24);
+
+        type Board = Vec<(String, String, String, Option<String>, String)>;
+        let mut results: Vec<(bool, Board)> = Vec::new();
+        for order in &perms {
+            let (pool, recurring, blocked, sug) = build();
             let all_ops = [
-                done_op(&rec_id),
+                done_op(&recurring[0]),
+                done_op(&recurring[1]),
                 ReorgProposal {
-                    item_id: blocked_id.clone(),
+                    item_id: blocked[0].clone(),
                     action: ProposalAction::Active,
                     to_tier: None,
                     rationale: None,
                 },
-                move_op(&c1_id, "B"),
+                ReorgProposal {
+                    item_id: blocked[1].clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
             ];
             let ops: Vec<ReorgProposal> = order.iter().map(|i| all_ops[*i].clone()).collect();
             let ok = apply_reorg_inner(&pool, sug, ops).is_ok();
@@ -904,23 +1031,182 @@ mod tests {
                 &results[0], r,
                 "permutation {:?} produced a different board than {:?} — the model's \
                  array order is deciding the outcome",
-                PERMUTATIONS[i], PERMUTATIONS[0]
+                perms[i], perms[0]
             );
         }
-        // And sanity: the scenario really does exercise both effects.
+
+        // Sanity: the scenario must actually force both contests.
         assert!(results[0].0, "the diff is legal and must commit");
         let (_, board) = &results[0];
+        let children: Vec<&(String, String, String, Option<String>, String)> = board
+            .iter()
+            .filter(|r| r.0.starts_with("recurring-") && r.2 == "active")
+            .collect();
+        assert_eq!(children.len(), 2, "both recurring items spawned");
+        assert!(
+            children.iter().any(|r| r.1 == "A") && children.iter().any(|r| r.1 == "inbox"),
+            "one child took the free A slot and one overflowed — the contest happened: {children:?}"
+        );
+        let on_today = board
+            .iter()
+            .filter(|r| r.0.starts_with("blocked-") && r.3.as_deref() == Some(DATE))
+            .count();
         assert_eq!(
-            board.iter().filter(|r| r.0 == "recurring").count(),
-            2,
-            "the recurring parent spawned a child (spawn path exercised)"
+            on_today, 1,
+            "exactly one reactivated item kept the last Today slot — the contest happened"
         );
         assert!(
-            board
-                .iter()
-                .any(|r| r.0 == "blocked" && r.2 == "active" && r.3.as_deref() == Some(DATE)),
-            "the reactivated item kept its Today slot (overflow path exercised)"
+            board.iter().all(|r| !r.0.starts_with("blocked-") || r.2 == "active"),
+            "both blocked items were reactivated"
         );
+    }
+
+    #[test]
+    fn accept_reorg_done_on_a_blocked_item_stays_undoable() {
+        // BLOCKING: the accept path was the last done-door still
+        // dropping the outgoing blocked reason. Undo then wrote
+        // `state='blocked'` with a null reason, tripped the
+        // migration-002 CHECK, and rolled back — and because undo keeps
+        // targeting the same transaction, Ctrl+Z stayed dead until the
+        // user did something else undoable. P2e BLOCKING-1, reopened at
+        // a door the original fix never reached.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "stuck work".into(), None, None).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            item.id.clone(),
+            ItemState::Blocked,
+            Some("waiting on legal".into()),
+        )
+        .unwrap();
+        let sug = seed_suggestion(&pool);
+        apply_reorg_inner(&pool, sug, vec![done_op(&item.id)]).unwrap();
+
+        // The event must carry the reason it cleared.
+        {
+            let conn = pool.get().unwrap();
+            let reason: Option<String> = conn
+                .query_row(
+                    "SELECT json_extract(payload, '$.blocked_reason') FROM events \
+                     WHERE type = 'ITEM_STATE_CHANGED' ORDER BY id DESC LIMIT 1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(reason.as_deref(), Some("waiting on legal"));
+        }
+
+        // And undo must actually work — the law undo has no exception to.
+        crate::commands::events::undo_last_action_inner(&pool)
+            .expect("undo must never fail");
+        let conn = pool.get().unwrap();
+        let (state, reason): (String, Option<String>) = conn
+            .query_row(
+                "SELECT state, blocked_reason FROM items WHERE id = ?1",
+                [&item.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(state, "blocked");
+        assert_eq!(reason.as_deref(), Some("waiting on legal"));
+    }
+
+    #[test]
+    fn accept_reorg_does_not_strip_today_from_an_item_it_also_completes() {
+        // An item reactivated and then completed in the same diff is
+        // not competing for a Today slot — done items are not counted —
+        // so dropping it frees nothing and contradicts golden
+        // today.json case 3 ("a finished Today item keeps its
+        // membership but frees its slot").
+        let pool = fresh_pool();
+        const DATE: &str = "2026-07-26";
+        // Two blocked items join Today FIRST and are then blocked —
+        // joining is itself cap-gated, so neither could get on a full
+        // date afterwards. `y` will be reactivated AND completed; `z`
+        // will only be reactivated, so `z` is the one genuinely
+        // competing for the last slot.
+        let mut ids = Vec::new();
+        for name in ["y", "z"] {
+            let it = create_item_inner(&pool, Tier::B, name.into(), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, it.id.clone(), DATE.into()).unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                it.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            ids.push(it.id);
+        }
+        let (y, z) = (ids[0].clone(), ids[1].clone());
+        // Fill Today to cap with three actives (y and z are blocked, so
+        // they hold no slot).
+        for i in 0..3 {
+            let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into()).unwrap();
+        }
+        let sug = seed_suggestion(&pool);
+
+        // Unblock y and finish it; unblock z. The date now wants 4
+        // actives and holds 3, so exactly ONE membership must go — and
+        // it must be z's, because y is done and holds no slot.
+        let active_op = |id: &String| ReorgProposal {
+            item_id: id.clone(),
+            action: ProposalAction::Active,
+            to_tier: None,
+            rationale: None,
+        };
+        apply_reorg_inner(
+            &pool,
+            sug,
+            vec![active_op(&y), done_op(&y), active_op(&z)],
+        )
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let row = |id: &String| -> (String, Option<String>) {
+            conn.query_row(
+                "SELECT state, today_on FROM items WHERE id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap()
+        };
+        let (y_state, y_today) = row(&y);
+        assert_eq!(y_state, "done");
+        assert_eq!(
+            y_today.as_deref(),
+            Some(DATE),
+            "finished work stays visible on Today; it frees its slot without losing its place"
+        );
+        let (z_state, z_today) = row(&z);
+        assert_eq!(z_state, "active");
+        assert_eq!(z_today, None, "z is the one actually competing for the slot");
+
+        let spurious: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'TODAY_REMOVED' AND item_id = ?1",
+                [&y],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(spurious, 0, "no removal the human never caused");
+        let total_removals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'TODAY_REMOVED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(total_removals, 1, "exactly one membership was given up");
+        let active_today: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state='active' AND deleted=0",
+                [DATE],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_today, 3, "and the cap holds");
     }
 
     #[test]

@@ -1530,8 +1530,21 @@ proposes, the human accepts, the deterministic tier writes.
   lose a Today slot, purely on the order the model listed its
   proposals**. The LLM has no write path, but that is a lever on the
   deterministic tier's result, which is the spirit of the firewall if
-  not its letter. The outcome must be a function of the accepted
-  *set*.
+  not its letter.
+- **What "order-independent" covers, precisely.** Whether the accept
+  commits, and the committed **tier / state / Today membership /
+  recurrence-child placement** of every item, are a function of the
+  accepted *set*. Pass 2 therefore iterates by **board position**
+  (`board_order`: tier, then rank, then id) and never by the ops array
+  — when two children contend for one free tier slot, the higher-ranked
+  parent's child takes it; when two reactivations contend for one
+  Today slot, the lower-ranked item gives it up. Both are answers the
+  human can predict and defend from their own board.
+  The one deliberate exception: the **relative rank of several items
+  moved into the same tier in one accept** follows the order they
+  appear in the diff — which is the order the human reviewed and
+  accepted them in. That affects where they sit next to each other,
+  never what commits or what is lost.
 - **A derived effect may never fail the accept.** Pass 2 places a
   spawned child where it fits and overflows to Inbox otherwise; it
   never returns `CAP_EXCEEDED`. A human diff that is legal on its face
