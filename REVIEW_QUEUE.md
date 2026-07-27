@@ -52,7 +52,7 @@ result is the most important thing on this page:
 |---|---|---|
 | 1 | the v0.3 feature work (`de37921..daad097`) | **FAIL** — 1 BLOCKING, 1 MAJOR, 6 MINOR |
 | 2 | pass 1's fix commit (`b884b4d`) | **FAIL** — the fix introduced a **worse** bug than it fixed |
-| 3 | pass 2's fix commit (`8f4592e`) + `today.json` | dispatched; see the note at the end of this section |
+| 3 | pass 2's fix commit (`8f4592e`) + `today.json` | **FAIL** — 3 MAJOR, 5 MINOR: the cap escape was gone, but the fix had made the accept path *order-dependent* |
 
 **Pass 2 is the one to dwell on.** My fix for the BLOCKING Today-cap
 bug bolted the recurrence spawn onto `apply_reorg_inner` — which
@@ -70,6 +70,31 @@ dates, so **each transaction now keeps exactly one capacity ledger**.
 The same change removed a rank collision that would have thrown on the
 next drag, and surfaced two more real defects (spawned children never
 reached the UI; duplicate ops spawned two children from one item).
+
+**Pass 3 then found what that repair broke.** The cap escape was
+genuinely gone — no commit can exceed A or B — but resolving derived
+effects *incrementally inside the op loop* meant an op not yet visited
+read as a no-op. So the same accepted set could **commit or fail, and
+keep or lose a Today slot, depending on the order the model happened to
+list its proposals**. The LLM still has no write path, but that is a
+lever on the deterministic tier's result — the spirit of the firewall
+if not its letter. Worse, one of my own regression tests had enshrined
+the wrong behavior, contradicting the very SPEC line the commit message
+cited: a spawn was aborting a legal accept, where doctrine says it must
+overflow to Inbox and never fail.
+
+The repair is again structural: **two passes.** Pass 1 applies what the
+human accepted and the cap check runs on that alone; pass 2 resolves
+what those acceptances *imply* — spawns, Today overflow — from the
+finished simulation. The outcome is now a function of the op set, not
+its order, and a derived effect can never fail a legal diff.
+
+**One more thing worth your scepticism.** The property test I wrote to
+guard order-independence was *vacuous* — it used a helper that
+preserves order, so it compared one ordering against itself and
+asserted nothing. Only the negative control caught it (it passed when
+it should have failed). It is now an exhaustive permutation test,
+re-verified by injecting the real defect and watching it fail.
 
 **And the structural cause of pass 1's BLOCKING:** the Today law lived
 in doctrine and in code but was **asserted nowhere an operator owned**.
@@ -254,9 +279,24 @@ tests that quantify over interleavings instead of pinning the one case
 I had in mind. What did not earn trust: the test count, and my own
 sense that a change was obviously correct.
 
-Honest caveats that remain. Pass 3 was dispatched over `8f4592e` — if
-its findings are not recorded below this line, they had not arrived
-when this was written, and the chain's base rate (2 for 2) says treat
-that commit as unverified. And nothing here has been used by a person
-for a week; `VISION.md` §9 lists what would tell us the execution core
-is wrong, and no test suite can answer any of it.
+A fourth pattern arrived with pass 3, and it is the sharpest one:
+**a test can be decoration.** My order-independence property compared
+one ordering against itself and asserted nothing; every gate stayed
+green and I would have shipped it as coverage. The only thing that
+exposed it was deliberately breaking the implementation and noticing
+the test did not care. **Negative controls are not optional polish —
+they are the difference between an assertion and a comment.**
+
+Honest caveats that remain:
+
+- **`0562957` (the pass-3 fix) has not itself been cold-reviewed.** The
+  chain's base rate is 3 for 3. Each round's defects have been strictly
+  less severe — BLOCKING open → BLOCKING closed → MAJOR fail-closed —
+  which is convergence, not correctness. Assume a fourth pass would
+  find something.
+- The verifiers reviewed code, not behavior. Nothing here has been used
+  by a person for a week; `VISION.md` §9 lists what would tell us the
+  execution core is wrong, and no test suite can answer any of it.
+- The golden cases are still `_status: proposed`. Until you freeze
+  them, the system's ground truth is agent-authored — which is exactly
+  the condition the Externality Principle exists to end.
