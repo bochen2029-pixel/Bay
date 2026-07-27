@@ -1271,10 +1271,21 @@ mod tests {
                 .unwrap()
         }
 
+        // Coverage counters. A property whose generator never reaches
+        // the interesting branch is decoration, and "it passed" cannot
+        // tell you which happened — so the run asserts afterwards that
+        // BOTH outcomes actually occurred. 128 cases makes an all-one-way
+        // run about a 1-in-10-million event, not a flake waiting to
+        // happen.
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let committed = AtomicUsize::new(0);
+        let rejected = AtomicUsize::new(0);
+
         proptest!(
-            ProptestConfig::with_cases(48),
-            |(n_rec in 1usize..3, n_blk in 1usize..3, a_fill in 0usize..4,
-              t_fill in 0usize..3, keys in prop::collection::vec(0u32..10_000, 6))| {
+            ProptestConfig::with_cases(128),
+            |(n_rec in 1usize..3, n_blk in 1usize..3, a_fill in 0usize..6,
+              t_fill in 0usize..3, finish in prop::collection::vec(any::<bool>(), 2),
+              keys in prop::collection::vec(0u32..10_000, 6))| {
             // Build the same board twice and run two different orderings
             // of the same op set over it.
             let build = || {
@@ -1322,9 +1333,20 @@ mod tests {
 
             let ops_for = |recurring: &[String], blocked: &[String]| -> Vec<ReorgProposal> {
                 let mut v = Vec::new();
-                for r in recurring {
+                for (i, r) in recurring.iter().enumerate() {
                     v.push(move_op(r, "A"));
-                    v.push(done_op(r));
+                    // Not every move is followed by a completion. An
+                    // UNfinished move leaves the item active in A and
+                    // consuming a slot, so `a_fill` plus the unfinished
+                    // moves can push A past its cap — and the whole
+                    // accept must then fail, or not, identically under
+                    // either ordering. That is pass 3's defect class
+                    // (the same op set could commit or fail purely on
+                    // array order) put under generation instead of
+                    // under one hand-built example.
+                    if finish[i] {
+                        v.push(done_op(r));
+                    }
                 }
                 for b in blocked {
                     v.push(ReorgProposal {
@@ -1360,7 +1382,22 @@ mod tests {
                 fingerprint(&pool_b),
                 "reordering the same accepted op set changed the committed board"
             );
+            if ok_a {
+                committed.fetch_add(1, Ordering::Relaxed);
+            } else {
+                rejected.fetch_add(1, Ordering::Relaxed);
+            }
         });
+
+        let (c, r) = (
+            committed.load(Ordering::Relaxed),
+            rejected.load(Ordering::Relaxed),
+        );
+        assert!(
+            c > 0 && r > 0,
+            "the generator must exercise BOTH outcomes or `ok_a == ok_b` asserts nothing: \
+             {c} committed, {r} rejected"
+        );
     }
 
     #[test]
