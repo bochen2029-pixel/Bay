@@ -37,21 +37,24 @@ Fable 5, continued on Claude Opus 5 after a mid-run quota limit.
 
 ## Current task
 
-**Session close.** README + FUTURE_WORK + REVIEW_QUEUE + run-state +
-memory updated. One thing still in flight: the **cold-context verifier**
-over `de37921..HEAD` (dispatched twice; the first died on a substrate
-quota limit). Its findings are the last gate before this run should be
-called verified rather than merely green.
+**Session close — done.** The cold-context verifier ran (Opus, cold,
+`de37921..HEAD`) and returned **FAIL**; every finding is fixed and
+regression-tested (commit b884b4d): a BLOCKING Today-cap bypass on the
+re-activation/restore/accept doors, a MAJOR missing recurrence spawn in
+the LLM accept path, six MINORs, and three long-standing bugs in
+`verify-schema.py` (broken since migration 002, never noticed because
+it required a live DB — now runnable with `--fresh`).
 
 ## Next concrete actions
 
-1. **F-02**: run the cold-context verifier over the v0.3 diffs (areas
-   listed in REVIEW_QUEUE items 5–8). Fix anything BLOCKING, then
-   re-run gates.
-2. **F-01 (operator)**: freeze the corrected `caps.json` cases.
+1. **F-01 (operator)**: freeze the corrected `caps.json` cases.
+2. A second cold pass over **b884b4d itself** — the fixes were written
+   in response to the verifier and have not been cold-reviewed.
 3. F-03 I-22 streaming; F-04 coach v2 over session aggregates.
 4. VISION v0.4 (wake dates, weekly review, C-bankruptcy, triage flow).
 5. Do NOT build T4 / T5 / T8 — still operator-gated (VISION §7).
+6. Before calling v0.3 permanent: dogfood a week and run the
+   `VISION.md` §9 falsification checks. No test suite can answer them.
 
 ## Blocking issues
 
@@ -91,12 +94,17 @@ None. The verifier gap is a quality gap, not a blocker.
 
 ## Runway snapshot
 
-Gates: cargo **206/206** (from 152), vitest **106/106** (from 93), both
-builds clean, warning-clean, store-logic + check-golden green.
-`user_version` 6 (migrations 001–006). Speculations: 0 open (Q01
-CONFIRMED and closed). Blockers: 0. ~9 commits ahead of origin,
-**unpushed, untagged**. Bugs found + fixed this run: 3 defective golden
-cases (ground-truth defects, not code bugs).
+Gates: cargo **216/216** (from 152), vitest **106/106** (from 93), both
+builds clean, warning-clean, store-logic + check-golden green,
+`verify-schema.py --fresh` green (13 objects, v6). Speculations: 0 open
+(Q01 CONFIRMED and closed). Blockers: 0. ~12 commits ahead of origin,
+**unpushed, untagged**.
+
+Defects found + fixed this run: 3 defective golden cases (ground-truth,
+found by executing them); 1 BLOCKING + 1 MAJOR + 6 MINOR (found by the
+cold verifier); 3 in `verify-schema.py` (found by finally running it).
+**Every one of them was a check that existed but had never executed** —
+that is the lesson worth carrying into the next run.
 
 ## Pointer back
 

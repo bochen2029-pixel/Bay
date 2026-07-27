@@ -6,10 +6,15 @@
 > Ordered **cheapest-to-verify first**. Each item: what changed, how to
 > check it, and the exact revert.
 >
-> Gates at session end: `cargo test` **206/206**, `cargo build`
+> Gates at session end: `cargo test` **216/216**, `cargo build`
 > warning-clean, `pnpm build` clean, `pnpm test` **106/106**,
 > `node scripts/test-store-logic.mjs` green,
-> `python scripts/check-golden.py` green.
+> `python scripts/check-golden.py` green,
+> `python scripts/verify-schema.py --fresh` green (13 objects, v6).
+>
+> **A cold-context verifier ran and returned FAIL.** Every finding is
+> fixed and regression-tested (item 0 below). That pass is the reason
+> this queue is worth reading rather than skimming.
 >
 > The run is **not released**: `.run-lock` remains, there is no tag, and
 > ~9 commits sit unpushed. This is a reviewable checkpoint.
@@ -18,7 +23,9 @@
 
 | sha | what | revert |
 |---|---|---|
-| (docs) | README v0.3 + FUTURE_WORK rewrite + this queue | `git revert <sha>` |
+| (chore) | drop stray `__pycache__`, ignore it | `git revert <sha>` |
+| b884b4d | **fix: cold-verifier findings** (BLOCKING + MAJOR + 6 MINOR) | `git revert b884b4d` |
+| 887c8c1 | docs: README v0.3 + FUTURE_WORK rewrite + this queue | `git revert 887c8c1` |
 | 3b0c0ea | docs(v1.9): doctrine co-pass (CLAUDE v1.9 / SPEC v1.8 / PROMPTS v1.6) | `git revert 3b0c0ea` |
 | daad097 | feat(P5c): Mirror v1 + Today lane + day ceremonies | `git revert daad097` |
 | fd2ac23 | feat(P5c): sessions + FocusBar | `git revert fd2ac23` |
@@ -35,6 +42,54 @@ Reverting is layered: I-21 and the execution core assume the envelope
 ---
 
 ## Review items — cheapest to verify first
+
+### 0. What the cold verifier found — **read this first**
+A verifier with no access to my reasoning reviewed `de37921..HEAD`
+against doctrine and the golden cases. Verdict: **FAIL**, on two real
+defects that 206 passing tests did not catch.
+
+- **BLOCKING — the Today cap was bypassable in one click.** A
+  done/blocked item keeps its Today membership but frees its slot, so
+  *reactivating* it (or restoring it from the archive, or accepting an
+  LLM "make active" op) could put **4 active items on one date**.
+  Exactly the P2e `restore_item` class: an entry path that skips a cap,
+  invisible because no golden case covers Today.
+  **Fix:** `day::today_overflow_draft` + shared `TodayAccounting`,
+  called from all four doors. It **drops the membership** (logged,
+  `cause: user`) rather than refusing the transition — because undoing
+  a completion re-activates the item, and if that could fail, **Ctrl+Z
+  would break**, which the whole architecture promises never happens.
+  *Verify:* `cargo test today` (5 new tests, incl. batch + restore).
+  *This is the judgment call worth your eye:* dropping membership is a
+  mutation the user didn't explicitly ask for. The alternatives were
+  failing the transition (breaks undo) or dropping Today membership on
+  completion (loses "finished work stays visible", which is deliberate).
+- **MAJOR — the LLM accept-diff never spawned recurrences.** Accepting
+  a "mark done" proposal on a repeating item silently ended the series
+  — a bug you'd discover weeks later by its absence.
+  *Verify:* `cargo test accept_reorg_done_spawns`.
+- Six MINORs, all fixed: spawn accounting ignored slots freed by
+  non-recurring parents; the Mirror counted a done→undo→done as two
+  completions and reported *finished* Today work as "rolled over";
+  receipts used `updated_at` instead of the logged completion time; a
+  soft-deleted item could strand the Now slot; Today date-moves left
+  the log unbalanced. Plus: undo's skip-list is now one const with a
+  test pinning it, and the golden runner's rebuild check covers
+  `sessions`.
+- **`verify-schema.py` had been broken since migration 002** and nobody
+  knew, because it could only run against a live database and never
+  did — the *same failure shape* as the golden cases that existed but
+  never executed. Three real bugs (unmatched `CREATE UNIQUE INDEX`;
+  CREATE/RENAME/DROP applied out of source order, which deleted the
+  surviving `items` from the expected set; trigger bodies truncated at
+  their first inner `;`). Fixed, and it now has a `--fresh` mode that
+  builds a throwaway DB from the migrations, so the gate stands on its
+  own. *Verify:* `python scripts/verify-schema.py --fresh`.
+
+The pattern across both this and P2e is worth naming: **every gap was a
+check that existed but never ran.** The three mechanisms that actually
+caught things this run were execution (golden runner), property tests,
+and a reader with no stake in my reasoning.
 
 ### 1. Corrected golden cases — **the one thing only you can settle**
 `contracts/golden/caps.json` cases #5, #6, #8 were *proposed*, never
@@ -119,18 +174,29 @@ directive and recorded in ADR-007.
 Not built, still gated: **T4** LLM Today-draft (adjacent to the
 capture-time-suggestion ban), **T5** calendar ICS read (touches "no
 network dependency"), **T8** sync. Each needs a doctrine line before
-build. Also not done: a **cold-context verifier pass** over these diffs
-— dispatched twice, the first died on a substrate quota limit. That is
-the top item in FUTURE_WORK (F-02) and the main reason I'd call this
-"reviewable" rather than "verified".
+build.
 
 ## Complacency canary
 
-Every gate is green, and green gates have lied before in this repo
-(P2e: 143 passing tests, two BLOCKING bugs). What actually earned trust
-this run: **executing** the golden cases immediately found three broken
-ground-truth cases, and the new property tests (Today cap under any
-interleaving; chain verification over any write sequence) are the kind
-of assertion that fails when I'm wrong rather than when I'm sloppy. The
-missing leg is the cold verifier — until F-02 runs, treat items 5–8 as
-plausible rather than confirmed.
+Every gate is green — and green gates have lied twice in this repo now.
+P2e: 143 passing tests hiding two BLOCKING bugs. This run: 206 passing
+tests hiding a one-click cap bypass.
+
+Both times the same shape was to blame: **a check that existed but
+never executed.** Golden cases that were counted, not run.
+`verify-schema.py`, broken since migration 002 because it required a
+live database and nobody ever pointed it at one. A Today cap enforced
+on the doors I was thinking about and not the ones I wasn't.
+
+What actually earned trust this run, in order: **running** the golden
+cases (found 3 broken ground-truth cases immediately), the **cold
+verifier** (found the BLOCKING and the MAJOR), and property tests that
+quantify over interleavings rather than pinning the one case I had in
+mind. What did *not* earn trust: my own confidence, and the test count.
+
+Remaining honest caveats: the verifier reviewed the code as of
+`daad097`; the fixes I wrote in response have not themselves been
+cold-reviewed. And nothing here has been exercised by a human using the
+app for a week — `VISION.md` §9 is the list of things that would tell
+us the execution core is wrong, and none of them can be checked from a
+test suite.
