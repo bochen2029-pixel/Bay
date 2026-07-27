@@ -136,6 +136,40 @@ def load_expected_creates_from_all_migrations(migrations_dir: str) -> dict[str, 
     return out
 
 
+DB_MOD = os.path.join(os.path.dirname(__file__), "..", "src-tauri", "src", "db", "mod.rs")
+
+
+def check_rust_migration_list(migrations_dir: str) -> list[str]:
+    """The migration files on disk must match Rust's MIGRATIONS const.
+
+    Without this, `--fresh` is nearly tautological: it builds a DB from
+    the same files it parses expectations from. A migration added to
+    `migrations/` and to EXPECTED_VERSION but NOT to the `MIGRATIONS`
+    array in db/mod.rs would pass green while the shipped app never
+    applies it — the exact class of gap the live-DB mode used to catch.
+    """
+    problems: list[str] = []
+    try:
+        with open(DB_MOD, "r", encoding="utf-8") as f:
+            src = f.read()
+    except OSError as e:
+        return [f"cannot read {DB_MOD}: {e}"]
+
+    listed = re.findall(r'include_str!\("[^"]*?/migrations/([^"]+)"\)', src)
+    on_disk = [os.path.basename(p) for p in sorted(glob.glob(os.path.join(migrations_dir, "*.sql")))]
+    if listed != on_disk:
+        problems.append(
+            "db/mod.rs MIGRATIONS does not match migrations/ on disk:\n"
+            f"    rust:    {listed}\n"
+            f"    on disk: {on_disk}"
+        )
+    if len(on_disk) != EXPECTED_VERSION:
+        problems.append(
+            f"EXPECTED_VERSION is {EXPECTED_VERSION} but {len(on_disk)} migration files exist"
+        )
+    return problems
+
+
 def build_fresh_db(migrations_dir: str, path: str) -> None:
     """Apply every migration in order to a throwaway DB.
 
@@ -158,6 +192,14 @@ def build_fresh_db(migrations_dir: str, path: str) -> None:
 
 
 def main() -> int:
+    # Always: the app must actually apply every migration on disk.
+    drift = check_rust_migration_list(MIGRATIONS_DIR)
+    if drift:
+        for d in drift:
+            print(f"FAIL: {d}")
+        return 1
+    print(f"OK  db/mod.rs MIGRATIONS matches migrations/ ({EXPECTED_VERSION} files)")
+
     fresh = "--fresh" in sys.argv
     db_path = DB_PATH
     if fresh:

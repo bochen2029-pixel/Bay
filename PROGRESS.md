@@ -577,3 +577,61 @@ in this repo that a cold pass caught what green tests missed.
 
 Gates: cargo **216/216** warning-clean, vitest 106/106, both builds
 clean, store-logic + check-golden + verify-schema --fresh all green.
+
+## 2026-07-27 — Second cold pass over b884b4d: FAIL, all findings fixed
+
+The fix commit was itself cold-reviewed. It had introduced a **worse
+bug than the one it fixed** — the case for reviewing fixes, not just
+features.
+
+- **BLOCKING — the accept-reorg recurrence spawn escaped the A/B cap.**
+  Root cause: TWO capacity ledgers in one transaction.
+  `apply_reorg_inner` reasons over a `sim` map (and cap-checks against
+  it), but `build_recurrence_spawn` decided the child''s tier from the
+  LIVE projection. The child existed in neither ledger, so
+  `[Done(recurring_a1), Active(blocked_b1)]` with A at cap committed A
+  at **6 active** against A_CAP=5.
+  Fix = ONE ledger. Split `build_recurrence_spawn` into placement
+  (caller-owned, because only the caller knows its own capacity view)
+  and `recurrence_child_drafts` (shared, so content/dates/link cannot
+  drift). apply_reorg now decides the child''s tier from `effective_
+  active(orig, sim)`, ranks it from the single `tier_last_rank` map,
+  and inserts it into `sim` so the final cap check counts it.
+- **MAJOR — rank collision.** `tier_last_rank` (moves) and
+  `spawn_acct.last_rank` (spawns) both seeded from the untouched
+  projection, and `rank_between` is deterministic → two items in A with
+  byte-identical ranks (no UNIQUE constraint; commits silently), and
+  the next drag between them throws in `rankBetween`. Fixed by the
+  single-ledger refactor; regression-tested.
+- **MAJOR — spawned children never reached the UI.** `AnalyzePanel`
+  closes without refetching, so an accepted recurring completion left
+  the next instance in SQLite and invisible until restart.
+  `apply_reorg_inner` now returns `ReorgOutcome{affected, spawned_ids}`
+  and `accept_suggestion` emits `item_created` for them.
+- **MAJOR — accounting from simulated state**; plus `ops` was not
+  deduped, so `[Done(x), Active(x), Done(x)]` spawned TWO children from
+  one item. Duplicates now rejected with BAD_ARGS.
+- MINOR — `TodayAccounting` never recorded de-activations, so "finish
+  X, reactivate Y" (both on one Today) dropped Y although X had freed
+  the slot. Added `release()`; regression-tested.
+- MINOR — receipts filtered/ordered by `updated_at` while displaying
+  `done_at`. Now derived from the same completion ledger as the flow
+  figures: ordered by completion, window-consistent, and a deleted item
+  drops out. 2 tests.
+- MINOR — `flow.completed` silently dropped completions whose creation
+  event was unknown. Lead time is now `Option`; the completion counts.
+- MINOR — `debug_assert!` with a `?` inside: unchecked in release and
+  divergent on the error path. Promoted to a real check
+  (`SESSION_STILL_OPEN`).
+- NOTE — golden runner''s session snapshot omitted `reason`/`note`.
+- **verify-schema.py `--fresh` was near-tautological** (it built the DB
+  from the files it parsed). Added a drift check: `db/mod.rs`
+  MIGRATIONS must match `migrations/` on disk and EXPECTED_VERSION.
+  Verified with a negative control — hiding 006 from Rust fails loudly.
+- Doctrine co-pass the verifier flagged as missing: SPEC §3.7 now
+  documents the re-entry-door drop (and WHY it drops rather than
+  refuses: undo must never fail) and the two-event date move; §8.7
+  documents the one-ledger rule and the BAD_ARGS duplicate guard.
+
+Gates: cargo **224/224** warning-clean, vitest 114/114, both builds
+clean, store-logic + check-golden + verify-schema --fresh green.

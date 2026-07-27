@@ -192,14 +192,22 @@ pub fn accept_suggestion(
         );
     }
 
-    let affected = apply_reorg_inner(&pool, suggestion_event_id, ops)?;
+    let outcome = apply_reorg_inner(&pool, suggestion_event_id, ops)?;
 
     // Refresh the UI for each affected item (idempotent store handlers).
     let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
     let live = db::items::list_active_items(&conn)?;
-    for id in &affected {
+    for id in &outcome.affected {
         if let Some(item) = live.iter().find(|i| &i.id == id) {
             let _ = app.emit("item_updated", item);
+        }
+    }
+    // Announce spawned recurrence children too — `AnalyzePanel` closes
+    // without refetching, so without this the next instance would sit
+    // in the database, invisible until the app restarts.
+    for id in &outcome.spawned_ids {
+        if let Some(item) = live.iter().find(|i| &i.id == id) {
+            let _ = app.emit("item_created", item);
         }
     }
     Ok(())
@@ -209,11 +217,22 @@ pub fn accept_suggestion(
 /// ITEM_MOVED / ITEM_STATE_CHANGED events plus the LLM_SUGGESTION_ACCEPTED
 /// audit event (carrying the resulting event ids) all land together or
 /// not at all. Returns the distinct item ids touched.
+#[derive(Debug)]
+struct ReorgOutcome {
+    /// Item ids named by the accepted ops, first-seen order.
+    affected: Vec<String>,
+    /// Recurrence children spawned by accepted `done` ops. They reach
+    /// the UI through `item_created`, like every other spawn path — an
+    /// item that exists in SQLite but not on the board until restart is
+    /// a bug the user experiences as "my repeating task vanished".
+    spawned_ids: Vec<String>,
+}
+
 fn apply_reorg_inner(
     pool: &SqlitePool,
     suggestion_event_id: i64,
     ops: Vec<ReorgProposal>,
-) -> Result<Vec<String>, String> {
+) -> Result<ReorgOutcome, String> {
     use std::collections::HashMap;
 
     // The suggestion must exist (same guard as log_response).
@@ -231,7 +250,21 @@ fn apply_reorg_inner(
         }
     }
 
+    // An item may appear at most once. Two ops on one item ("done, then
+    // active") are contradictory on their face, and processing both
+    // would double-count it in every ledger below — including spawning
+    // two recurrence children from one completion.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for op in &ops {
+            if !seen.insert(op.item_id.as_str()) {
+                return Err("BAD_ARGS: duplicate item in ops".into());
+            }
+        }
+    }
+
     let mut affected: Vec<String> = Vec::new();
+    let mut spawned_ids: Vec<String> = Vec::new();
     // Provenance: this is a HUMAN write (the user accepted); origin
     // records which suggestion it executed (envelope v2). The LLM is
     // never an actor — it has no write path.
@@ -239,7 +272,7 @@ fn apply_reorg_inner(
         origin: Some(format!("llm_accept:{suggestion_event_id}")),
         ..Default::default()
     };
-    let _ = db::write_events_ctx(pool, ctx, |tx, _ts| {
+    let _ = db::write_events_ctx(pool, ctx, |tx, ts| {
         // resulting_event_ids must be known when we build the acceptance
         // event's payload, but ids aren't assigned until append. events is
         // append-only (no deletes, trigger-enforced), so AUTOINCREMENT ids
@@ -260,15 +293,28 @@ fn apply_reorg_inner(
         }
         let orig = sim.clone();
 
-        // Chain ranks for multiple moves into the same tier (the projection
-        // isn't updated until after this closure, so max_rank_in_tier would
-        // return the same value for each move otherwise).
+        // ONE rank ledger for the whole transaction. Moves and
+        // recurrence spawns both place items at the end of a tier, and
+        // `rank_between` is deterministic — so two maps seeded from the
+        // same untouched projection hand out byte-identical ranks, and
+        // a later drag between the two collides. (There is no UNIQUE
+        // constraint on (tier, rank); it commits silently.)
         let mut tier_last_rank: HashMap<Tier, Option<String>> = HashMap::new();
-        // Shared across the accepted batch, exactly as in
-        // batch_set_state: recurrence spawns stay cap-correct and
-        // rank-distinct, and Today reactivations can't exceed 3.
-        let mut spawn_acct = crate::commands::items::SpawnAccounting::default();
         let mut today_acct = crate::commands::day::TodayAccounting::default();
+
+        // End-of-tier rank in the SIMULATED world.
+        let next_rank = |tier: Tier,
+                             tier_last_rank: &mut HashMap<Tier, Option<String>>,
+                             tx: &rusqlite::Transaction<'_>|
+         -> Result<String, String> {
+            let last = match tier_last_rank.get(&tier) {
+                Some(r) => r.clone(),
+                None => db::items::max_rank_in_tier(tx, tier)?,
+            };
+            let rank = rank_between(last.as_deref(), None);
+            tier_last_rank.insert(tier, Some(rank.clone()));
+            Ok(rank)
+        };
 
         let mut drafts: Vec<EventDraft> = Vec::new();
         for op in &ops {
@@ -280,12 +326,7 @@ fn apply_reorg_inner(
                     if to_tier == cur.tier {
                         continue; // no-op move
                     }
-                    let last = match tier_last_rank.get(&to_tier) {
-                        Some(r) => r.clone(),
-                        None => db::items::max_rank_in_tier(tx, to_tier)?,
-                    };
-                    let new_rank = rank_between(last.as_deref(), None);
-                    tier_last_rank.insert(to_tier, Some(new_rank.clone()));
+                    let new_rank = next_rank(to_tier, &mut tier_last_rank, tx)?;
                     drafts.push(EventDraft {
                         event_type: EventType::ItemMoved,
                         item_id: Some(op.item_id.clone()),
@@ -306,18 +347,57 @@ fn apply_reorg_inner(
                         continue;
                     }
                     drafts.push(state_change_draft(&op.item_id, cur.state, ItemState::Done, None));
+                    sim.get_mut(&op.item_id).unwrap().state = ItemState::Done;
+                    // This completion frees the item's Today slot for a
+                    // reactivation later in the same diff.
+                    if cur.state == ItemState::Active {
+                        today_acct.release(&cur);
+                    }
+
                     // I-21: completing through the accept-diff must
                     // behave like every other done-door, or a recurring
                     // item accepted here would silently stop recurring.
-                    if let Some(spawn) = crate::commands::items::build_recurrence_spawn(
-                        tx,
-                        &cur,
-                        _ts,
-                        &mut spawn_acct,
-                    )? {
+                    //
+                    // Placement is decided from the SIMULATION, not the
+                    // live projection: this transaction may already have
+                    // moved items into or out of the tier, and the final
+                    // cap check below reasons in simulated terms. Asking
+                    // the projection here would consult a ledger that
+                    // cannot see this one — and a child placed by the
+                    // blind ledger escapes both checks.
+                    if let Some(rule) = crate::commands::items::recurrence_rule_of(&cur) {
+                        // `sim` already has the parent marked done, so
+                        // its freed slot is counted.
+                        let parent_tier = cur.tier;
+                        let cap = match parent_tier {
+                            Tier::A => Some(A_CAP as i64),
+                            Tier::B => Some(B_CAP as i64),
+                            Tier::Inbox | Tier::C => None,
+                        };
+                        let child_tier = match cap {
+                            Some(cap) if effective_active(tx, &orig, &sim, parent_tier)? >= cap => {
+                                Tier::Inbox // doctrine-consistent overflow
+                            }
+                            _ => parent_tier,
+                        };
+                        let child_rank = next_rank(child_tier, &mut tier_last_rank, tx)?;
+                        let spawn = crate::commands::items::recurrence_child_drafts(
+                            &cur, ts, rule, child_tier, child_rank.clone(),
+                        );
+                        // Register the child in the simulation so the
+                        // final cap check counts it. It is deliberately
+                        // absent from `orig`, so it reads as a net +1.
+                        let child_id = spawn[0].item_id.clone().unwrap();
+                        let mut child = cur.clone();
+                        child.id = child_id.clone();
+                        child.tier = child_tier;
+                        child.rank = child_rank;
+                        child.state = ItemState::Active;
+                        child.today_on = None;
+                        sim.insert(child_id.clone(), child);
+                        spawned_ids.push(child_id);
                         drafts.extend(spawn);
                     }
-                    sim.get_mut(&op.item_id).unwrap().state = ItemState::Done;
                 }
                 ProposalAction::Active => {
                     if cur.state == ItemState::Active {
@@ -354,18 +434,10 @@ fn apply_reorg_inner(
 
         // Cap check on the FINAL active counts of A and B. (Intermediate
         // over-cap is fine — the projection has no cap constraint; only the
-        // committed end state must hold.)
+        // committed end state must hold.) Spawned recurrence children are
+        // in `sim` and not in `orig`, so they count here.
         for (tier, cap) in [(Tier::A, A_CAP as i64), (Tier::B, B_CAP as i64)] {
-            let base = db::items::count_active_in_tier(tx, tier)?;
-            let orig_in = orig
-                .values()
-                .filter(|it| it.tier == tier && it.state == ItemState::Active)
-                .count() as i64;
-            let final_in = sim
-                .values()
-                .filter(|it| it.tier == tier && it.state == ItemState::Active)
-                .count() as i64;
-            if base - orig_in + final_in > cap {
+            if effective_active(tx, &orig, &sim, tier)? > cap {
                 return Err("CAP_EXCEEDED".into());
             }
         }
@@ -392,7 +464,30 @@ fn apply_reorg_inner(
         Ok(drafts)
     })?;
 
-    Ok(affected)
+    Ok(ReorgOutcome {
+        affected,
+        spawned_ids,
+    })
+}
+
+/// Active count of `tier` as this transaction will leave it:
+/// the live projection, minus the referenced items that were active in
+/// it, plus the referenced items that end active in it. Spawned
+/// children live only in `sim`, so they read as a net +1 — which is
+/// exactly what the cap must see.
+fn effective_active(
+    tx: &rusqlite::Transaction<'_>,
+    orig: &std::collections::HashMap<String, crate::domain::Item>,
+    sim: &std::collections::HashMap<String, crate::domain::Item>,
+    tier: Tier,
+) -> Result<i64, String> {
+    let base = db::items::count_active_in_tier(tx, tier)?;
+    let count_in = |m: &std::collections::HashMap<String, crate::domain::Item>| {
+        m.values()
+            .filter(|it| it.tier == tier && it.state == ItemState::Active)
+            .count() as i64
+    };
+    Ok(base - count_in(orig) + count_in(sim))
 }
 
 fn state_change_draft(
@@ -563,13 +658,13 @@ mod tests {
         let b = create_item_inner(&pool, Tier::A, "finish me".into(), None, None).unwrap();
         let sug = seed_suggestion(&pool);
 
-        let affected = apply_reorg_inner(
+        let outcome = apply_reorg_inner(
             &pool,
             sug,
             vec![move_op(&a.id, "C"), done_op(&b.id)],
         )
         .unwrap();
-        assert_eq!(affected.len(), 2);
+        assert_eq!(outcome.affected.len(), 2);
 
         let conn = pool.get().unwrap();
         let (a_tier, a_state): (String, String) = conn
@@ -680,6 +775,233 @@ mod tests {
         let a = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
         let err = apply_reorg_inner(&pool, 9999, vec![move_op(&a.id, "C")]).unwrap_err();
         assert_eq!(err, "EVENT_NOT_FOUND");
+    }
+
+    #[test]
+    fn accept_reorg_spawn_cannot_escape_the_tier_cap() {
+        // The v0.3 BLOCKING escape, verbatim from the cold review. The
+        // spawn used to consult the live projection while the final cap
+        // check reasoned over the simulation, so the child was invisible
+        // to both ledgers: A committed at 6 active with A_CAP = 5.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        // The blocked item is created FIRST — creation is itself
+        // cap-gated, so it could not be added once A is full.
+        let blocked = create_item_inner(&pool, Tier::A, "blocked".into(), None, None).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            blocked.id.clone(),
+            ItemState::Blocked,
+            Some("stuck".into()),
+        )
+        .unwrap();
+        let mut a_ids = Vec::new();
+        for i in 0..A_CAP {
+            a_ids.push(
+                create_item_inner(&pool, Tier::A, format!("a-{i}"), None, None)
+                    .unwrap()
+                    .id,
+            );
+        }
+        set_item_recurrence_inner(&pool, a_ids[0].clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        let sug = seed_suggestion(&pool);
+
+        // "Finish the recurring report, and unblock the other thing."
+        // Net: a-0 leaves active, blocked joins, child joins → 6.
+        let err = apply_reorg_inner(
+            &pool,
+            sug,
+            vec![
+                done_op(&a_ids[0]),
+                ReorgProposal {
+                    item_id: blocked.id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ],
+        )
+        .unwrap_err();
+        assert_eq!(err, "CAP_EXCEEDED");
+        assert_eq!(count_active(&pool, Tier::A), A_CAP as i64, "cap holds");
+        let conn = pool.get().unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM items WHERE deleted = 0", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            total,
+            A_CAP as i64 + 1,
+            "no child was created — the whole transaction rolled back"
+        );
+    }
+
+    #[test]
+    fn accept_reorg_spawn_overflows_to_inbox_when_the_tier_is_genuinely_full() {
+        // Same shape, but the parent is BLOCKED — it frees no slot, so
+        // the child cannot fit A and must land in Inbox rather than
+        // failing the accept (marking done never fails).
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        // Blocked recurring item first (creation is cap-gated), then
+        // fill A with actives around it.
+        let rec = create_item_inner(&pool, Tier::A, "recurring".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, rec.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+        crate::commands::items::set_item_state_inner(
+            &pool,
+            rec.id.clone(),
+            ItemState::Blocked,
+            Some("stuck".into()),
+        )
+        .unwrap();
+        for i in 0..A_CAP {
+            create_item_inner(&pool, Tier::A, format!("a-{i}"), None, None).unwrap();
+        }
+        let sug = seed_suggestion(&pool);
+
+        let outcome = apply_reorg_inner(&pool, sug, vec![done_op(&rec.id)]).unwrap();
+        assert_eq!(outcome.spawned_ids.len(), 1);
+        let conn = pool.get().unwrap();
+        let child_tier: String = conn
+            .query_row(
+                "SELECT tier FROM items WHERE id = ?1",
+                [&outcome.spawned_ids[0]],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_tier, "inbox", "doctrine-consistent overflow");
+        drop(conn); // max_size(1) pool: release before the next helper
+        assert_eq!(count_active(&pool, Tier::A), A_CAP as i64);
+    }
+
+    #[test]
+    fn accept_reorg_move_and_spawn_never_collide_on_rank() {
+        // Two independent "last rank in tier" maps, both seeded from the
+        // untouched projection, hand out byte-identical ranks — and
+        // rankBetween(R, R) throws on the next drag between them. One
+        // ledger per transaction is the fix.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let rec = create_item_inner(&pool, Tier::A, "recurring".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, rec.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+        let c1 = create_item_inner(&pool, Tier::C, "promote me".into(), None, None).unwrap();
+        let sug = seed_suggestion(&pool);
+
+        // Move c1 into A and complete the recurring A item: both place
+        // an item at the end of A in the same transaction.
+        apply_reorg_inner(&pool, sug, vec![move_op(&c1.id, "A"), done_op(&rec.id)]).unwrap();
+
+        let conn = pool.get().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT rank FROM items WHERE tier = 'A' AND deleted = 0")
+            .unwrap();
+        let ranks: Vec<String> = stmt
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        let unique: std::collections::HashSet<&String> = ranks.iter().collect();
+        assert_eq!(ranks.len(), unique.len(), "ranks collided: {ranks:?}");
+    }
+
+    #[test]
+    fn accept_reorg_reactivation_uses_a_slot_freed_in_the_same_diff() {
+        // "Finish X, start Y" where both are on the same Today. X's
+        // completion frees the slot, so Y must KEEP its membership —
+        // reading the pre-transaction count would drop Y with a
+        // TODAY_REMOVED the human never caused.
+        let pool = fresh_pool();
+        let date = "2026-07-26";
+        let mut ids = Vec::new();
+        for i in 0..3 {
+            let it = create_item_inner(&pool, Tier::A, format!("t{i}"), None, None).unwrap();
+            crate::commands::day::add_to_today_inner(&pool, it.id.clone(), date.into()).unwrap();
+            ids.push(it.id);
+        }
+        // A 4th item, done but still on Today (it kept membership).
+        let y = create_item_inner(&pool, Tier::A, "y".into(), None, None).unwrap();
+        crate::commands::items::set_item_state_inner(&pool, y.id.clone(), ItemState::Done, None)
+            .unwrap();
+        {
+            let conn = pool.get().unwrap();
+            conn.execute("UPDATE items SET today_on = ?1 WHERE id = ?2", rusqlite::params![date, &y.id])
+                .unwrap();
+        }
+        let sug = seed_suggestion(&pool);
+
+        // Today is at 3 active. Finishing ids[0] frees one for y.
+        apply_reorg_inner(
+            &pool,
+            sug,
+            vec![
+                done_op(&ids[0]),
+                ReorgProposal {
+                    item_id: y.id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ],
+        )
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let y_today: Option<String> = conn
+            .query_row("SELECT today_on FROM items WHERE id = ?1", [&y.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            y_today.as_deref(),
+            Some(date),
+            "the freed slot was counted; y keeps its Today membership"
+        );
+        let active_today: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state='active' AND deleted=0",
+                [date],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_today, 3, "and the cap still holds");
+    }
+
+    #[test]
+    fn accept_reorg_rejects_duplicate_ops_on_one_item() {
+        // "Done then active" is self-contradictory, and processing both
+        // double-counted the item in every ledger — including spawning
+        // two children from one completion.
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
+        let sug = seed_suggestion(&pool);
+        let err = apply_reorg_inner(
+            &pool,
+            sug,
+            vec![
+                done_op(&a.id),
+                ReorgProposal {
+                    item_id: a.id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ],
+        )
+        .unwrap_err();
+        assert!(err.starts_with("BAD_ARGS"), "got {err}");
+    }
+
+    #[test]
+    fn accept_reorg_reports_spawned_children_so_the_ui_can_show_them() {
+        // AnalyzePanel closes without refetching, so a child that isn't
+        // announced exists in SQLite and nowhere on screen until restart.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let rec = create_item_inner(&pool, Tier::B, "weekly".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, rec.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        let sug = seed_suggestion(&pool);
+
+        let outcome = apply_reorg_inner(&pool, sug, vec![done_op(&rec.id)]).unwrap();
+        assert_eq!(outcome.affected, vec![rec.id.clone()]);
+        assert_eq!(outcome.spawned_ids.len(), 1, "the child is reported for emission");
+        assert_ne!(outcome.spawned_ids[0], rec.id);
     }
 
     #[test]

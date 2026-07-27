@@ -203,10 +203,14 @@ pub fn end_session_inner(
         .map_err(|e| format!("read ended session: {e}"))?;
     let item = db::items::read_item_by_id_any_conn(&conn, &session.item_id)?
         .ok_or_else(|| "session item missing post-end".to_string())?;
-    debug_assert!(
-        db::items::open_session_conn(&conn)?.is_none(),
-        "ending a session must always free the Now slot"
-    );
+    // Checked in every build, not just debug: a stuck-open Now slot
+    // locks the user out of starting anything with no way back, and it
+    // is cheap to rule out. (Evaluating this inside `debug_assert!`
+    // would both skip the check in the shipped binary and give the
+    // error path different behavior in debug vs release.)
+    if db::items::open_session_conn(&conn)?.is_some() {
+        return Err("SESSION_STILL_OPEN: ending a session must free the Now slot".into());
+    }
     let child_ids: Vec<String> = events
         .iter()
         .filter(|e| e.event_type == EventType::ItemCreated)

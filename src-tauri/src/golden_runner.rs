@@ -148,14 +148,35 @@ fn count_tier_metric(pool: &SqlitePool, tier: Tier, metric: &str) -> i64 {
 
 /// Sessions rows, so the rebuild assertion covers BOTH projection
 /// tables (sessions joined the purity law in v0.3).
-fn snapshot_sessions(pool: &SqlitePool) -> Vec<(String, String, i64, Option<i64>, Option<String>)> {
+type SessionRow = (
+    String,         // id
+    String,         // item_id
+    i64,            // started_at
+    Option<i64>,    // ended_at
+    Option<String>, // outcome
+    Option<String>, // reason
+    Option<String>, // note
+);
+
+fn snapshot_sessions(pool: &SqlitePool) -> Vec<SessionRow> {
     let conn = pool.get().unwrap();
     let mut stmt = conn
-        .prepare("SELECT id, item_id, started_at, ended_at, outcome FROM sessions ORDER BY id")
+        .prepare(
+            "SELECT id, item_id, started_at, ended_at, outcome, reason, note \
+             FROM sessions ORDER BY id",
+        )
         .unwrap();
     let rows = stmt
         .query_map([], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+                r.get(6)?,
+            ))
         })
         .unwrap();
     rows.collect::<Result<_, _>>().unwrap()

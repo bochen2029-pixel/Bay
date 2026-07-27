@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use tauri::State;
 
@@ -184,7 +185,7 @@ pub fn get_mirror_stats_inner(
     // not two (Bay actively encourages that undo). The last completion
     // per item wins; an item whose completion was undone and never
     // redone drops out entirely.
-    let mut completions: HashMap<String, (i64, i64)> = HashMap::new(); // id → (done_at, lead_ms)
+    let mut completions: HashMap<String, (i64, Option<i64>)> = HashMap::new(); // id → (done_at, lead_ms?)
     let mut today_finished: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for row in rows {
@@ -261,9 +262,12 @@ pub fn get_mirror_stats_inner(
                         if w.on_today {
                             today_finished.insert(id.clone());
                         }
-                        if let Some(created) = w.created_at {
-                            completions.insert(id.clone(), (ts, ts - created));
-                        }
+                        // Recorded even when the creation event is
+                        // unknown: the completion happened, so it counts
+                        // toward throughput. Only the lead time is
+                        // unknowable, and `None` drops it from the
+                        // percentiles rather than the count.
+                        completions.insert(id.clone(), (ts, w.created_at.map(|c| ts - c)));
                     }
                 } else if before == "done" {
                     // Un-done (undo or reactivation): the item is back
@@ -319,7 +323,7 @@ pub fn get_mirror_stats_inner(
     flow.throughput_per_week = flow.completed as f64 * 7.0 / window_days as f64;
     let mut leads: Vec<f64> = completions
         .values()
-        .map(|(_, ms)| *ms as f64 / DAY_MS as f64)
+        .filter_map(|(_, ms)| ms.map(|ms| ms as f64 / DAY_MS as f64))
         .collect();
     leads.sort_by(|a, b| a.partial_cmp(b).unwrap());
     flow.lead_time_p50_days = percentile(&leads, 0.50);
@@ -448,46 +452,46 @@ pub fn get_mirror_stats_inner(
     };
 
     // ── receipts: finished work, kept visible as evidence ───────────
+    // Receipts are driven by the SAME completion ledger as the flow
+    // figures, not by a separate `updated_at` query. Sorting or
+    // filtering on last-touch while displaying completion time made the
+    // list disagree with itself: an item finished long ago but edited
+    // yesterday sorted to the top showing an old date, and an item
+    // completed *before* the window could appear in it.
     let receipts = {
-        let mut stmt = conn
-            .prepare(
-                "SELECT i.id, i.content, i.tier, i.updated_at, \
-                        (SELECT COUNT(*) FROM sessions s WHERE s.item_id = i.id), \
-                        (SELECT COALESCE(SUM(s.ended_at - s.started_at), 0) FROM sessions s \
-                         WHERE s.item_id = i.id AND s.ended_at IS NOT NULL) \
-                 FROM items i \
-                 WHERE i.state = 'done' AND i.deleted = 0 AND i.updated_at >= ?1 \
-                 ORDER BY i.updated_at DESC LIMIT ?2",
-            )
-            .map_err(|e| format!("prepare receipts: {e}"))?;
-        let rows = stmt
-            .query_map(rusqlite::params![since, RECEIPT_LIMIT as i64], |r| {
-                let id: String = r.get(0)?;
-                let done_at: i64 = r.get(3)?;
-                Ok((id, r.get::<_, String>(1)?, r.get::<_, String>(2)?, done_at,
-                    r.get::<_, i64>(4)?, r.get::<_, i64>(5)?))
-            })
-            .map_err(|e| format!("query receipts: {e}"))?;
+        let mut recent: Vec<(&String, i64, Option<i64>)> = completions
+            .iter()
+            .map(|(id, (done_at, lead))| (id, *done_at, *lead))
+            .collect();
+        recent.sort_by(|a, b| b.1.cmp(&a.1));
+        recent.truncate(RECEIPT_LIMIT);
+
         let mut out = Vec::new();
-        for row in rows {
-            let (id, content, tier, updated_at, sessions, ms) =
-                row.map_err(|e| format!("receipt row: {e}"))?;
-            // Prefer the logged completion timestamp over the row's
-            // updated_at: any later edit, move, or Today change would
-            // otherwise shift the reported finish date and inflate
-            // days-to-done.
-            let w = walks.get(&id);
-            let done_at = w.and_then(|w| w.done_at).unwrap_or(updated_at);
-            let days_to_done = w
-                .and_then(|w| w.created_at)
-                .map(|c| (done_at - c) as f64 / DAY_MS as f64)
-                .unwrap_or(0.0);
+        for (id, done_at, lead_ms) in recent {
+            let row: Option<(String, String, i64, i64)> = conn
+                .query_row(
+                    "SELECT i.content, i.tier, \
+                            (SELECT COUNT(*) FROM sessions s WHERE s.item_id = i.id), \
+                            (SELECT COALESCE(SUM(s.ended_at - s.started_at), 0) FROM sessions s \
+                             WHERE s.item_id = i.id AND s.ended_at IS NOT NULL) \
+                     FROM items i WHERE i.id = ?1 AND i.deleted = 0",
+                    [id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .optional()
+                .map_err(|e| format!("query receipt: {e}"))?;
+            // A completed item that was later deleted drops out — the
+            // receipts list is evidence of work you still have.
+            let (content, tier, sessions, ms) = match row {
+                Some(r) => r,
+                None => continue,
+            };
             out.push(ReceiptRow {
-                item_id: id,
+                item_id: id.clone(),
                 content,
                 tier,
                 done_at,
-                days_to_done,
+                days_to_done: lead_ms.map(|ms| ms as f64 / DAY_MS as f64).unwrap_or(0.0),
                 sessions,
                 minutes: ms as f64 / 60_000.0,
             });
@@ -678,6 +682,41 @@ mod tests {
         let stats = get_mirror_stats_inner(&pool, None).unwrap();
         assert_eq!(stats.flow.completed, 0, "it is back in flight, not finished");
         assert_eq!(stats.flow.lead_time_p50_days, None);
+    }
+
+    #[test]
+    fn receipts_are_ordered_by_completion_not_by_last_touch() {
+        // The list is evidence of what you finished and when. Ordering
+        // it by `updated_at` while displaying `done_at` made it
+        // disagree with itself: edit an old item and it jumps to the
+        // top wearing an old date.
+        let pool = fresh_pool();
+        let first = create_item_inner(&pool, Tier::A, "finished first".into(), None, None).unwrap();
+        set_item_state_inner(&pool, first.id.clone(), ItemState::Done, None).unwrap();
+        let second = create_item_inner(&pool, Tier::A, "finished second".into(), None, None).unwrap();
+        set_item_state_inner(&pool, second.id.clone(), ItemState::Done, None).unwrap();
+        // Touch the OLDER completion last.
+        crate::commands::items::edit_item_inner(&pool, first.id.clone(), "finished first (v2)".into())
+            .unwrap();
+
+        let stats = get_mirror_stats_inner(&pool, None).unwrap();
+        assert_eq!(stats.receipts.len(), 2);
+        assert_eq!(
+            stats.receipts[0].item_id, second.id,
+            "most recently COMPLETED comes first, regardless of later edits"
+        );
+    }
+
+    #[test]
+    fn a_deleted_completion_leaves_the_receipts_list() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "shipped then binned".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        crate::commands::items::delete_item_inner(&pool, &item.id).unwrap();
+
+        let stats = get_mirror_stats_inner(&pool, None).unwrap();
+        assert!(stats.receipts.is_empty(), "receipts show work you still have");
+        assert_eq!(stats.flow.completed, 1, "but the completion still happened");
     }
 
     #[test]

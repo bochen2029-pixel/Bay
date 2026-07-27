@@ -657,7 +657,7 @@ pub(crate) fn build_recurrence_spawn(
         *acct.net_active.entry(parent.tier).or_insert(0) -= 1;
     }
 
-    let rule = match parent.recurrence.as_deref().and_then(Recurrence::parse) {
+    let rule = match recurrence_rule_of(parent) {
         Some(r) => r,
         None => return Ok(None), // not recurring (or unparseable legacy rule)
     };
@@ -682,11 +682,44 @@ pub(crate) fn build_recurrence_spawn(
     let child_rank = rank_between(last.as_deref(), None);
     acct.last_rank.insert(child_tier, Some(child_rank.clone()));
 
+    Ok(Some(recurrence_child_drafts(
+        parent, ts, rule, child_tier, child_rank,
+    )))
+}
+
+/// The parent's recurrence rule, if it has a parseable one.
+pub(crate) fn recurrence_rule_of(parent: &Item) -> Option<Recurrence> {
+    parent.recurrence.as_deref().and_then(Recurrence::parse)
+}
+
+/// Build the spawn drafts for one recurrence instance, given a tier and
+/// rank the CALLER has chosen.
+///
+/// Placement is the caller's job on purpose. `build_recurrence_spawn`
+/// above decides it from `SpawnAccounting` + the live projection, which
+/// is right for the command paths; `apply_reorg_inner` must instead
+/// decide it from its own simulation of the accepted diff. Letting each
+/// caller keep ONE ledger — rather than consulting a second one that
+/// cannot see the first — is what keeps the caps honest: a spawn placed
+/// by projection-state inside a transaction that reasons in simulated
+/// state escapes both checks (the v0.3 accept-reorg cap escape).
+///
+/// What is NOT the caller's job, and lives here so it cannot drift:
+/// the child's content, its inherited recurrence, the advanced dates
+/// (due = rule.next_after(parent.due ?? now); start shifts
+/// symmetrically), its `active` birth state, and the audit link.
+pub(crate) fn recurrence_child_drafts(
+    parent: &Item,
+    ts: i64,
+    rule: Recurrence,
+    child_tier: Tier,
+    child_rank: String,
+) -> Vec<EventDraft> {
     let child_id = Uuid::now_v7().to_string();
     let next_due = rule.next_after(parent.due_at.unwrap_or(ts));
     let child_start = parent.start_at.map(|s| rule.next_after(s));
 
-    Ok(Some(vec![
+    vec![
         EventDraft {
             event_type: EventType::ItemCreated,
             item_id: Some(child_id.clone()),
@@ -708,7 +741,7 @@ pub(crate) fn build_recurrence_spawn(
                 "next_due_at": next_due,
             }),
         },
-    ]))
+    ]
 }
 
 /// Max length of a first step: one line, a doorknob, not a corridor.

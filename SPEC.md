@@ -594,6 +594,27 @@ day-roll (system)  → roll_day(today)      : N × TODAY_REMOVED{expired}, ONE t
 - **Cap 3, active-only** — mirroring the tier caps: a *done* Today item
   keeps its membership (progress stays visible) but stops holding a
   slot.
+- **The cap binds on the re-entry doors too.** Because a done/blocked
+  item keeps its membership while freeing its slot, every path that
+  makes it active again (`set_item_state`, `batch_set_state`,
+  `restore_item`, and an accepted `active` re-org op) consults
+  `day::today_overflow_draft`. When the date is full, that path
+  **drops the item's Today membership** — emitting `TODAY_REMOVED`
+  with `cause: "user"` in the same transaction — rather than refusing
+  the transition. Two reasons, in order of weight:
+  1. **Undo must never fail.** Undoing a completion re-activates the
+     item and takes exactly this path; a `TODAY_FULL` here would break
+     Ctrl+Z, which the event-sourced design promises always works.
+  2. Today is an execution *overlay*, not a commitment tier — refusing
+     "mark active" on account of it would be surprising.
+  The drop is always logged, so the board never silently disagrees
+  with the log. A transaction that both completes and re-activates
+  items on one date (only an accepted re-org can) accounts for the
+  freed slot via `TodayAccounting::release`.
+- **Changing an item's Today date emits both events.** `add_to_today`
+  and `open_day` write `TODAY_REMOVED{old date, cause: "user"}` before
+  `TODAY_ADDED{new date}` in one transaction, so add/remove pairs
+  balance per date and one Ctrl+Z restores the original date.
 - `open_day` is **atomic and idempotent**: already-chosen items are
   skipped; a request that would exceed the cap rolls the whole ceremony
   back (`TODAY_FULL`).
@@ -1012,7 +1033,7 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `batch_delete` | `{ ids: string[] }` | `{ affected_ids, spawned: [] }` | `ITEM_NOT_FOUND` |
 | `set_item_recurrence` | `{ id, rule: string \| null }` | `Item` | `ITEM_NOT_FOUND`, `INVALID_RULE`, `NO_OP` |
 | `set_first_step` | `{ id, step: string \| null }` | `Item` | `ITEM_NOT_FOUND`, `STEP_TOO_LONG`, `NO_OP` |
-| `add_to_today` | `{ id, date }` | `Item` | `ITEM_NOT_FOUND`, `NOT_ACTIVE`, `TODAY_FULL`, `BAD_DATE`, `NO_OP` |
+| `add_to_today` | `{ id, date }` | `Item` | `ITEM_NOT_FOUND`, `NOT_ACTIVE`, `TODAY_FULL`, `BAD_DATE`, `NO_OP` — emits `TODAY_REMOVED`+`TODAY_ADDED` when the item was already on another date |
 | `remove_from_today` | `{ id }` | `Item` | `ITEM_NOT_FOUND`, `NO_OP` |
 | `open_day` | `{ date, today_ids: string[] }` | `Item[]` (newly added) | `ITEM_NOT_FOUND`, `NOT_ACTIVE`, `TODAY_FULL`, `BAD_DATE` |
 | `close_day` | `{ date, tomorrow_first?, note? }` | `void` | `ITEM_NOT_FOUND`, `BAD_DATE` |
@@ -1034,7 +1055,7 @@ All commands return `Result<T, BayError>`. `BayError` serializes to `{ code: str
 | `set_llm_config` | `{ base_url, model, api_key?, timeout_ms }` | `void` | `KEYCHAIN_ERROR` |
 | `test_llm_connection` | — | `{ ok, latency_ms, model_echoed }` | `LLM_UNREACHABLE`, `LLM_AUTH_FAILED`, `LLM_TIMEOUT` |
 | `analyze` | `{ window_days? }` | `{ suggestion_event_id, observations: Observation[] }` | `LLM_UNREACHABLE`, `LLM_PARSE_ERROR`, `LLM_TIMEOUT` |
-| `accept_suggestion` | `{ suggestion_event_id, ops?: ReorgOp[] }` | `{ resulting_event_ids: number[] }` | `EVENT_NOT_FOUND`, `ITEM_NOT_FOUND`, `CAP_EXCEEDED` |
+| `accept_suggestion` | `{ suggestion_event_id, ops?: ReorgOp[] }` | `{ resulting_event_ids: number[] }` | `EVENT_NOT_FOUND`, `ITEM_NOT_FOUND`, `CAP_EXCEEDED`, `BAD_ARGS` (an item named twice) |
 | `reject_suggestion` | `{ suggestion_event_id, reason? }` | `void` | `EVENT_NOT_FOUND` |
 
 **Recurrence spawn + caps (v0.3, I-21).** Completing a recurring item
@@ -1463,8 +1484,25 @@ proposes, the human accepts, the deterministic tier writes.
   the events those ops produced (§4.3 — previously always empty). An
   empty `ops` (observations-only acknowledgement) yields the empty-array
   case unchanged.
-- Caps are enforced across the whole accepted batch (incremental
-  projected counters, as in §3.5); a re-org cannot push A/B over cap.
+- Caps are enforced across the whole accepted batch; a re-org cannot
+  push A/B over cap. **This path uses ONE ledger — its own simulation
+  of the accepted diff — for every decision**: the final cap check,
+  recurrence-child placement, end-of-tier ranks, and Today membership.
+  Mixing ledgers is a live hazard rather than a hypothetical: an
+  earlier build placed spawned children by consulting the *live
+  projection* while the cap check reasoned over the simulation, and a
+  child invisible to both committed A at 6 active against a cap of 5.
+  Hence `items::recurrence_child_drafts` takes the tier and rank as
+  arguments — the caller owns placement because only the caller knows
+  its own view of capacity — while the child's content, inherited
+  recurrence, and advanced dates stay in one place so they cannot
+  drift.
+- An accepted `done` op spawns the recurrence exactly like every other
+  done-door, and the spawned children are announced to the UI via
+  `item_created` (the panel closes without refetching, so an
+  unannounced child would exist only in the database until restart).
+- An item may appear in `ops` at most once (`BAD_ARGS`); contradictory
+  duplicates would otherwise double-count in every ledger.
 - This is **not** a firewall change: still no LLM write path, still no
   auto-apply, still no silent edits. The prohibitions in §8 / CLAUDE.md
   (auto-tiering, silent re-org, capture-time tier suggestions) all hold —
