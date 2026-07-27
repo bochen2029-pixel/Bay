@@ -53,6 +53,8 @@ result is the most important thing on this page:
 | 1 | the v0.3 feature work (`de37921..daad097`) | **FAIL** — 1 BLOCKING, 1 MAJOR, 6 MINOR |
 | 2 | pass 1's fix commit (`b884b4d`) | **FAIL** — the fix introduced a **worse** bug than it fixed |
 | 3 | pass 2's fix commit (`8f4592e`) + `today.json` | **FAIL** — 3 MAJOR, 5 MINOR: the cap escape was gone, but the fix had made the accept path *order-dependent* |
+| 4 | pass 3's fix commit (`0562957`) | **FAIL** — 1 BLOCKING (accepting `done` on a *blocked* item killed Ctrl+Z permanently), 3 MAJOR (ordering, one layer down) |
+| 5 | pass 4's fix (`a0f4775`) + golden accept-door coverage (`1e7467d`) | dispatched |
 
 **Pass 2 is the one to dwell on.** My fix for the BLOCKING Today-cap
 bug bolted the recurrence spawn onto `apply_reorg_inner` — which
@@ -95,6 +97,30 @@ preserves order, so it compared one ordering against itself and
 asserted nothing. Only the negative control caught it (it passed when
 it should have failed). It is now an exhaustive permutation test,
 re-verified by injecting the real defect and watching it fail.
+
+**Pass 4 then found a BLOCKING that had been there since I-20.**
+Accepting a `done` proposal on a *blocked* item dropped the outgoing
+blocked reason, so Ctrl+Z wrote `state='blocked'` with a null reason,
+tripped the migration-002 CHECK, rolled back — and, because undo keeps
+targeting the same transaction, **stayed dead**. The accept path was
+the last of five done-doors still missing the P2e fix, and my previous
+commit had added a second route to it. It also found three more
+ordering defects one layer below where pass 3 fixed them, including one
+where an item reactivated *and* completed in the same diff lost its
+Today membership — contradicting a golden case that was passing.
+
+That last one was the important structural lesson: **`today.json` case
+3 stated the rule the accept path was breaking, and passed the whole
+time, because the golden runner could not reach `accept_suggestion`.**
+The externality existed and pointed at the wrong door. The runner now
+drives the accept path (`1e7467d`), with two ACCEPT-DIFF cases,
+negative-controlled against both pass-4 defects.
+
+Pass 2's fix is now ordered by **board position** rather than by the
+model's array: when two recurrence children contend for one free tier
+slot, the higher-ranked parent's child takes it; when two reactivations
+contend for one Today slot, the lower-ranked item yields. Both are
+answers you can predict from your own board.
 
 **And the structural cause of pass 1's BLOCKING:** the Today law lived
 in doctrine and in code but was **asserted nowhere an operator owned**.
@@ -287,13 +313,19 @@ exposed it was deliberately breaking the implementation and noticing
 the test did not care. **Negative controls are not optional polish —
 they are the difference between an assertion and a comment.**
 
+A fifth pattern, and the one I would act on first if you only change
+one thing: **every round's defect lived in the blind spot of the test
+added that same round.** Four for four. The tests were not weak in
+general — each was negative-controlled and each caught its own target.
+They were weak in the same *direction* as my attention, because I wrote
+both. The counter-measure that has actually worked is not a better
+test; it is a reader who did not write the fix.
+
 Honest caveats that remain:
 
-- **`0562957` (the pass-3 fix) has not itself been cold-reviewed.** The
-  chain's base rate is 3 for 3. Each round's defects have been strictly
-  less severe — BLOCKING open → BLOCKING closed → MAJOR fail-closed —
-  which is convergence, not correctness. Assume a fourth pass would
-  find something.
+- **The chain is 4 for 4 and pass 5 is dispatched.** Severity has
+  fallen each round, which is convergence rather than correctness. Do
+  not treat the newest commit as verified.
 - The verifiers reviewed code, not behavior. Nothing here has been used
   by a person for a week; `VISION.md` §9 lists what would tell us the
   execution core is wrong, and no test suite can answer any of it.
