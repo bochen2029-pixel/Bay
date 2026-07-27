@@ -55,7 +55,8 @@ result is the most important thing on this page:
 | 3 | pass 2's fix commit (`8f4592e`) + `today.json` | **FAIL** — 3 MAJOR, 5 MINOR: the cap escape was gone, but the fix had made the accept path *order-dependent* |
 | 4 | pass 3's fix commit (`0562957`) | **FAIL** — 1 BLOCKING (accepting `done` on a *blocked* item killed Ctrl+Z permanently), 3 MAJOR (ordering, one layer down) |
 | 5 | pass 4's fix (`a0f4775`) + golden accept-door coverage (`1e7467d`) | **FAIL** — 2 MAJOR, **no BLOCKING**: the ordering *key* was still ops-derived, and the contest policy was indistinguishable from its inverse |
-| 6 | pass 5's fix (`ea2fb64`) + the mutation gate | dispatched |
+| 6 | pass 5's fix (`ea2fb64`) + the mutation gate | **FAIL** — 3 MAJOR, but *"no incorrect behaviour in the shipped code; every finding is a hole in the guard"* |
+| 7 | pass 6's fix + the guards the gate itself exposed | dispatched |
 
 **Pass 2 is the one to dwell on.** My fix for the BLOCKING Today-cap
 bug bolted the recurrence spawn onto `apply_reorg_inner` — which
@@ -336,11 +337,27 @@ found a survivor on its first run — a fix from pass 2 that had never
 had a test — which is exactly the class it exists for. The standing
 rule is now: *when a review finds a defect, add its mutation.*
 
+**Pass 6 is where that gate started paying for itself.** It reported
+*"no incorrect behaviour was found in the shipped code — every MAJOR is
+a hole in the guard"*, which is the first round where the code was
+right and only the safety net had gaps. The sharpest was mine: making
+golden case ranks *real* (a correct fix) silently **flipped that case's
+board**, so the finished item became the best-ranked contender, the
+eviction loop reached the other item first, and the case could no
+longer fail. An operator-owned oracle went quiet as a side effect of a
+fix — and nothing would have told me, because it still passed.
+
+Then the gate found three of the guards I added *that same round* to be
+decoration, naming each one. All are closed; **16 mutations, every one
+caught by a specifically-named test, none by a mere compile error.**
+
 Honest caveats that remain:
 
-- **The chain is 5 for 5 and pass 6 is dispatched.** Severity has
-  fallen each round and pass 5 found no BLOCKING, which is convergence
-  rather than correctness. Do not treat the newest commit as verified.
+- **The chain is 6 for 6 and pass 7 is dispatched.** Severity has
+  fallen monotonically — BLOCKING-open, BLOCKING-closed, MAJOR,
+  BLOCKING-at-a-missed-door, MAJOR-only, guards-only — which is
+  convergence rather than correctness. Do not treat the newest commit
+  as verified.
 - The verifiers reviewed code, not behavior. Nothing here has been used
   by a person for a week; `VISION.md` §9 lists what would tell us the
   execution core is wrong, and no test suite can answer any of it.

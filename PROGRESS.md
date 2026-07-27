@@ -923,3 +923,48 @@ mutation that reintroduces it. That is the cheapest guarantee the class
 cannot silently return.
 
 Gates: cargo 240/240 warning-clean; mutations 9/9 caught.
+
+## 2026-07-27 — Sixth cold pass: the code was right, the guards were not
+
+Pass 6 returned FAIL (3 MAJOR, 4 MINOR, no BLOCKING) with a verdict
+worth quoting: **"No incorrect behaviour was found in the shipped code.
+Every MAJOR is a hole in the guard."** First round where the
+implementation held and only the safety net had gaps.
+
+- **MAJOR — my own fix silently disarmed an operator-owned golden
+  case.** Making today.json`s declared ranks REAL (right in itself)
+  flipped case 13`s board: the finished item became the BEST-ranked
+  contender, so the eviction loop reached the other item first and
+  never evaluated it. The case passed either way. Fixed by ranking the
+  completed item WORST, with the case text explaining why; re-verified
+  by negative control (it now fails under the strip mutation).
+  Lesson recorded: after changing how an oracle EXECUTES, re-run its
+  negative control — a fix can quietly remove a case`s ability to fail.
+- **MAJOR — the TIER byte of the contest key was decoration.** Making
+  it constant, or inverting it, left 240 tests green: every contest
+  fixture put both contenders in ONE tier. New cross-tier test, with
+  the A item deliberately given the WORSE rank so only tier can produce
+  the expected answer.
+- **MAJOR — the Today door`s pre-diff keying was pinned only through
+  the spawn door.** Changing just the Today sort survived. Now pinned
+  independently with a fixture where the two rules disagree.
+- MINORs: projection.json`s 20 declared ranks were still fiction (now
+  honoured); SPEC §3.7 named a `TodayAccounting::release` that does not
+  exist and claimed the accept path uses `today_overflow_draft` — it
+  deliberately does not, and the two doors` divergence is now
+  documented; think-aloud residue in a fixture comment removed.
+- Gate hardened: refuses to run on a dirty tree (it edits in place; an
+  interrupted run must be recoverable), rejects ambiguous anchors, and
+  reports WHICH test caught each mutation — flagging compile-only
+  catches as weak guards. Grew to 16 mutations, adding entries for the
+  pass-1 and pass-2 defects that had none.
+
+**Then the gate found three of THIS round`s new guards to be
+decoration** — the cross-tier fixture (both contenders first-in-tier,
+so they shared a rank and the ID tiebreak decided), the declared-rank
+semantics (no case`s outcome depended on them), and `[done x, active
+x]` (which must spawn nothing). All three closed.
+
+Gates: cargo **243/243** warning-clean; vitest 118/118; **mutations
+16/16 caught, each by a named test, none by compile error**; golden 5
+files / 16 today cases; verify-schema --fresh; reachability 39/39.
