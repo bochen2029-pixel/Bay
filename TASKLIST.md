@@ -159,6 +159,17 @@ items:
     cost_estimate: 8h
     critical: true
     oracle: [property, characterization]
+  - id: P5d
+    description: "Cold-context verification chain over P5a-P5c: each pass reviews the previous pass's FIX commit, repeat until one returns clean. Record 7/7 found something; passes 6 and 7 found no incorrect behaviour in shipped code, only holes in the guards. Pass 8 dispatched. Side-effects: scripts/check-mutations.py (20 mutations), check-reachability.py, contracts/golden/today.json (16 cases), QUESTIONS Q02."
+    status: IN_PROGRESS
+    dependency: [P5c]
+    blocks: [P7]
+    fan_out: 1
+    verifiability: REQUIRES_HUMAN_REVIEW
+    cost_estimate: open-ended
+    critical: true
+    oracle: [golden, mutation, cold-review]
+    note: "The exit condition is a clean pass, but 'this verifier stopped finding things' is not 'the code is correct'. Ending the chain is an operator call. The real blocker underneath is F-01: the golden cases are still _status proposed, so the ground truth remains agent-authored."
   - id: P6
     description: "Full v2 modernization: I-23 sync, I-24 multi-profile, I-25 theming, I-26 plugin surface, I-27 mobile companion"
     status: NOT_STARTED
