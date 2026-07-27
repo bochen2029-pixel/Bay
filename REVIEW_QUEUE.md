@@ -43,7 +43,43 @@ Reverting is layered: I-21 and the execution core assume the envelope
 
 ## Review items — cheapest to verify first
 
-### 0. What the cold verifier found — **read this first**
+### 0. The verification chain — **read this first**
+
+Three cold passes ran, each reviewing the previous one's output. The
+result is the most important thing on this page:
+
+| pass | subject | verdict |
+|---|---|---|
+| 1 | the v0.3 feature work (`de37921..daad097`) | **FAIL** — 1 BLOCKING, 1 MAJOR, 6 MINOR |
+| 2 | pass 1's fix commit (`b884b4d`) | **FAIL** — the fix introduced a **worse** bug than it fixed |
+| 3 | pass 2's fix commit (`8f4592e`) + `today.json` | dispatched; see the note at the end of this section |
+
+**Pass 2 is the one to dwell on.** My fix for the BLOCKING Today-cap
+bug bolted the recurrence spawn onto `apply_reorg_inner` — which
+reasons over a *simulation* of the accepted diff — while the spawn
+decided the child's tier from the *live projection*. Two ledgers, each
+blind to the other, so the spawned child was counted by neither:
+accepting `[finish the recurring report, unblock the other thing]` with
+A at capacity committed **A at 6 active against a cap of 5**. That is a
+worse defect than the one I set out to fix, and every test was green.
+
+The repair was structural rather than another patch: `build_recurrence_
+spawn` split into caller-owned *placement* and a shared
+`recurrence_child_drafts` that only builds the child's content and
+dates, so **each transaction now keeps exactly one capacity ledger**.
+The same change removed a rank collision that would have thrown on the
+next drag, and surfaced two more real defects (spawned children never
+reached the UI; duplicate ops spawned two children from one item).
+
+**And the structural cause of pass 1's BLOCKING:** the Today law lived
+in doctrine and in code but was **asserted nowhere an operator owned**.
+`contracts/golden/today.json` now exists — 13 cases, executed by the
+runner, verified by negative control (disabling the guard fails the
+case by name). Please review and freeze it alongside the caps cases.
+
+---
+
+### 0a. What pass 1 found
 A verifier with no access to my reasoning reviewed `de37921..HEAD`
 against doctrine and the golden cases. Verdict: **FAIL**, on two real
 defects that 206 passing tests did not catch.
@@ -91,7 +127,20 @@ check that existed but never ran.** The three mechanisms that actually
 caught things this run were execution (golden runner), property tests,
 and a reader with no stake in my reasoning.
 
-### 1. Corrected golden cases — **the one thing only you can settle**
+### 1. Golden cases — **the one thing only you can settle**
+
+Two items here, both operator-owned ground truth:
+
+**(a) `contracts/golden/today.json` is new and agent-authored** (13
+cases, `_status: proposed`). It encodes the Today law: cap 3 active per
+date; a done item keeps membership but frees its slot; every re-entry
+door drops membership rather than refusing the transition (because undo
+must never fail); `open_day` is atomic and idempotent; the roll is
+system-actor and expires only past dates; undo restores the original
+date and looks past the roll. Read it against CLAUDE.md §7 and §10, and
+freeze or amend.
+
+**(b) the three corrected `caps.json` cases:**
 `contracts/golden/caps.json` cases #5, #6, #8 were *proposed*, never
 frozen — and executing them (item 2) showed all three contradicted both
 their own case names and frozen doctrine:
@@ -178,25 +227,36 @@ build.
 
 ## Complacency canary
 
-Every gate is green — and green gates have lied twice in this repo now.
-P2e: 143 passing tests hiding two BLOCKING bugs. This run: 206 passing
-tests hiding a one-click cap bypass.
+Green gates have now lied three times in this repo. P2e: 143 passing
+tests hiding two BLOCKING bugs. Pass 1: 206 tests hiding a one-click
+cap bypass. Pass 2: a fully green suite hiding a *worse* bug that my
+own fix had just introduced.
 
-Both times the same shape was to blame: **a check that existed but
-never executed.** Golden cases that were counted, not run.
-`verify-schema.py`, broken since migration 002 because it required a
+Two patterns, and the second is the more uncomfortable one.
+
+**A check that existed but never executed.** Golden cases counted, not
+run. `verify-schema.py`, broken since migration 002 because it needed a
 live database and nobody ever pointed it at one. A Today cap enforced
-on the doors I was thinking about and not the ones I wasn't.
+on the doors I remembered. And the deepest version: a law with no
+operator-owned assertion behind it at all.
 
-What actually earned trust this run, in order: **running** the golden
-cases (found 3 broken ground-truth cases immediately), the **cold
-verifier** (found the BLOCKING and the MAJOR), and property tests that
-quantify over interleavings rather than pinning the one case I had in
-mind. What did *not* earn trust: my own confidence, and the test count.
+**A fix is a change, and changes carry the same risk as features.** I
+was more confident writing the fix than writing the original code, and
+the fix was worse. Nothing in the process caught that except reviewing
+the fix as if it were new work — which is now the standing rule here.
 
-Remaining honest caveats: the verifier reviewed the code as of
-`daad097`; the fixes I wrote in response have not themselves been
-cold-reviewed. And nothing here has been exercised by a human using the
-app for a week — `VISION.md` §9 is the list of things that would tell
-us the execution core is wrong, and none of them can be checked from a
-test suite.
+What earned trust, in order: **executing** the golden cases (3 broken
+ground-truth cases found immediately); the **cold passes**, each of
+which found something the suite could not; **negative controls** (the
+new Today case was proven to fail when the guard is disabled — an
+assertion nobody has watched fail is just decoration); and property
+tests that quantify over interleavings instead of pinning the one case
+I had in mind. What did not earn trust: the test count, and my own
+sense that a change was obviously correct.
+
+Honest caveats that remain. Pass 3 was dispatched over `8f4592e` — if
+its findings are not recorded below this line, they had not arrived
+when this was written, and the chain's base rate (2 for 2) says treat
+that commit as unverified. And nothing here has been used by a person
+for a week; `VISION.md` §9 lists what would tell us the execution core
+is wrong, and no test suite can answer any of it.
