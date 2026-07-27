@@ -1082,3 +1082,58 @@ Two process errors of mine, both fixed rather than filed:
 Gates: cargo **252/252** warning-clean; vitest 118/118; golden 5 files;
 verify-schema --fresh; reachability 39/39; store-logic. Mutations at 27
 (from 20), running in a clone.
+
+## 2026-07-27 — Ninth cold pass: the net, not the code, for the fourth time
+
+Pass 9: **PASS, no BLOCKING, and a fourth consecutive round with no
+incorrect behaviour in the shipped code.** The subject range was pure
+guard work and the pass confirmed it does what it claims — each of the
+four new tests is the SOLE catcher of the mutation written for it, the
+mixed-op permutation test bites on five separate mutations, both gate
+hardenings verified end-to-end against genuine cargo output, and all
+four previously unmutated cap doors are genuinely guarded.
+
+Two MAJORs, both holes in the net:
+
+- **`items.rs:982` — the B half of the batch cap counter.** Its A half
+  was guarded ONE COMMIT EARLIER by a mutation I added, whose catching
+  fixture is A-only, so `active_b = Some(n + 1)` -> `Some(n)` survived
+  all 252 tests. B at 11 active + 3 blocked, one multi-select unblock
+  leaves B at 14 against a cap of 12. Caps are the product. I committed
+  the same sibling drift that commit`s message was about, while writing
+  about it.
+- **`db/events.rs` — field coverage of the row hash.** Dropping
+  `payload` out of the digest survived the suite. Self-consistency
+  tests structurally cannot catch it: write-then-verify agrees with
+  itself no matter how few columns are hashed. Tamper-evidence is the
+  log`s headline claim. New tests perturb all eleven inputs, assert
+  every digest differs AND that no two collide, and pin the
+  NULL-vs-empty and field-boundary properties the encoding claims.
+
+Four smaller holes, each now tested and mutated: CHAIN_GAP (the cheaper
+forgery — envelope columns are nullable, so a rogue INSERT needs no
+hash at all) had no test; LEAK_WINDOW_MS; close_day admitting a ghost
+id into an append-only payload; is_leap dropping the century rule.
+
+**The gate then rejected my own fix.** `mirror/leak-window-widened`
+SURVIVED: my fixture used a seven-day dwell, outside the real 48h
+window and outside a doubled one, so it pinned that the comparison
+EXISTS but not the constant in it — the exact distinction the finding
+was about. Rebuilt with 47h and 49h. **A threshold pinned from one side
+is not pinned.**
+
+Pass 9 also caught a factual error in an operator-facing document.
+QUESTIONS Q02, as I filed it, claimed "SPEC §8.7 currently claims more
+than the code delivers" and concluded "doing nothing is the one option
+that should not survive review". Both false: §8.7 has named that exact
+rank exception since `a0f4775` (pass 4), before Q02 was written. I
+asserted what SPEC said without reading it, and the effect would have
+been an operator deciding under invented urgency. Q02 now carries the
+correction and states that doing nothing is legitimate.
+
+The generated order-independence property is confirmed real: under the
+`board_order`-reads-sim mutation it fails and proptest shrinks to a
+minimal counterexample (n_rec=2, n_blk=1, a_fill=4).
+
+Gates: cargo **261/261**, vitest 118/118, golden, schema, reachability
+39/39, store-logic. Mutations 27 -> 33.
