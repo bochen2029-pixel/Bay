@@ -897,3 +897,29 @@ BLOCKING. Chain 5 for 5, severity still falling.
 
 Gates: cargo **239/239** warning-clean; vitest 118/118; golden 5 files;
 verify-schema --fresh; reachability 39/39; store-logic.
+
+## 2026-07-27 — scripts/check-mutations.py: negative controls as a gate
+
+The chain`s deepest lesson is not any one bug: it is that my tests were
+weak in the same DIRECTION as my attention, because I wrote both the
+fix and the test. Twice a test turned out to assert less than it looked
+like it did — a property that compared one ordering against itself, and
+a contest policy that could be inverted with all 237 tests green. Both
+were found by hand: break it, watch the test fail, restore.
+
+That habit is now a gate. `check-mutations.py` carries 9 mutations,
+each reintroducing a defect a cold review actually found, and requires
+the suite to catch every one. `why` names the finding it guards, so a
+survivor reports what was lost rather than just a red line.
+
+**It found a real gap on its first run**: `recurrence/freed-slot-
+accounting` SURVIVED — I fixed that pass-2 MINOR and never wrote a test
+for it, so the bug could have walked straight back in. Test added
+(`batch_spawn_counts_slots_freed_by_non_recurring_completions`); all 9
+mutations now caught.
+
+Standing rule going forward: when a cold review finds a defect, add the
+mutation that reintroduces it. That is the cheapest guarantee the class
+cannot silently return.
+
+Gates: cargo 240/240 warning-clean; mutations 9/9 caught.

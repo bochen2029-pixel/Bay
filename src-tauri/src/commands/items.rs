@@ -2758,6 +2758,63 @@ mod tests {
     }
 
     #[test]
+    fn batch_spawn_counts_slots_freed_by_non_recurring_completions() {
+        // A slot freed by a NON-recurring completion in the same batch
+        // is a real slot. Ignoring it (returning early before the
+        // accounting) over-routed later children to Inbox: safe for the
+        // cap, but the wrong home for the item — and the user would see
+        // their repeating task reappear in the wrong place with no
+        // explanation.
+        //
+        // This test exists because `scripts/check-mutations.py` found
+        // that the fix for it had no test: the mutation reintroducing
+        // the bug survived a fully green suite.
+        let pool = fresh_pool();
+        // The recurring item is created first and blocked, so it holds
+        // no slot (creation is cap-gated).
+        let rec = create_item_inner(&pool, Tier::A, "recurring".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, rec.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+        set_item_state_inner(&pool, rec.id.clone(), ItemState::Blocked, Some("stuck".into()))
+            .unwrap();
+        // Fill A to cap with plain items.
+        let mut plain = Vec::new();
+        for i in 0..A_CAP {
+            plain.push(
+                create_item_inner(&pool, Tier::A, format!("plain-{i}"), None, None)
+                    .unwrap()
+                    .id,
+            );
+        }
+
+        // Complete two plain items AND the blocked recurring one, in a
+        // single batch. The two plain completions free two slots, so
+        // the child belongs in A — not in Inbox.
+        let result = batch_set_state_inner(
+            &pool,
+            vec![plain[0].clone(), plain[1].clone(), rec.id.clone()],
+            ItemState::Done,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.spawned.len(), 1);
+        assert_eq!(
+            result.spawned[0].tier,
+            Tier::A,
+            "the slots freed by the plain completions were counted"
+        );
+
+        let conn = pool.get().unwrap();
+        let a_active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE tier = 'A' AND state = 'active' AND deleted = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_active, 4, "3 surviving plain items + the child; cap holds");
+    }
+
+    #[test]
     fn recurrence_projection_rebuilds_identically() {
         // The projection-purity law extends to the new column + events:
         // create → set recurrence → done (spawn) must rebuild exactly.
