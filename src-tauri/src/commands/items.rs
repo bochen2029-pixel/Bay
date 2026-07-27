@@ -683,6 +683,60 @@ fn build_recurrence_spawn(
     ]))
 }
 
+/// Max length of a first step: one line, a doorknob, not a corridor.
+const MAX_FIRST_STEP_LEN: usize = 140;
+
+#[tauri::command]
+pub fn set_first_step(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+    step: Option<String>,
+) -> Result<Item, String> {
+    let item = set_first_step_inner(&pool, id, step)?;
+    app.emit(ITEM_UPDATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_UPDATED_EVENT}: {e}"))?;
+    Ok(item)
+}
+
+/// Set or clear the single next physical action (v0.3 execution core).
+/// One line by design — the activation-energy handle, never a checklist
+/// (subtasks remain cut; CLAUDE.md "Cut from v1").
+pub fn set_first_step_inner(
+    pool: &SqlitePool,
+    id: String,
+    step: Option<String>,
+) -> Result<Item, String> {
+    let step = step.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if let Some(s) = &step {
+        if s.chars().count() > MAX_FIRST_STEP_LEN {
+            return Err("STEP_TOO_LONG".into());
+        }
+    }
+    let _ = db::write_event(pool, |tx, _ts| {
+        let current = db::items::read_item_by_id_tx(tx, &id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+        if current.first_step == step {
+            return Err("NO_OP".into());
+        }
+        Ok(EventDraft {
+            event_type: EventType::ItemFirstStepSet,
+            item_id: Some(id.clone()),
+            payload: json!({
+                "before": current.first_step,
+                "after": step,
+            }),
+        })
+    })?;
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
+    items
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or_else(|| "first-step item not found in projection".to_string())
+}
+
 #[tauri::command]
 pub fn set_item_recurrence(
     app: AppHandle,

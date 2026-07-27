@@ -47,6 +47,9 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         ProjectionEvent::ItemDeleted => apply_item_deleted(tx, event),
         ProjectionEvent::ItemRestored => apply_item_restored(tx, event),
         ProjectionEvent::ItemRecurrenceSet => apply_item_recurrence_set(tx, event),
+        ProjectionEvent::ItemFirstStepSet => apply_item_first_step_set(tx, event),
+        ProjectionEvent::TodayAdded => apply_today_added(tx, event),
+        ProjectionEvent::TodayRemoved => apply_today_removed(tx, event),
     }
 }
 
@@ -73,8 +76,8 @@ fn apply_item_created(tx: &Transaction<'_>, event: &Event) -> Result<(), String>
 
     tx.execute(
         "INSERT INTO items (id, content, tier, rank, state, blocked_reason, \
-                            start_at, due_at, recurrence, created_at, updated_at, deleted) \
-         VALUES (?1, ?2, ?3, ?4, 'active', NULL, ?5, ?6, ?7, ?8, ?8, 0)",
+                            start_at, due_at, recurrence, first_step, today_on, created_at, updated_at, deleted) \
+         VALUES (?1, ?2, ?3, ?4, 'active', NULL, ?5, ?6, ?7, NULL, NULL, ?8, ?8, 0)",
         params![
             id,
             p.content,
@@ -293,6 +296,82 @@ fn apply_item_recurrence_set(tx: &Transaction<'_>, event: &Event) -> Result<(), 
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct ItemFirstStepSetPayload {
+    #[allow(dead_code)]
+    before: Option<String>,
+    after: Option<String>,
+}
+
+fn apply_item_first_step_set(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_FIRST_STEP_SET event missing item_id".to_string())?;
+    let p: ItemFirstStepSetPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode ITEM_FIRST_STEP_SET payload: {e}"))?;
+    let updated = tx
+        .execute(
+            "UPDATE items SET first_step = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted = 0",
+            params![p.after, event.ts, id],
+        )
+        .map_err(|e| format!("update item row (first_step): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_FIRST_STEP_SET target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct TodayAddedPayload {
+    date: String,
+}
+
+fn apply_today_added(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "TODAY_ADDED event missing item_id".to_string())?;
+    let p: TodayAddedPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode TODAY_ADDED payload: {e}"))?;
+    let updated = tx
+        .execute(
+            "UPDATE items SET today_on = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted = 0",
+            params![p.date, event.ts, id],
+        )
+        .map_err(|e| format!("update item row (today add): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "TODAY_ADDED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
+fn apply_today_removed(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "TODAY_REMOVED event missing item_id".to_string())?;
+    let updated = tx
+        .execute(
+            "UPDATE items SET today_on = NULL, updated_at = ?1 \
+             WHERE id = ?2 AND deleted = 0",
+            params![event.ts, id],
+        )
+        .map_err(|e| format!("update item row (today remove): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "TODAY_REMOVED target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
 fn apply_item_restored(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
     let id = event
         .item_id
@@ -320,7 +399,7 @@ pub fn list_deleted_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Stri
     let mut stmt = conn
         .prepare(
             "SELECT id, content, tier, rank, state, blocked_reason, \
-                    start_at, due_at, recurrence, created_at, updated_at, deleted \
+                    start_at, due_at, recurrence, first_step, today_on, created_at, updated_at, deleted \
              FROM items WHERE deleted = 1 ORDER BY updated_at DESC, id DESC",
         )
         .map_err(|e| format!("prepare list_deleted_items: {e}"))?;
@@ -342,7 +421,7 @@ pub fn list_active_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Strin
     let mut stmt = conn
         .prepare(
             "SELECT id, content, tier, rank, state, blocked_reason, \
-                    start_at, due_at, recurrence, created_at, updated_at, deleted \
+                    start_at, due_at, recurrence, first_step, today_on, created_at, updated_at, deleted \
              FROM items WHERE deleted = 0 ORDER BY tier, rank",
         )
         .map_err(|e| format!("prepare list_items: {e}"))?;
@@ -361,7 +440,7 @@ pub fn list_active_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Strin
 pub fn read_item_by_id_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Item>, String> {
     tx.query_row(
         "SELECT id, content, tier, rank, state, blocked_reason, \
-                start_at, due_at, recurrence, created_at, updated_at, deleted \
+                start_at, due_at, recurrence, first_step, today_on, created_at, updated_at, deleted \
          FROM items WHERE id = ?1 AND deleted = 0",
         params![id],
         row_to_item,
@@ -379,7 +458,7 @@ pub fn read_item_by_id_any_tx(
 ) -> Result<Option<Item>, String> {
     tx.query_row(
         "SELECT id, content, tier, rank, state, blocked_reason, \
-                start_at, due_at, recurrence, created_at, updated_at, deleted \
+                start_at, due_at, recurrence, first_step, today_on, created_at, updated_at, deleted \
          FROM items WHERE id = ?1",
         params![id],
         row_to_item,
@@ -414,10 +493,42 @@ fn row_to_item(row: &Row<'_>) -> rusqlite::Result<Item> {
         start_at: row.get("start_at")?,
         due_at: row.get("due_at")?,
         recurrence: row.get("recurrence")?,
+        first_step: row.get("first_step")?,
+        today_on: row.get("today_on")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         deleted: deleted_int != 0,
     })
+}
+
+/// Read any item by id (including soft-deleted) on a plain pooled
+/// connection — the non-transactional sibling of `read_item_by_id_any_tx`.
+/// Used by undo's post-write frontend-event emission.
+pub fn read_item_by_id_any_conn(
+    conn: &rusqlite::Connection,
+    id: &str,
+) -> Result<Option<Item>, String> {
+    conn.query_row(
+        "SELECT id, content, tier, rank, state, blocked_reason, \
+                start_at, due_at, recurrence, first_step, today_on, created_at, updated_at, deleted \
+         FROM items WHERE id = ?1",
+        params![id],
+        row_to_item,
+    )
+    .optional()
+    .map_err(|e| format!("read any item by id (conn): {e}"))
+}
+
+/// Count ACTIVE, non-deleted items committed to a given Today date.
+/// The Today cap (3) applies to active items only, mirroring the tier
+/// caps: a done Today item is finished work, not a held slot.
+pub fn count_active_today(tx: &Transaction<'_>, date: &str) -> Result<i64, String> {
+    tx.query_row(
+        "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state = 'active' AND deleted = 0",
+        params![date],
+        |r| r.get(0),
+    )
+    .map_err(|e| format!("count active today: {e}"))
 }
 
 /// Read the lexicographically-smallest non-deleted rank in a tier. Used

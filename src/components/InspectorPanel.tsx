@@ -168,6 +168,12 @@ function renderPayload(event: Event): string {
       return `${p.before ?? "∅"} → ${p.after ?? "∅"}`;
     case "ITEM_RECURRED":
       return `spawned next instance (${p.child_id})`;
+    case "ITEM_FIRST_STEP_SET":
+      return `"${p.before ?? "∅"}" → "${p.after ?? "∅"}"`;
+    case "TODAY_ADDED":
+      return `→ Today ${p.date}`;
+    case "TODAY_REMOVED":
+      return `← Today ${p.date} (${p.cause})`;
     default:
       try {
         return JSON.stringify(p);

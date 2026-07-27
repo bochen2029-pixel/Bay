@@ -366,38 +366,15 @@ pub fn undo_last_action(
     let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
     use tauri::Emitter;
     for id in &result.affected_item_ids {
-        // Read the item's current projection state (including deleted).
-        // Column order: deleted, blocked_reason, content, tier, rank,
-        // state, start_at, due_at, created_at, updated_at.
-        let row: Option<(i64, Option<String>, String, String, String, String, Option<i64>, Option<i64>, Option<String>, i64, i64)> = conn
-            .query_row(
-                "SELECT deleted, blocked_reason, content, tier, rank, state, start_at, due_at, recurrence, created_at, updated_at \
-                 FROM items WHERE id = ?1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
-            )
-            .ok();
-        if let Some((deleted, blocked_reason, content, tier, rank, state, start_at, due_at, recurrence, created_at, updated_at)) = row {
-            let item = crate::domain::Item {
-                id: id.clone(),
-                content,
-                tier: crate::domain::Tier::from_sql(tier.as_str()).unwrap_or(crate::domain::Tier::Inbox),
-                rank,
-                state: crate::domain::ItemState::from_sql(state.as_str()).unwrap_or(crate::domain::ItemState::Active),
-                blocked_reason,
-                start_at,
-                due_at,
-                recurrence,
-                created_at,
-                updated_at,
-                deleted: deleted != 0,
-            };
+        // Read the item's current projection state (including deleted)
+        // through the shared row reader — one column list to maintain.
+        if let Ok(Some(item)) = db::items::read_item_by_id_any_conn(&conn, id) {
             // If the item is now deleted, emit item_deleted so the
             // store removes it. Otherwise emit item_updated; the store's
             // onItemUpdated re-inserts into the correct tier (handles
             // restore-into-tier too, since the item moves from deleted
             // to alive with a tier).
-            if deleted != 0 {
+            if item.deleted {
                 let _ = app.emit("item_deleted", serde_json::json!({ "id": id }));
             } else {
                 let _ = app.emit("item_updated", &item);
@@ -609,11 +586,42 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
                     payload: json!({ "before": after, "after": before }),
                 }
             }
-            // Audit/link event (I-21): the parent's STATE_CHANGED and
-            // the child's CREATED in this same txn carry the actual
-            // compensations; the link itself never touched the
-            // projection, so there is nothing to compensate.
-            EventType::ItemRecurred => continue,
+            EventType::ItemFirstStepSet => {
+                let before = event.payload.get("before").cloned().unwrap_or(serde_json::Value::Null);
+                let after = event.payload.get("after").cloned().unwrap_or(serde_json::Value::Null);
+                descriptions.push(format!("Undone ITEM_FIRST_STEP_SET on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemFirstStepSet,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "before": after, "after": before }),
+                }
+            }
+            EventType::TodayAdded => {
+                let date = event.payload["date"]
+                    .as_str()
+                    .ok_or_else(|| format!("TODAY_ADDED payload missing date: {}", event.id))?;
+                descriptions.push(format!("Undone TODAY_ADDED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::TodayRemoved,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "date": date, "cause": "user" }),
+                }
+            }
+            EventType::TodayRemoved => {
+                let date = event.payload["date"]
+                    .as_str()
+                    .ok_or_else(|| format!("TODAY_REMOVED payload missing date: {}", event.id))?;
+                descriptions.push(format!("Undone TODAY_REMOVED on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::TodayAdded,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "date": date }),
+                }
+            }
+            // Audit/link events: the per-item rows in the same txn (if
+            // any) carry the actual compensations; these never touched
+            // the projection, so there is nothing to compensate.
+            EventType::ItemRecurred | EventType::DayOpened | EventType::DayClosed => continue,
             // LLM events are advisory-only; nothing to undo. This
             // branch is unreachable because the query filtered them
             // out, but the match must be exhaustive.

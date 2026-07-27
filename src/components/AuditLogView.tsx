@@ -28,6 +28,11 @@ const EVENT_TYPES: (EventType | "")[] = [
   "ITEM_RESTORED",
   "ITEM_RECURRENCE_SET",
   "ITEM_RECURRED",
+  "ITEM_FIRST_STEP_SET",
+  "TODAY_ADDED",
+  "TODAY_REMOVED",
+  "DAY_OPENED",
+  "DAY_CLOSED",
   "LLM_SUGGESTION_GENERATED",
   "LLM_SUGGESTION_ACCEPTED",
   "LLM_SUGGESTION_REJECTED",
@@ -43,6 +48,11 @@ const TYPE_COLORS: Record<string, string> = {
   ITEM_RESTORED: "#27ae60",
   ITEM_RECURRENCE_SET: "#00838f",
   ITEM_RECURRED: "#00838f",
+  ITEM_FIRST_STEP_SET: "#4527a0",
+  TODAY_ADDED: "#2e7d32",
+  TODAY_REMOVED: "#795548",
+  DAY_OPENED: "#37474f",
+  DAY_CLOSED: "#37474f",
   LLM_SUGGESTION_GENERATED: "#1565c0",
   LLM_SUGGESTION_ACCEPTED: "#1565c0",
   LLM_SUGGESTION_REJECTED: "#1565c0",
@@ -75,6 +85,18 @@ function summarizePayload(type: string, payload: unknown): string {
       return `${p.before ?? "null"} -> ${p.after ?? "null"}`;
     case "ITEM_RECURRED":
       return `spawned ${p.child_id} (due ${p.next_due_at})`;
+    case "ITEM_FIRST_STEP_SET":
+      return `"${p.before ?? ""}" -> "${p.after ?? ""}"`;
+    case "TODAY_ADDED":
+      return `-> Today ${p.date}`;
+    case "TODAY_REMOVED":
+      return `<- Today ${p.date} (${p.cause})`;
+    case "DAY_OPENED":
+      return `day opened: ${(p.today_ids as string[] | undefined)?.length ?? 0} chosen`;
+    case "DAY_CLOSED":
+      return p.tomorrow_first
+        ? `day closed; tomorrow's first move set`
+        : "day closed";
     case "LLM_SUGGESTION_GENERATED": {
       const obs = p.observations as Array<unknown> | undefined;
       return `${obs?.length ?? 0} observation(s)`;

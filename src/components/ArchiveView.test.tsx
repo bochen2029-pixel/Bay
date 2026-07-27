@@ -34,6 +34,8 @@ function makeArchivedItem(id: string, content: string, deletedAt: number) {
     start_at: null,
     due_at: null,
     recurrence: null,
+    first_step: null,
+    today_on: null,
     created_at: deletedAt - 1_000,
     updated_at: deletedAt,
     deleted: true,

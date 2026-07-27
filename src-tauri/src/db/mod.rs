@@ -34,7 +34,13 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (2, include_str!("../../../migrations/002_invariants.sql")),
     (3, include_str!("../../../migrations/003_event_envelope.sql")),
     (4, include_str!("../../../migrations/004_recurrence.sql")),
+    (5, include_str!("../../../migrations/005_execution_core.sql")),
 ];
+
+/// The `PRAGMA user_version` a fully-migrated database reports.
+/// Derived from MIGRATIONS so version-pinning tests never lag a new
+/// migration.
+pub const SCHEMA_VERSION: i32 = MIGRATIONS[MIGRATIONS.len() - 1].0;
 
 pub fn open_pool(db_path: &Path) -> Result<SqlitePool, String> {
     let manager = SqliteConnectionManager::file(db_path).with_init(|c| {
@@ -251,12 +257,11 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        // Migration 001 -> user_version 1 (schema); migration 002 ->
-        // user_version 2 (DB-enforced invariants); migration 003 ->
-        // user_version 3 (event envelope v2: txn_id/actor/origin/
-        // device_id/schema_ver/prev_hash + meta table); migration 004
-        // -> user_version 4 (items.recurrence, I-21).
-        assert_eq!(v, 4);
+        // 001 schema; 002 DB-enforced invariants; 003 event envelope
+        // v2 + meta; 004 items.recurrence (I-21); 005 execution core
+        // (first_step + today_on). SCHEMA_VERSION derives from
+        // MIGRATIONS so this test tracks new migrations automatically.
+        assert_eq!(v, SCHEMA_VERSION);
     }
 
     #[test]
@@ -268,7 +273,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 4);
+        assert_eq!(v, SCHEMA_VERSION);
     }
 
     #[test]
@@ -291,6 +296,7 @@ mod tests {
                 "idx_events_ts".to_string(),
                 "idx_events_txn".to_string(),
                 "idx_items_tier_rank".to_string(),
+                "idx_items_today".to_string(),
                 "items".to_string(),
                 "meta".to_string(),
             ]
@@ -934,7 +940,7 @@ mod tests {
         {
             let conn = pool.get().unwrap();
             let v: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-            assert_eq!(v, 4);
+            assert_eq!(v, SCHEMA_VERSION);
             let report = events::verify_event_chain(&conn).unwrap();
             assert_eq!((report.total, report.enveloped), (1, 0));
         }

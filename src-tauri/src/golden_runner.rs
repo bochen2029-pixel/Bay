@@ -56,19 +56,28 @@ fn error_matches(expected: &str, actual: &str) -> bool {
     actual == expected || actual.starts_with(expected)
 }
 
-/// Full-width projection snapshot for rebuild-determinism comparison.
+/// Full-width projection snapshot for rebuild-determinism comparison —
+/// every `items` column, nested so each tuple stays within Rust's
+/// 12-arity trait-impl limit.
 type ItemRow = (
-    String,         // id
-    String,         // content
-    String,         // tier
-    String,         // rank
-    String,         // state
-    Option<String>, // blocked_reason
-    Option<i64>,    // start_at
-    Option<i64>,    // due_at
-    i64,            // created_at
-    i64,            // updated_at
-    i64,            // deleted
+    (
+        String,         // id
+        String,         // content
+        String,         // tier
+        String,         // rank
+        String,         // state
+        Option<String>, // blocked_reason
+        Option<i64>,    // start_at
+    ),
+    (
+        Option<i64>,    // due_at
+        Option<String>, // recurrence
+        Option<String>, // first_step
+        Option<String>, // today_on
+        i64,            // created_at
+        i64,            // updated_at
+        i64,            // deleted
+    ),
 );
 
 fn snapshot_items_full(pool: &SqlitePool) -> Vec<ItemRow> {
@@ -76,23 +85,31 @@ fn snapshot_items_full(pool: &SqlitePool) -> Vec<ItemRow> {
     let mut stmt = conn
         .prepare(
             "SELECT id, content, tier, rank, state, blocked_reason, start_at, due_at, \
-             created_at, updated_at, deleted FROM items ORDER BY id",
+             recurrence, first_step, today_on, created_at, updated_at, deleted \
+             FROM items ORDER BY id",
         )
         .unwrap();
     let rows = stmt
         .query_map([], |r| {
             Ok((
-                r.get(0)?,
-                r.get(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get(7)?,
-                r.get(8)?,
-                r.get(9)?,
-                r.get(10)?,
+                (
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                ),
+                (
+                    r.get(7)?,
+                    r.get(8)?,
+                    r.get(9)?,
+                    r.get(10)?,
+                    r.get(11)?,
+                    r.get(12)?,
+                    r.get(13)?,
+                ),
             ))
         })
         .unwrap();

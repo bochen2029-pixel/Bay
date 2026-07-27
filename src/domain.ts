@@ -25,6 +25,11 @@ export const EventType = z.enum([
   "ITEM_RESTORED",
   "ITEM_RECURRENCE_SET",
   "ITEM_RECURRED",
+  "ITEM_FIRST_STEP_SET",
+  "TODAY_ADDED",
+  "TODAY_REMOVED",
+  "DAY_OPENED",
+  "DAY_CLOSED",
   "LLM_SUGGESTION_GENERATED",
   "LLM_SUGGESTION_ACCEPTED",
   "LLM_SUGGESTION_REJECTED",
@@ -61,6 +66,10 @@ export const Item = z.object({
   due_at: z.number().nullable(),
   // I-21: canonical RRULE-subset string (FREQ=…[;INTERVAL=n]) or null.
   recurrence: z.string().nullable(),
+  // v0.3 execution core: the single next physical action (≤140 chars).
+  first_step: z.string().nullable(),
+  // v0.3: local date (YYYY-MM-DD) on the Today overlay, or null.
+  today_on: z.string().nullable(),
   created_at: z.number(),
   updated_at: z.number(),
   deleted: z.boolean(),

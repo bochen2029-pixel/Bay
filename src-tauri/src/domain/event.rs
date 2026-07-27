@@ -30,6 +30,28 @@ pub enum EventType {
     /// carried by its own ITEM_CREATED.
     #[serde(rename = "ITEM_RECURRED")]
     ItemRecurred,
+    /// v0.3 execution core: sets/clears `items.first_step` — the single
+    /// next physical action (<=140 chars). Projection event.
+    #[serde(rename = "ITEM_FIRST_STEP_SET")]
+    ItemFirstStepSet,
+    /// v0.3: the item joins the Today execution overlay for one local
+    /// date (`{date}`). Projection event (`items.today_on`). Cap 3.
+    #[serde(rename = "TODAY_ADDED")]
+    TodayAdded,
+    /// v0.3: the item leaves Today (`{date, cause: "expired"|"user"}`).
+    /// `expired` rows are written by the day-roll with `actor: system`
+    /// — the one sanctioned machine write (VISION law 6).
+    #[serde(rename = "TODAY_REMOVED")]
+    TodayRemoved,
+    /// v0.3 ritual audit: the day was opened with a chosen Today set
+    /// (`{date, today_ids}`). NULL item_id; no projection effect.
+    #[serde(rename = "DAY_OPENED")]
+    DayOpened,
+    /// v0.3 ritual audit: the day was closed (`{date, tomorrow_first?,
+    /// note?}`) — "tomorrow's first move" chosen tonight. NULL item_id;
+    /// no projection effect.
+    #[serde(rename = "DAY_CLOSED")]
+    DayClosed,
     #[serde(rename = "LLM_SUGGESTION_GENERATED")]
     LlmSuggestionGenerated,
     #[serde(rename = "LLM_SUGGESTION_ACCEPTED")]
@@ -50,6 +72,11 @@ impl EventType {
             EventType::ItemRestored => "ITEM_RESTORED",
             EventType::ItemRecurrenceSet => "ITEM_RECURRENCE_SET",
             EventType::ItemRecurred => "ITEM_RECURRED",
+            EventType::ItemFirstStepSet => "ITEM_FIRST_STEP_SET",
+            EventType::TodayAdded => "TODAY_ADDED",
+            EventType::TodayRemoved => "TODAY_REMOVED",
+            EventType::DayOpened => "DAY_OPENED",
+            EventType::DayClosed => "DAY_CLOSED",
             EventType::LlmSuggestionGenerated => "LLM_SUGGESTION_GENERATED",
             EventType::LlmSuggestionAccepted => "LLM_SUGGESTION_ACCEPTED",
             EventType::LlmSuggestionRejected => "LLM_SUGGESTION_REJECTED",
@@ -67,6 +94,11 @@ impl EventType {
             "ITEM_RESTORED" => Some(EventType::ItemRestored),
             "ITEM_RECURRENCE_SET" => Some(EventType::ItemRecurrenceSet),
             "ITEM_RECURRED" => Some(EventType::ItemRecurred),
+            "ITEM_FIRST_STEP_SET" => Some(EventType::ItemFirstStepSet),
+            "TODAY_ADDED" => Some(EventType::TodayAdded),
+            "TODAY_REMOVED" => Some(EventType::TodayRemoved),
+            "DAY_OPENED" => Some(EventType::DayOpened),
+            "DAY_CLOSED" => Some(EventType::DayClosed),
             "LLM_SUGGESTION_GENERATED" => Some(EventType::LlmSuggestionGenerated),
             "LLM_SUGGESTION_ACCEPTED" => Some(EventType::LlmSuggestionAccepted),
             "LLM_SUGGESTION_REJECTED" => Some(EventType::LlmSuggestionRejected),
@@ -140,6 +172,9 @@ pub enum ProjectionEvent {
     ItemDeleted,
     ItemRestored,
     ItemRecurrenceSet,
+    ItemFirstStepSet,
+    TodayAdded,
+    TodayRemoved,
 }
 
 impl EventType {
@@ -161,10 +196,17 @@ impl EventType {
             EventType::ItemDeleted => Some(ProjectionEvent::ItemDeleted),
             EventType::ItemRestored => Some(ProjectionEvent::ItemRestored),
             EventType::ItemRecurrenceSet => Some(ProjectionEvent::ItemRecurrenceSet),
+            EventType::ItemFirstStepSet => Some(ProjectionEvent::ItemFirstStepSet),
+            EventType::TodayAdded => Some(ProjectionEvent::TodayAdded),
+            EventType::TodayRemoved => Some(ProjectionEvent::TodayRemoved),
             // Audit/link event: no projection effect (the spawned
             // child's row comes from its own ITEM_CREATED in the same
             // transaction). I-21.
             EventType::ItemRecurred => None,
+            // Ritual audit events (v0.3): NULL item_id, no projection
+            // effect — the per-item TODAY_ADDED/REMOVED rows carry the
+            // projection changes; these record the ceremony itself.
+            EventType::DayOpened | EventType::DayClosed => None,
             // LLM events are advisory-only (CLAUDE.md §LLM scope v1,
             // SPEC §4.3). They land in the event log but never the
             // projection. Returning None here is the firewall.
@@ -220,6 +262,11 @@ mod tests {
             (EventType::ItemRestored, "\"ITEM_RESTORED\""),
             (EventType::ItemRecurrenceSet, "\"ITEM_RECURRENCE_SET\""),
             (EventType::ItemRecurred, "\"ITEM_RECURRED\""),
+            (EventType::ItemFirstStepSet, "\"ITEM_FIRST_STEP_SET\""),
+            (EventType::TodayAdded, "\"TODAY_ADDED\""),
+            (EventType::TodayRemoved, "\"TODAY_REMOVED\""),
+            (EventType::DayOpened, "\"DAY_OPENED\""),
+            (EventType::DayClosed, "\"DAY_CLOSED\""),
             (EventType::LlmSuggestionGenerated, "\"LLM_SUGGESTION_GENERATED\""),
             (EventType::LlmSuggestionAccepted, "\"LLM_SUGGESTION_ACCEPTED\""),
             (EventType::LlmSuggestionRejected, "\"LLM_SUGGESTION_REJECTED\""),
@@ -273,6 +320,18 @@ mod tests {
             EventType::ItemRecurrenceSet.to_projection_event(),
             Some(ProjectionEvent::ItemRecurrenceSet)
         );
+        assert_eq!(
+            EventType::ItemFirstStepSet.to_projection_event(),
+            Some(ProjectionEvent::ItemFirstStepSet)
+        );
+        assert_eq!(
+            EventType::TodayAdded.to_projection_event(),
+            Some(ProjectionEvent::TodayAdded)
+        );
+        assert_eq!(
+            EventType::TodayRemoved.to_projection_event(),
+            Some(ProjectionEvent::TodayRemoved)
+        );
     }
 
     #[test]
@@ -287,10 +346,13 @@ mod tests {
 
     #[test]
     fn audit_link_event_types_do_not_convert_to_projection_event() {
-        // ITEM_RECURRED is a pure audit/link event (I-21): the spawned
-        // child's projection row comes from its own ITEM_CREATED. Same
-        // None mechanism as the firewall, different rationale.
+        // ITEM_RECURRED (I-21) and the DAY_* ritual events (v0.3) are
+        // pure audit events: projection changes travel on their own
+        // per-item events. Same None mechanism as the firewall,
+        // different rationale.
         assert_eq!(EventType::ItemRecurred.to_projection_event(), None);
+        assert_eq!(EventType::DayOpened.to_projection_event(), None);
+        assert_eq!(EventType::DayClosed.to_projection_event(), None);
     }
 
     #[test]
@@ -309,6 +371,9 @@ mod tests {
             ProjectionEvent::ItemDeleted,
             ProjectionEvent::ItemRestored,
             ProjectionEvent::ItemRecurrenceSet,
+            ProjectionEvent::ItemFirstStepSet,
+            ProjectionEvent::TodayAdded,
+            ProjectionEvent::TodayRemoved,
         ];
         // Each converts back to its EventType counterpart.
         for pe in all {
@@ -321,11 +386,14 @@ mod tests {
                 ProjectionEvent::ItemDeleted => EventType::ItemDeleted,
                 ProjectionEvent::ItemRestored => EventType::ItemRestored,
                 ProjectionEvent::ItemRecurrenceSet => EventType::ItemRecurrenceSet,
+                ProjectionEvent::ItemFirstStepSet => EventType::ItemFirstStepSet,
+                ProjectionEvent::TodayAdded => EventType::TodayAdded,
+                ProjectionEvent::TodayRemoved => EventType::TodayRemoved,
             };
             assert_eq!(et.to_projection_event(), Some(pe));
         }
-        // 8 variants — no LLM types, no audit-link types. The match
-        // above is exhaustive on ProjectionEvent; adding a variant
-        // forces this test (and the apply function) to handle it.
+        // 11 variants — no LLM types, no audit types. The match above
+        // is exhaustive on ProjectionEvent; adding a variant forces
+        // this test (and the apply function) to handle it.
     }
 }

@@ -79,6 +79,14 @@ pub struct Item {
     /// its next instance in the same transaction.
     #[serde(default)]
     pub recurrence: Option<String>,
+    /// v0.3: the single next physical action (<=140 chars) — the
+    /// activation-energy handle. One line by design, never a checklist.
+    #[serde(default)]
+    pub first_step: Option<String>,
+    /// v0.3: local date ('YYYY-MM-DD') this item is committed to on the
+    /// Today execution overlay, or None. Cap 3; expires at day-roll.
+    #[serde(default)]
+    pub today_on: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted: bool,

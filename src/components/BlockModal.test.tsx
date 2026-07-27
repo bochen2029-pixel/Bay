@@ -40,6 +40,8 @@ const seededItem = {
   start_at: null,
   due_at: null,
   recurrence: null,
+  first_step: null,
+  today_on: null,
   created_at: 0,
   updated_at: 0,
   deleted: false,

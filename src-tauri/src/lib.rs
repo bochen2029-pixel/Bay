@@ -80,8 +80,10 @@ pub fn run() {
                         .and_then(|c| db::events::verify_event_chain(&c))
                     {
                         Ok(r) => eprintln!(
-                            "event chain verified: {} rows ({} enveloped)",
-                            r.total, r.enveloped
+                            "event chain verified: {} rows ({} enveloped), schema v{}",
+                            r.total,
+                            r.enveloped,
+                            db::SCHEMA_VERSION
                         ),
                         Err(e) => {
                             eprintln!("EVENT CHAIN VERIFICATION FAILED: {e}");
@@ -153,11 +155,18 @@ pub fn run() {
             commands::items::edit_item,
             commands::items::set_item_state,
             commands::items::set_item_recurrence,
+            commands::items::set_first_step,
             commands::items::set_item_date,
             commands::items::delete_item,
             commands::items::restore_item,
             commands::items::batch_set_state,
             commands::items::batch_delete,
+            commands::day::add_to_today,
+            commands::day::remove_from_today,
+            commands::day::open_day,
+            commands::day::close_day,
+            commands::day::roll_day,
+            commands::day::get_day_state,
             commands::events::get_events,
             commands::events::get_items_at,
             commands::events::list_archived_items,

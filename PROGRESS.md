@@ -433,3 +433,31 @@
   rendering; AuditLog filter/colors/describe.
 - Gates: cargo 180/180 warning-clean; pnpm build clean; vitest 95/95;
   store-logic smoke green.
+
+## 2026-07-26 — P5c(1): execution core — first_step + Today/Now + day rituals (backend)
+
+- migrations/005: items.first_step (<=140 CHECK) + items.today_on
+  (local-date TEXT) + partial index. SCHEMA_VERSION now derives from
+  MIGRATIONS (kills the version-pin churn class).
+- Events: ITEM_FIRST_STEP_SET / TODAY_ADDED / TODAY_REMOVED{cause}
+  (projection; ProjectionEvent = 11 variants) + DAY_OPENED / DAY_CLOSED
+  (audit, the log's FIRST NULL-item_id events). Firewall structurally
+  unchanged (still zero LLM variants).
+- commands/day.rs: add/remove_from_today (cap 3 ACTIVE-only — flow cap
+  mirrors the stock caps), open_day (atomic ceremony: N adds + audit
+  row, one txn, origin day_open), close_day (ONE question — tomorrow''s
+  first move; origin day_close), roll_day (actor SYSTEM origin day_roll
+  — the one sanctioned machine write, VISION law 6; idempotent, empty
+  roll writes nothing), get_day_state (today ids + ceremony flag +
+  the morning hand-back of tomorrow_first, ghost-safe).
+- Frontend owns "what day is it" (local tz lives in JS; ISO dates
+  compare lexicographically) — roll is invoked from the frontend at
+  bootstrap/midnight, backend enforces everything else.
+- set_first_step (items.rs): one line, 140 chars, the activation-energy
+  handle — deliberately NOT subtasks (cut list holds).
+- Undo: FIRST_STEP_SET/TODAY_* compensate exactly; DAY_* audit skipped;
+  Ctrl+Z looks past the system roll (regression-tested).
+- Tests: 190/190 (10 new day tests incl. atomic-over-cap rollback,
+  system-actor roll pinning, done-frees-slot-keeps-membership, undo-
+  past-roll; +1 property: today cap under any add/remove interleaving).
+  vitest 95/95; both builds clean.
