@@ -602,6 +602,48 @@ mod tests {
     }
 
     #[test]
+    fn a_leak_does_not_count_a_slow_demotion_out_of_a() {
+        // The 48h threshold itself. Every existing fixture demotes in
+        // the same instant it creates, so `ts - entered` is always ~0
+        // and only the TRUE side of the comparison is ever taken —
+        // which meant `LEAK_WINDOW_MS` could be doubled (or the branch
+        // made unconditional) with the whole suite green, and
+        // `fast_leaks` was indistinguishable from `departures`. That
+        // threshold is the entire content of CLAUDE.md's LLM-scope
+        // example #3 ("A is being used as an inbox"), so a leak rate
+        // that counts considered demotions would put a false accusation
+        // in front of the user. Found by v0.3 pass 9.
+        //
+        // Timestamps are raw-inserted because the command layer stamps
+        // `now`; only the log matters here, since the A-leak reckoning
+        // is a pure walk over events.
+        let pool = fresh_pool();
+        let now = crate::db::unix_ms_now();
+        let entered = now - 10 * DAY_MS;
+        let left = now - 3 * DAY_MS; // 7 days in A — deliberate, not a leak
+        let conn = pool.get().unwrap();
+        for (ts, payload) in [
+            (entered, r#"{"tier_before":"inbox","rank_before":"m","tier_after":"A","rank_after":"m"}"#),
+            (left, r#"{"tier_before":"A","rank_before":"m","tier_after":"C","rank_after":"m"}"#),
+        ] {
+            conn.execute(
+                "INSERT INTO events (ts, type, item_id, payload) VALUES (?1, 'ITEM_MOVED', 'slow-1', ?2)",
+                rusqlite::params![ts, payload],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let stats = get_mirror_stats_inner(&pool, None).unwrap();
+        assert_eq!(stats.a_leak.departures, 1, "it did leave A, and that is counted");
+        assert_eq!(
+            stats.a_leak.fast_leaks, 0,
+            "but after 7 days it is a considered demotion, not A-as-inbox"
+        );
+        assert_eq!(stats.a_leak.rate, 0.0);
+    }
+
+    #[test]
     fn avoidance_lists_only_committed_items_with_zero_sessions() {
         let pool = fresh_pool();
         let worked = create_item_inner(&pool, Tier::A, "worked on".into(), None, None).unwrap();

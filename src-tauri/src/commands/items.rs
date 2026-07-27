@@ -2454,6 +2454,45 @@ mod tests {
     }
 
     #[test]
+    fn batch_set_state_to_active_rolls_back_on_b_cap_overflow() {
+        // The B half of the batch counter. `batch_set_state_inner` keeps
+        // TWO accumulators — `active_a` and `active_b` — and every
+        // existing batch-cap fixture works in A, so `active_b = Some(n +
+        // 1)` could be reduced to `Some(n)` with the whole suite green.
+        // Concretely that lets one multi-select unblock leave B at 14
+        // active against a cap of 12.
+        //
+        // Found by v0.3 pass 9, in a mutation *I* added one commit
+        // earlier that covered only the A branch — the same sibling
+        // drift that commit's own message was about.
+        let pool = fresh_pool();
+        let mut blocked_ids = Vec::new();
+        for i in 0..3 {
+            let it = create_item_inner(&pool, Tier::B, format!("bblk-{i}"), None, None).unwrap();
+            set_item_state_inner(&pool, it.id.clone(), ItemState::Blocked, Some("hold".into()))
+                .unwrap();
+            blocked_ids.push(it.id);
+        }
+        // B holds 10 active; unblocking 3 would make 13 > 12.
+        for i in 0..(B_CAP - 2) {
+            create_item_inner(&pool, Tier::B, format!("bact-{i}"), None, None).unwrap();
+        }
+        assert_eq!(count_active(&pool, Tier::B), (B_CAP - 2) as i64);
+
+        let err =
+            batch_set_state_inner(&pool, blocked_ids.clone(), ItemState::Active, None).unwrap_err();
+        assert_eq!(
+            err, "CAP_EXCEEDED",
+            "the batch must count the activations it is itself making"
+        );
+        assert_eq!(
+            count_active(&pool, Tier::B),
+            (B_CAP - 2) as i64,
+            "the batch must roll back entirely"
+        );
+    }
+
+    #[test]
     fn batch_set_state_to_active_within_cap_succeeds() {
         // A holds 2 active + 2 blocked. Unblocking both → 4 active ≤ cap.
         let pool = fresh_pool();

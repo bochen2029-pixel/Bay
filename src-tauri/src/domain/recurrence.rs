@@ -175,6 +175,31 @@ mod tests {
     }
 
     #[test]
+    fn leap_rule_handles_the_century_exceptions() {
+        // `is_leap` feeds only `last_day_of_month`, and the round-trip
+        // test above uses the era-based algorithms rather than this
+        // function — so reducing the rule to `y % 4 == 0` left the whole
+        // suite green (v0.3 pass 9). The divergence is real but distant:
+        // a monthly recurrence crossing 2100-02 would clamp Jan 31 to a
+        // February 29th that does not exist.
+        for (y, leap) in [
+            (2024, true),
+            (2025, false),
+            (2000, true),  // divisible by 400 — IS a leap year
+            (1900, false), // divisible by 100, not 400 — is NOT
+            (2100, false), // the next century exception
+            (2400, true),
+        ] {
+            assert_eq!(is_leap(y), leap, "leap rule for {y}");
+            assert_eq!(
+                last_day_of_month(y, 2),
+                if leap { 29 } else { 28 },
+                "February {y}"
+            );
+        }
+    }
+
+    #[test]
     fn parse_round_trips_and_normalizes() {
         for (input, canonical) in [
             ("FREQ=DAILY", "FREQ=DAILY"),

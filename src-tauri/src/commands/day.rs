@@ -647,6 +647,18 @@ mod tests {
     }
 
     #[test]
+    fn close_day_rejects_a_tomorrow_first_that_does_not_exist() {
+        // Belt-and-suspenders, but the belt is what keeps the LOG clean:
+        // the read side already filters a dead id to None, so removing
+        // this check left the suite green (v0.3 pass 9) while allowing a
+        // ghost id into a DAY_CLOSED payload — permanently, since the
+        // log is append-only.
+        let pool = fresh_pool();
+        let err = close_day_inner(&pool, D1.into(), Some("no-such-item".into()), None).unwrap_err();
+        assert_eq!(err, "ITEM_NOT_FOUND");
+    }
+
+    #[test]
     fn close_day_hands_tomorrow_first_to_the_next_day() {
         let pool = fresh_pool();
         let item = create_item_inner(&pool, Tier::A, "first move".into(), None, None).unwrap();

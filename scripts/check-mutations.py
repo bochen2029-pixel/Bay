@@ -65,6 +65,9 @@ ITEMS = "src-tauri/src/commands/items.rs"
 DB = "src-tauri/src/db/mod.rs"
 GOLDEN_RUNNER = "src-tauri/src/golden_runner.rs"
 SESSION = "src-tauri/src/commands/session.rs"
+EVENTS = "src-tauri/src/db/events.rs"
+MIRROR = "src-tauri/src/commands/mirror.rs"
+RECURRENCE = "src-tauri/src/domain/recurrence.rs"
 
 # Each mutation reintroduces a defect a cold review actually found.
 # `why` is the finding it guards; it is printed when the mutation
@@ -337,6 +340,52 @@ MUTATIONS = [
                         continue;
                     }""",
         "why": "accepting done on an already-finished item appends a done->done event and spawns a DUPLICATE recurrence child",
+    },
+    # ── v0.3 pass 9 ─────────────────────────────────────────────────
+    {
+        "name": "caps/batch-activation-not-accumulated-b",
+        "file": ITEMS,
+        "find": "                        active_b = Some(n + 1);",
+        "replace": "                        active_b = Some(n);",
+        "why": "the B half of the batch counter — its A twin was guarded one commit earlier by an A-ONLY fixture, so this survived",
+    },
+    {
+        "name": "chain/payload-not-hashed",
+        "file": EVENTS,
+        "find": "    hash_field(&mut h, Some(payload_json.as_bytes()));",
+        "replace": "    hash_field(&mut h, None);",
+        "why": "tamper-evidence is the log's headline claim; a column silently leaving the digest makes forging it undetectable",
+    },
+    {
+        "name": "chain/gap-never-detected",
+        "file": EVENTS,
+        "find": "                if seen_enveloped {",
+        "replace": "                if false {",
+        "why": "CHAIN_GAP is the CHEAPER forgery — envelope columns are nullable, so a rogue INSERT needs no hash at all",
+    },
+    {
+        "name": "mirror/leak-window-widened",
+        "file": MIRROR,
+        "find": "const LEAK_WINDOW_MS: i64 = 2 * DAY_MS;",
+        "replace": "const LEAK_WINDOW_MS: i64 = 4 * DAY_MS;",
+        "why": "the 48h threshold IS CLAUDE.md LLM-scope example #3; a wrong leak rate puts a false accusation in front of the user",
+    },
+    {
+        "name": "day/close-accepts-a-ghost-first-move",
+        "file": DAY,
+        "find": """            if let Some(first) = &tomorrow_first {
+                db::items::read_item_by_id_tx(tx, first)?
+                    .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+            }""",
+        "replace": "",
+        "why": "an unvalidated id lands in a DAY_CLOSED payload permanently — the log is append-only",
+    },
+    {
+        "name": "recurrence/leap-ignores-century-rule",
+        "file": RECURRENCE,
+        "find": "    y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)",
+        "replace": "    y % 4 == 0",
+        "why": "a monthly recurrence crossing 2100-02 would clamp to a February 29th that does not exist",
     },
 ]
 

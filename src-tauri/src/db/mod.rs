@@ -922,6 +922,36 @@ mod tests {
     }
 
     #[test]
+    fn chain_detects_an_un_enveloped_row_appended_after_the_chain_started() {
+        // CHAIN_GAP, the sibling arm of CHAIN_BROKEN above, and the
+        // CHEAPER forgery of the two: every envelope column is nullable,
+        // so a rogue INSERT that simply leaves them NULL needs no hash
+        // computation at all. Legacy rows are tolerated only at the HEAD
+        // of the log — once the chain has started, a NULL-envelope row
+        // is a break, not history.
+        //
+        // v0.3 pass 9: `if seen_enveloped {` could be reduced to
+        // `if false {` with all 252 tests green — the promised failure
+        // mode had no test.
+        let pool = mem_pool();
+        run_migrations(&pool).unwrap();
+        let _ = write_event(&pool, |_tx, _ts| Ok(create_draft(0))).unwrap();
+
+        let conn = pool.get().unwrap();
+        conn.execute(
+            "INSERT INTO events (ts, type, item_id, payload) VALUES \
+             (0, 'ITEM_DELETED', 'env-itm-0', '{\"soft\":true}')",
+            [],
+        )
+        .unwrap();
+        let err = events::verify_event_chain(&conn).unwrap_err();
+        assert!(
+            err.contains("CHAIN_GAP"),
+            "an un-enveloped row after the chain started must be caught, got: {err}"
+        );
+    }
+
+    #[test]
     fn legacy_pre_envelope_rows_upgrade_and_chain_extends_over_them() {
         // Simulate a v2 database (pre-envelope): apply 001+002 only,
         // insert a legacy 4-column event row, then run the full

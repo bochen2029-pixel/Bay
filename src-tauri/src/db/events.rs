@@ -258,3 +258,100 @@ pub fn verify_event_chain(conn: &rusqlite::Connection) -> Result<ChainReport, St
     }
     Ok(ChainReport { total, enveloped })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Baseline row: every field distinct, every Option populated, so a
+    /// field silently dropping out of the digest cannot be masked by a
+    /// neighbour that happens to hold the same bytes.
+    fn baseline() -> String {
+        event_row_hash(
+            7,
+            1_700_000_000_000,
+            "ITEM_MOVED",
+            Some("item-7"),
+            r#"{"tier_after":"A"}"#,
+            Some("txn-7"),
+            Some("human"),
+            Some("llm_accept:3"),
+            Some("dev-7"),
+            Some(2),
+            Some("aa".repeat(32).as_str()),
+        )
+    }
+
+    #[test]
+    fn every_column_participates_in_the_row_hash() {
+        // The chain's whole claim — CLAUDE.md v1.9, ADR-007/008 — is
+        // that the append-only log is tamper-EVIDENT. That rests
+        // entirely on every column reaching the digest, and NOTHING
+        // asserted it: v0.3 pass 9 dropped `payload` (the field that
+        // carries all the meaning) out of `event_row_hash` and all 252
+        // tests stayed green. Self-consistency tests cannot catch this
+        // — write-then-verify agrees with itself no matter how few
+        // columns are hashed.
+        let base = baseline();
+        let perturbed: Vec<(&str, String)> = vec![
+            ("id", event_row_hash(8, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("ts", event_row_hash(7, 1_700_000_000_001, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("type", event_row_hash(7, 1_700_000_000_000, "ITEM_DELETED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("item_id", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-8"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("payload", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"C"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("txn_id", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-8"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("actor", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("system"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("origin", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:4"), Some("dev-7"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("device_id", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-8"), Some(2), Some("aa".repeat(32).as_str()))),
+            ("schema_ver", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(3), Some("aa".repeat(32).as_str()))),
+            ("prev_hash", event_row_hash(7, 1_700_000_000_000, "ITEM_MOVED", Some("item-7"), r#"{"tier_after":"A"}"#, Some("txn-7"), Some("human"), Some("llm_accept:3"), Some("dev-7"), Some(2), Some("bb".repeat(32).as_str()))),
+        ];
+        assert_eq!(perturbed.len(), 11, "all eleven columns must be covered");
+        for (field, h) in &perturbed {
+            assert_ne!(
+                &base, h,
+                "changing `{field}` left the row hash unchanged — that column is not \
+                 in the digest, and forging it would be undetectable"
+            );
+        }
+        // And every perturbation is distinct from every other, so no two
+        // columns are being folded together.
+        for (i, (fa, ha)) in perturbed.iter().enumerate() {
+            for (fb, hb) in perturbed.iter().skip(i + 1) {
+                assert_ne!(ha, hb, "`{fa}` and `{fb}` collide in the digest");
+            }
+        }
+    }
+
+    #[test]
+    fn null_is_distinguishable_from_empty_string() {
+        // The encoding's stated property. Without the None tag, a NULL
+        // `origin` and an empty-string `origin` would hash identically,
+        // so provenance could be erased rather than altered.
+        let with_none = event_row_hash(
+            1, 1, "ITEM_CREATED", None, "{}", None, None, None, None, None, None,
+        );
+        let with_empty = event_row_hash(
+            1, 1, "ITEM_CREATED", Some(""), "{}", Some(""), Some(""), Some(""), Some(""), None,
+            Some(""),
+        );
+        assert_ne!(with_none, with_empty, "NULL and empty string must not collide");
+    }
+
+    #[test]
+    fn field_boundaries_are_unambiguous_under_concatenation() {
+        // The length prefix's reason for existing: without it, adjacent
+        // fields could be re-partitioned to produce the same digest —
+        // ("ab","c") and ("a","bc"). Currently no field can carry the
+        // bytes needed to exploit that through the app's own write path,
+        // so this is defence-in-depth rather than a live hole; it is
+        // asserted anyway because the encoding's doc comment claims it.
+        let left = event_row_hash(
+            1, 1, "AB", Some("C"), "{}", None, None, None, None, None, None,
+        );
+        let right = event_row_hash(
+            1, 1, "A", Some("BC"), "{}", None, None, None, None, None, None,
+        );
+        assert_ne!(left, right, "field boundaries must survive concatenation");
+    }
+}

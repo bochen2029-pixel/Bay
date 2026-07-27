@@ -91,9 +91,8 @@ using it is closer to honouring the diff than inventing an order. It is
 also visible and trivially draggable, unlike a lost Today slot.
 
 **Why it is a question anyway.** It is a real order-dependence in a
-path whose stated invariant is order-independence, which makes the
-invariant harder to state honestly ("the outcome does not depend on
-order — except for rank"). Two defensible alternatives:
+path whose headline invariant is order-independence. Two defensible
+alternatives:
 1. **Board-derive it too**: sort the moves by `board_order` on the
    pre-diff board before allocating ranks, so a re-listed diff yields a
    byte-identical board and the invariant needs no caveat.
@@ -101,8 +100,25 @@ order — except for rank"). Two defensible alternatives:
    to "tier, state and scarce-slot contests", so nobody later reads the
    broad claim and builds on it.
 
-Doing nothing is the one option that should not survive review: the
-invariant is currently stated more broadly than the code delivers.
+**CORRECTION, 2026-07-27 (v0.3 pass 9).** As originally filed, this
+entry claimed *"SPEC §8.7 currently claims more than the code
+delivers"* and concluded *"doing nothing is the one option that should
+not survive review."* **Both were false, and the error was mine.**
+SPEC.md §8.7 lines 1566–1571 already narrow the invariant and name this
+exact exception —
 
-**Operator call.** Either alternative is a small change. (1) costs one
-sort and removes a caveat; (2) costs one paragraph and admits a limit.
+> The one deliberate exception: the **relative rank of several items
+> moved into the same tier in one accept** follows the order they
+> appear in the diff … it decides nothing about what commits or what
+> is lost.
+
+— and that paragraph landed at `a0f4775` (pass 4), well before this
+question was written. Alternative (2) is therefore **already
+implemented**. I did not check SPEC before asserting what it said, and
+the effect would have been to make the operator decide under an urgency
+I invented.
+
+**Operator call, restated honestly.** Only alternative (1) is live, and
+it is optional rather than owed: board-deriving the rank would cost one
+sort and let §8.7 drop its caveat. **Doing nothing is now a legitimate
+outcome** — the documentation and the code already agree.
