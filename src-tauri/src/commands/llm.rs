@@ -1250,6 +1250,28 @@ mod tests {
             ids.push(it.id);
         }
         let (in_a, in_b) = (ids[0].clone(), ids[1].clone());
+        // Rank the A item WORSE than the B item, deliberately. Ranks
+        // are per-tier sequences, so two first-in-tier items otherwise
+        // share a rank and the id tiebreak decides — which let the tier
+        // byte be a constant with every test still green. With the
+        // ranks inverted, only the tier component can produce the
+        // expected answer.
+        crate::commands::items::move_item_inner(
+            &pool,
+            in_a.clone(),
+            Tier::A,
+            Some("zz".into()),
+            None,
+        )
+        .unwrap();
+        crate::commands::items::move_item_inner(
+            &pool,
+            in_b.clone(),
+            Tier::B,
+            Some("aa".into()),
+            None,
+        )
+        .unwrap();
         // Two actives already on the date → exactly one free slot.
         for i in 0..2 {
             let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
@@ -1274,13 +1296,57 @@ mod tests {
         assert_eq!(
             today_of(&in_a).as_deref(),
             Some(DATE),
-            "the A-tier commitment keeps the day"
+            "the A-tier commitment keeps the day DESPITE its worse rank"
         );
         assert_eq!(
             today_of(&in_b),
             None,
             "the B-tier item yields — tier is the highest-order component of the contest key"
         );
+    }
+
+    #[test]
+    fn accept_reorg_done_then_active_in_one_diff_spawns_nothing() {
+        // `completed.remove` on a later Active op is what makes this
+        // right, and nothing tested it: an item completed and then
+        // reactivated in the same diff ends ACTIVE, so it owes no
+        // recurrence instance. Spawning one would leave the user with a
+        // duplicate of a task they did not finish.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "weekly".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        let sug = seed_suggestion(&pool);
+
+        let outcome = apply_reorg_inner(
+            &pool,
+            sug,
+            vec![
+                done_op(&item.id),
+                ReorgProposal {
+                    item_id: item.id.clone(),
+                    action: ProposalAction::Active,
+                    to_tier: None,
+                    rationale: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert!(
+            outcome.spawned_ids.is_empty(),
+            "the item ends active, so it owes no next instance"
+        );
+        let conn = pool.get().unwrap();
+        let (n, state): (i64, String) = conn
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM items WHERE content = 'weekly' AND deleted = 0), \
+                        (SELECT state FROM items WHERE id = ?1)",
+                [&item.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n, 1, "no duplicate was created");
+        assert_eq!(state, "active");
     }
 
     #[test]

@@ -193,6 +193,31 @@
       "expect_event_counts": { "TODAY_REMOVED": 1 }
     },
     {
+      "name": "ACCEPT-DIFF: the contest is decided by declared board position",
+      "description": "Two reactivations compete for one Today slot, and the declared ranks deliberately INVERT creation order: `p` is declared best (\"a\") though created first, `q` worst (\"z\") though created second. The lower-ranked item yields, so `q` loses its day. Reading these ranks as decoration — as the runner once did — gives the opposite answer, which is how a case can describe a board it never built.",
+      "ops": [
+        { "type": "create", "tier": "C", "content": "p", "rank": "a" },
+        { "type": "today", "item_index": 0, "date": "D2" },
+        { "type": "set_state", "item_index": 0, "state": "blocked", "blocked_reason": "stuck" },
+        { "type": "create", "tier": "C", "content": "q", "rank": "z" },
+        { "type": "today", "item_index": 1, "date": "D2" },
+        { "type": "set_state", "item_index": 1, "state": "blocked", "blocked_reason": "stuck" },
+        { "type": "create", "tier": "A", "content": "f0", "rank": "m" },
+        { "type": "create", "tier": "A", "content": "f1", "rank": "n" },
+        { "type": "today", "item_index": 2, "date": "D2" },
+        { "type": "today", "item_index": 3, "date": "D2" },
+        {
+          "type": "accept_reorg",
+          "ops": [
+            { "item_index": 0, "action": "active" },
+            { "item_index": 1, "action": "active" }
+          ]
+        }
+      ],
+      "expect_on_today": { "0": "D2", "1": null },
+      "expect_today_active": { "D2": 3 }
+    },
+    {
       "name": "ACCEPT-DIFF: completing a blocked item leaves undo working",
       "description": "Every done-door must carry the outgoing blocked reason, or undo writes a blocked row with a null reason, trips the migration-002 CHECK, rolls back, and stays dead on that transaction. The accept path was the last door missing it.",
       "ops": [
