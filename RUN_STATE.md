@@ -37,19 +37,32 @@ Fable 5, continued on Claude Opus 5 after a mid-run quota limit.
 
 ## Current task
 
-**Session close — done.** The cold-context verifier ran (Opus, cold,
-`de37921..HEAD`) and returned **FAIL**; every finding is fixed and
-regression-tested (commit b884b4d): a BLOCKING Today-cap bypass on the
-re-activation/restore/accept doors, a MAJOR missing recurrence spawn in
-the LLM accept path, six MINORs, and three long-standing bugs in
-`verify-schema.py` (broken since migration 002, never noticed because
-it required a live DB — now runnable with `--fresh`).
+**A chain of cold verification passes, each reviewing the last one's
+fix.** Record so far: **3 for 3** — every fix commit contained a new
+defect, with severity strictly decreasing.
+
+| pass | subject | verdict |
+|---|---|---|
+| 1 | v0.3 feature work | FAIL — BLOCKING Today-cap bypass (open) |
+| 2 | `b884b4d` (pass-1 fix) | FAIL — BLOCKING cap **escape** introduced by the fix |
+| 3 | `8f4592e` (pass-2 fix) | FAIL — 3 MAJOR, order-dependence (fails closed) |
+| 4 | `0562957` (pass-3 fix) | dispatched |
+
+Pass 3's structural repair: `apply_reorg_inner` now runs in **two
+passes** — pass 1 applies the human's ops (cap check on those alone),
+pass 2 resolves derived effects (recurrence spawns, Today overflow)
+from the FINISHED simulation. The outcome is a function of the op set,
+not its order, and a derived effect can never fail a legal diff.
 
 ## Next concrete actions
 
-1. **F-01 (operator)**: freeze the corrected `caps.json` cases.
-2. A second cold pass over **b884b4d itself** — the fixes were written
-   in response to the verifier and have not been cold-reviewed.
+1. **Read pass 4's findings** when they arrive; fix and re-gate. If it
+   comes back CLEAN, that is the first clean pass in the chain and the
+   point at which v0.3 can be called verified rather than converging.
+2. **F-01 (operator)**: freeze `caps.json` #5/#6/#8 and the new
+   `today.json` (13 cases). Until then the ground truth is
+   agent-authored — the condition the Externality Principle exists to
+   end.
 3. F-03 I-22 streaming; F-04 coach v2 over session aggregates.
 4. VISION v0.4 (wake dates, weekly review, C-bankruptcy, triage flow).
 5. Do NOT build T4 / T5 / T8 — still operator-gated (VISION §7).
