@@ -1137,3 +1137,69 @@ minimal counterexample (n_rec=2, n_blk=1, a_fill=4).
 
 Gates: cargo **261/261**, vitest 118/118, golden, schema, reachability
 39/39, store-logic. Mutations 27 -> 33.
+
+## 2026-07-27 — Tenth cold pass: the gate`s own blind spot, and a stopping recommendation
+
+Pass 10: **PASS, no BLOCKING, FIFTH consecutive round with no incorrect
+behaviour in the shipped code.** The subject range contained **zero
+production lines** — the chain had begun auditing its own auditing
+apparatus, and the headline finding is about a Python script.
+
+- **MAJOR-1 — the gate scored an environmental build failure as
+  "caught".** A full disk broke `libsqlite3-sys` mid-run and
+  `check-mutations.py` printed "All 33 mutations caught" with **14
+  never exercised**. The claim was true (all 14 re-verified
+  individually) but the evidence was not. Mutations only ever touch
+  first-party files, so a dependency that fails to compile is
+  definitionally environmental; the gate now names the crate, refuses
+  to score it, and ABORTS — everything after that point would rest on
+  the same non-evidence.
+- **MAJOR-2 — my hash-encoding tests were decoration.** Both the length
+  prefix and the NULL tag could be deleted with 261 tests green; each
+  test pinned one example that survives the mutation for an incidental
+  reason. That is `b734707`'s own lesson — *pinned the comparison, not
+  the constant* — in a test committed in the same batch. Replaced with
+  the exact collision pairs. Without the NULL tag, provenance is
+  **forgeable**, not merely erasable.
+- **MAJOR-3 — 4 of 11 undo arms unexercised.** Date-set and first-step
+  could stop inverting; `ITEM_RESTORED` could vanish, which **bricks
+  Ctrl+Z**; and undo-of-add-to-today could be labelled `expired`,
+  recording a human action as the day-roll — law 10`s one sanctioned
+  machine write — permanently.
+- **MAJOR-4 — `capture/mod.rs` had ZERO tests**, on the app`s only
+  network listener. Inbox-only, the shared secret, and empty-content
+  were all disarmable. Policy lifted out of the axum handler (which
+  needs a live AppHandle and so could not be tested at all).
+- **MINOR-5 — the coach`s window arithmetic**: the untreated sibling of
+  pass 9`s mirror.rs fix, one module over. Sibling drift again.
+
+Breadth sweep, per the verifier`s recommendation: `settings.rs` and
+`prompt.rs` also had zero tests. LAN capture off by default, the
+documented port, SPEC 5.3 staleness thresholds, `has_api_key` never
+persisted, the prompt`s SUGGESTIONS-ONLY constraint, law 9`s
+report-not-exhort rule.
+
+SPEC 8.7 amended: the rank exception now reads "within that accept" —
+ranks allocated in one accept are real in `orig` for the next, so the
+model`s listing order can reach a later contest. Code right; the
+unqualified sentence claimed more than it delivered.
+
+Four more self-caught defects this round, all the same shape: my hash
+tests were decoration; my restore-arm mutation was caught by a COMPILE
+ERROR (the gate flagged it as a weak guard); my contest-shape assertion
+would have flaked 1 run in 6; and one new anchor did not match because
+I escaped an em-dash instead of using it — caught in seconds by the new
+`--check-anchors`.
+
+Gates: cargo **271/271**, vitest 118/118, build warning-clean, golden,
+schema, reachability, store-logic. Mutations 33 -> 46.
+
+**The verifier recommended stopping this format**, and I agree. Five
+rounds with zero behavioural defects; 12 of its own 23 mutations
+survived in never-probed modules versus near-zero inside
+`apply_reorg_inner`. The findings have walked from the product, to the
+tests, to the tools that check the tests, to the prose describing them.
+That trajectory says the code is sound and my ATTENTION is what keeps
+being wrong — which no further pass by the same author can fix. What
+remains is **dogfooding**: VISION 9`s kill conditions are the only
+information another pass cannot produce.
