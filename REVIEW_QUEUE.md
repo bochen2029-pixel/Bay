@@ -6,13 +6,22 @@
 > Ordered **cheapest-to-verify first**. Each item: what changed, how to
 > check it, and the exact revert.
 >
-> Gates: `cargo test` **248/248**, `cargo build` warning-clean,
+> Gates: `cargo test` **252/252**, `cargo build` warning-clean,
 > `pnpm build` clean, `pnpm test` **118/118**,
 > `node scripts/test-store-logic.mjs` green,
 > `python scripts/check-golden.py` green (5 files, 16 today cases),
 > `python scripts/verify-schema.py --fresh` green (13 objects, v6),
 > `python scripts/check-reachability.py` green (39/39),
-> `python scripts/check-mutations.py` green (**20/20 caught**).
+> `python scripts/check-mutations.py` green (**25/25 caught** at
+> `2b7d58f`; two more added since, re-running).
+>
+> One result worth pulling out of that list: the `caps/restore-ignores-cap`
+> mutation — which reintroduces P2e BLOCKING-2, where restoring from the
+> archive could push A past 5 — is caught by a Rust test **and by
+> `golden_caps_cases_execute`, i.e. by operator-authored case #12**. That
+> is the Externality Principle paying out exactly as designed: ground
+> truth the agent did not write, catching a regression in the product's
+> central invariant. It is also the argument for freezing the rest.
 >
 > **Seven cold-context verifier passes ran, each reviewing the previous
 > one's fix. All seven found something.** Every finding is fixed and
