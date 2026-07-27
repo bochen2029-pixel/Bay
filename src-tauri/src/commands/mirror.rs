@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn a_leak_does_not_count_a_slow_demotion_out_of_a() {
+    fn a_leak_window_is_pinned_at_forty_eight_hours() {
         // The 48h threshold itself. Every existing fixture demotes in
         // the same instant it creates, so `ts - entered` is always ~0
         // and only the TRUE side of the comparison is ever taken —
@@ -614,33 +614,44 @@ mod tests {
         // that counts considered demotions would put a false accusation
         // in front of the user. Found by v0.3 pass 9.
         //
+        // The first version of this test used a SEVEN-day dwell, which
+        // pinned the branch but not the constant: seven days is outside
+        // the real 48h window AND outside a doubled one, so widening
+        // LEAK_WINDOW_MS still survived the gate. A threshold has to be
+        // pinned from BOTH sides, one item just inside and one just
+        // outside, or the only thing asserted is that the comparison
+        // exists.
+        //
         // Timestamps are raw-inserted because the command layer stamps
         // `now`; only the log matters here, since the A-leak reckoning
         // is a pure walk over events.
+        const HOUR_MS: i64 = 3_600_000;
         let pool = fresh_pool();
         let now = crate::db::unix_ms_now();
-        let entered = now - 10 * DAY_MS;
-        let left = now - 3 * DAY_MS; // 7 days in A — deliberate, not a leak
+        let entered = now - 4 * DAY_MS;
         let conn = pool.get().unwrap();
-        for (ts, payload) in [
-            (entered, r#"{"tier_before":"inbox","rank_before":"m","tier_after":"A","rank_after":"m"}"#),
-            (left, r#"{"tier_before":"A","rank_before":"m","tier_after":"C","rank_after":"m"}"#),
-        ] {
-            conn.execute(
-                "INSERT INTO events (ts, type, item_id, payload) VALUES (?1, 'ITEM_MOVED', 'slow-1', ?2)",
-                rusqlite::params![ts, payload],
-            )
-            .unwrap();
+        for (item, dwell) in [("fast-1", 47 * HOUR_MS), ("slow-1", 49 * HOUR_MS)] {
+            for (ts, payload) in [
+                (entered, r#"{"tier_before":"inbox","rank_before":"m","tier_after":"A","rank_after":"m"}"#),
+                (entered + dwell, r#"{"tier_before":"A","rank_before":"m","tier_after":"C","rank_after":"m"}"#),
+            ] {
+                conn.execute(
+                    "INSERT INTO events (ts, type, item_id, payload) VALUES (?1, 'ITEM_MOVED', ?2, ?3)",
+                    rusqlite::params![ts, item, payload],
+                )
+                .unwrap();
+            }
         }
         drop(conn);
 
         let stats = get_mirror_stats_inner(&pool, None).unwrap();
-        assert_eq!(stats.a_leak.departures, 1, "it did leave A, and that is counted");
+        assert_eq!(stats.a_leak.departures, 2, "both items left A");
         assert_eq!(
-            stats.a_leak.fast_leaks, 0,
-            "but after 7 days it is a considered demotion, not A-as-inbox"
+            stats.a_leak.fast_leaks, 1,
+            "47h is A-as-inbox; 49h is a considered demotion. Widening or narrowing \
+             the window moves this number."
         );
-        assert_eq!(stats.a_leak.rate, 0.0);
+        assert_eq!(stats.a_leak.rate, 0.5);
     }
 
     #[test]
