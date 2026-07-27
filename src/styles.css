@@ -1903,3 +1903,263 @@ button:hover {
   color: #00897b;
   white-space: nowrap;
 }
+
+/* ── v0.3 Today lane ─────────────────────────────────────────────── */
+
+.today-lane {
+  padding: 0.5rem 0.9rem 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 15%, transparent);
+}
+
+.today-header {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.today-title {
+  font-size: 0.95rem;
+  margin: 0;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.today-counter {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.today-header button,
+.day-close button {
+  font: inherit;
+  font-size: 0.82rem;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+
+.today-empty {
+  margin: 0.4rem 0 0;
+  opacity: 0.7;
+  font-size: 0.9rem;
+}
+
+.today-list {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.today-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 5px;
+  background: color-mix(in srgb, Canvas 88%, CanvasText 12%);
+}
+
+.today-row.is-done .today-content {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.today-tier,
+.today-picker-tier,
+.mirror-tier {
+  font-size: 0.7rem;
+  font-weight: 700;
+  padding: 0 0.3rem;
+  border-radius: 3px;
+  background: color-mix(in srgb, CanvasText 14%, transparent);
+}
+
+.today-content {
+  font-weight: 500;
+}
+
+.today-first-step {
+  opacity: 0.75;
+  font-size: 0.85rem;
+}
+
+.today-start {
+  margin-left: auto;
+}
+
+.today-remove {
+  border: none;
+  background: none;
+  cursor: pointer;
+  opacity: 0.5;
+}
+
+.today-remove:hover {
+  opacity: 1;
+}
+
+.today-picker {
+  margin-top: 0.5rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  border-radius: 6px;
+  background: Canvas;
+}
+
+.today-picker-prompt {
+  margin: 0 0 0.4rem;
+  font-weight: 600;
+}
+
+.today-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+
+.today-picker-list label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.15rem 0;
+  cursor: pointer;
+}
+
+.today-picker-hint {
+  opacity: 0.65;
+  font-style: italic;
+}
+
+.today-picker-actions {
+  display: flex;
+  gap: 0.4rem;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.today-picker-actions button {
+  font: inherit;
+  padding: 0.2rem 0.7rem;
+  cursor: pointer;
+}
+
+.day-close {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+/* ── v0.3 Mirror ─────────────────────────────────────────────────── */
+
+.mirror {
+  padding: 1rem 1.2rem 2rem;
+  max-width: 62rem;
+}
+
+.mirror-header {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.8rem;
+}
+
+.mirror-header h2 {
+  margin: 0;
+}
+
+.mirror-windows {
+  display: inline-flex;
+  gap: 0.25rem;
+}
+
+.mirror-section {
+  margin-bottom: 1.6rem;
+}
+
+.mirror-section h3 {
+  margin: 0 0 0.5rem;
+  font-size: 0.95rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  opacity: 0.8;
+}
+
+.mirror-figures {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+}
+
+.mirror-figure-value {
+  font-size: 1.35rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.mirror-figure-label {
+  font-size: 0.78rem;
+  opacity: 0.7;
+}
+
+.mirror-note {
+  margin: 0.6rem 0 0;
+  line-height: 1.5;
+  max-width: 60ch;
+}
+
+.mirror-rows {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mirror-rows li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+.mirror-row-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mirror-bars {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.mirror-bar-row {
+  display: grid;
+  grid-template-columns: 10rem 1fr 8rem;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.mirror-bar-track {
+  height: 0.65rem;
+  background: color-mix(in srgb, CanvasText 10%, transparent);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.mirror-bar-fill {
+  display: block;
+  height: 100%;
+  background: color-mix(in srgb, CanvasText 45%, transparent);
+}

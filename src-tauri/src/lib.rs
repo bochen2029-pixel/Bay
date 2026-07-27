@@ -170,6 +170,7 @@ pub fn run() {
             commands::session::start_session,
             commands::session::end_session,
             commands::session::get_open_session,
+            commands::mirror::get_mirror_stats,
             commands::events::get_events,
             commands::events::get_items_at,
             commands::events::list_archived_items,

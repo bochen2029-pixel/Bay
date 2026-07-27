@@ -482,3 +482,25 @@
   with reason menu; survives restart via get_open_session at
   bootstrap); Strip hover ▶ Start + "now" badge.
 - Gates: cargo 197/197 warning-clean; pnpm build clean; vitest 95/95.
+
+## 2026-07-26 — P5c(3): Today lane + day ceremonies UI + Mirror v1
+
+- commands/mirror.rs — get_mirror_stats: ONE log pass + SQL, NO LLM
+  (VISION 3.5 inverts the dependency order: facts free, interpretation
+  optional). Computes flow (created/completed/throughput/lead-time
+  p50+p90/Little''s-law prediction), A-leak rate (A->C|inbox within 48h
+  of entering A), avoidance (committed items with ZERO sessions — the
+  procrastination metric v0.2 structurally could not answer), block map
+  (reason -> count + total days, open intervals count to now), session
+  stats (+ interruption taxonomy), Today honesty (planned/finished/
+  expired — timezone-free by construction), and receipts (finished work
+  with its journey). 8 tests incl. empty-log calm and percentile math.
+- TodayLane.tsx: the lane above the board (<=3), roll_day on mount
+  (frontend owns local date), day-open picker that floats last night''s
+  "first move" to the top, per-row Start, day-close with its ONE
+  question. MirrorView.tsx: hand-rolled figures/bars, no chart lib;
+  editorial rule — it accuses only when the data is unambiguous
+  (>=40% leak) and reads calm on an empty log.
+- Mirror added to the view switcher + command palette.
+- Tests: cargo 206/206 warning-clean; vitest 106/106 (+11: FocusBar 5,
+  MirrorView 6); pnpm build clean; store-logic + check-golden green.

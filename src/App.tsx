@@ -38,11 +38,21 @@ import { AuditLogView } from "./components/AuditLogView";
 import { CommandPalette } from "./components/CommandPalette";
 import { BatchActionBar } from "./components/BatchActionBar";
 import { FocusBar } from "./components/FocusBar";
+import { TodayLane } from "./components/TodayLane";
+import { MirrorView } from "./components/MirrorView";
 
-type View = "board" | "calendar" | "timetravel" | "archive" | "audit" | "settings";
+type View =
+  | "board"
+  | "mirror"
+  | "calendar"
+  | "timetravel"
+  | "archive"
+  | "audit"
+  | "settings";
 
 const VIEW_LABELS: Record<View, string> = {
   board: "Board",
+  mirror: "Mirror",
   calendar: "Calendar",
   timetravel: "Time-travel",
   archive: "Archive",
@@ -52,7 +62,14 @@ const VIEW_LABELS: Record<View, string> = {
 
 // The top-bar navigation switcher excludes Settings; Settings is
 // reached via the gear icon instead.
-const SWITCHER_VIEWS: View[] = ["board", "calendar", "timetravel", "archive", "audit"];
+const SWITCHER_VIEWS: View[] = [
+  "board",
+  "mirror",
+  "calendar",
+  "timetravel",
+  "archive",
+  "audit",
+];
 
 const TIER_CAP: Record<Tier, number | undefined> = {
   inbox: undefined,
@@ -139,6 +156,7 @@ export default function App() {
       />
       <main className="main">
         {view === "board" ? <Board /> : null}
+        {view === "mirror" ? <MirrorView /> : null}
         {view === "calendar" ? (
           <CalendarView onFocusItem={() => setView("board")} />
         ) : null}
@@ -348,6 +366,7 @@ function Board() {
 
   return (
     <>
+      <TodayLane />
       <BatchActionBar />
       <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
         <div className="board">

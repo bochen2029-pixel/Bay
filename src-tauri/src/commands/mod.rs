@@ -7,5 +7,6 @@ pub mod day;
 pub mod events;
 pub mod items;
 pub mod llm;
+pub mod mirror;
 pub mod session;
 pub mod settings;
