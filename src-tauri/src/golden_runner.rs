@@ -628,6 +628,25 @@ const TODAY_CASE_KEYS: &[&str] = &[
     "expect_item_blocked_reason",
 ];
 
+/// Honour a `rank` declared on a `create` op.
+///
+/// `create_item_inner` places new items at the TOP of a tier, so the
+/// last-created has the SMALLEST rank — meaning a case that declares
+/// `"rank": "m", "n", "o"` in creation order actually built the exact
+/// reverse board. That was harmless while ranks decided nothing; it
+/// stopped being harmless once rank decides which item wins a contest,
+/// because an operator reading the case would reason from a board that
+/// does not exist. Setting the declared rank explicitly makes the case
+/// text true.
+fn apply_declared_rank(pool: &SqlitePool, op: &Value, item: &crate::domain::Item, case: &str) {
+    let Some(rank) = op["rank"].as_str() else { return };
+    if item.rank == rank {
+        return;
+    }
+    move_item_inner(pool, item.id.clone(), item.tier, Some(rank.to_string()), None)
+        .unwrap_or_else(|e| panic!("[{case}] could not set declared rank {rank:?}: {e}"));
+}
+
 /// A minimal LLM_SUGGESTION_GENERATED row, so an `accept_reorg` op has
 /// something to accept. The accept path requires the suggestion to
 /// exist; its content is irrelevant to the board rules under test.
@@ -683,7 +702,10 @@ fn run_today_case(case: &Value, dates: &serde_json::Map<String, Value>) {
                 None,
                 None,
             )
-            .map(|item| ids.push(item.id)),
+            .map(|item| {
+                apply_declared_rank(&pool, op, &item, name);
+                ids.push(item.id);
+            }),
             "set_state" => set_item_state_inner(
                 &pool,
                 ids[idx(op)].clone(),

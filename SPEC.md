@@ -1531,20 +1531,33 @@ proposes, the human accepts, the deterministic tier writes.
   proposals**. The LLM has no write path, but that is a lever on the
   deterministic tier's result, which is the spirit of the firewall if
   not its letter.
-- **What "order-independent" covers, precisely.** Whether the accept
-  commits, and the committed **tier / state / Today membership /
-  recurrence-child placement** of every item, are a function of the
-  accepted *set*. Pass 2 therefore iterates by **board position**
-  (`board_order`: tier, then rank, then id) and never by the ops array
-  — when two children contend for one free tier slot, the higher-ranked
-  parent's child takes it; when two reactivations contend for one
-  Today slot, the lower-ranked item gives it up. Both are answers the
-  human can predict and defend from their own board.
+- **What "order-independent" covers, precisely.** Ops on *different*
+  items commute: whether the accept commits, and the committed
+  **tier / state / Today membership / recurrence-child placement** of
+  every item, are a function of the accepted *set*. Ops on the *same*
+  item do not and must not commute — they apply in sequence, so
+  `{active x, done x}` leaves `x` done while the reverse leaves it
+  active, exactly as the human sequenced them. The precise claim is
+  therefore: **per item, in sequence; across items, as a set.**
+- Pass 2 iterates by **board position** (`board_order`: tier, then
+  rank, then id) and never by the ops array — when two children contend
+  for one free tier slot, the higher-ranked parent's child takes it;
+  when two reactivations contend for one Today slot, the lower-ranked
+  item gives it up. Both are answers the human can predict and defend
+  from their own board.
+  `board_order` reads the **pre-diff** board (`orig`), not the mutated
+  simulation. `next_rank` allocates end-of-tier ranks in ops order, so
+  two items moved into one tier have a relative rank the *model* chose;
+  keying the contest on the post-diff board would hand the outcome
+  straight back to the array. `orig` is also the board the human was
+  looking at when they read the diff, which is what makes the rule
+  predictable rather than merely deterministic.
   The one deliberate exception: the **relative rank of several items
   moved into the same tier in one accept** follows the order they
   appear in the diff — which is the order the human reviewed and
   accepted them in. That affects where they sit next to each other,
-  never what commits or what is lost.
+  and (since `board_order` ignores post-diff ranks) it decides nothing
+  about what commits or what is lost.
 - **A derived effect may never fail the accept.** Pass 2 places a
   spawned child where it fits and overflows to Inbox otherwise; it
   never returns `CAP_EXCEEDED`. A human diff that is legal on its face

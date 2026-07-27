@@ -432,7 +432,7 @@ pub(crate) fn apply_reorg_inner(
         // higher, which is both deterministic and the answer they would
         // defend.
         let mut spawn_candidates: Vec<&String> = completed.iter().collect();
-        spawn_candidates.sort_by(|a, b| board_order(&sim, a).cmp(&board_order(&sim, b)));
+        spawn_candidates.sort_by(|a, b| board_order(&orig, &sim, a).cmp(&board_order(&orig, &sim, b)));
         for id in spawn_candidates {
             let parent = sim.get(id).cloned().unwrap();
             let rule = match crate::commands::items::recurrence_rule_of(&parent) {
@@ -497,7 +497,7 @@ pub(crate) fn apply_reorg_inner(
                     .unwrap_or(false)
             })
             .collect();
-        today_candidates.sort_by(|a, b| board_order(&sim, b).cmp(&board_order(&sim, a)));
+        today_candidates.sort_by(|a, b| board_order(&orig, &sim, b).cmp(&board_order(&orig, &sim, a)));
         for id in today_candidates {
             let item = sim.get(id).cloned().unwrap();
             let date = match &item.today_on {
@@ -562,19 +562,31 @@ fn effective_active(
     Ok(base - count_in(orig) + count_in(sim))
 }
 
-/// A total order over items by their position on the BOARD: tier
-/// first, then rank, then id as the tiebreak.
+/// A total order over items by their position on the board the human
+/// REVIEWED: tier first, then rank, then id as the tiebreak.
 ///
 /// Used to order pass-2's derived effects. Anything that must pick a
 /// winner between two items — which spawn keeps the last tier slot,
 /// which reactivation loses its Today slot — has to pick by something
 /// the human controls. Iterating the ops array instead lets the model
 /// decide by listing order, which SPEC §8.7 forbids.
+///
+/// **Keyed on `orig`, deliberately, not on the mutated simulation.**
+/// `next_rank` hands out end-of-tier ranks in ops-array order, so two
+/// items moved into one tier in the same diff have a relative rank
+/// that the model's listing order decided. Keying on the post-diff
+/// board would therefore smuggle that order straight back into the
+/// contest — the same defect one layer down. `orig` is the board as it
+/// stood when the human read the diff, which is also the board SPEC
+/// §8.7 appeals to ("answers the human can predict from their own
+/// board"). Items absent from `orig` — only ever spawned children,
+/// which are never candidates — fall back to the simulation.
 fn board_order(
+    orig: &std::collections::HashMap<String, crate::domain::Item>,
     sim: &std::collections::HashMap<String, crate::domain::Item>,
     id: &str,
 ) -> (u8, String, String) {
-    match sim.get(id) {
+    match orig.get(id).or_else(|| sim.get(id)) {
         Some(it) => (
             match it.tier {
                 Tier::A => 0,
@@ -1058,6 +1070,224 @@ mod tests {
         assert!(
             board.iter().all(|r| !r.0.starts_with("blocked-") || r.2 == "active"),
             "both blocked items were reactivated"
+        );
+    }
+
+    /// The declared policy, pinned by OUTCOME rather than by
+    /// determinism. Its absence was a real hole: flipping either pass-2
+    /// sort, or replacing `board_order` with a raw UUID sort, left the
+    /// whole suite green — the permutation test asserts only that a
+    /// contest *happened*, never who won, and a cross-permutation
+    /// comparison is satisfied by ANY deterministic key.
+    #[test]
+    fn accept_reorg_contests_are_decided_by_board_position() {
+        use crate::commands::items::set_item_recurrence_inner;
+        const DATE: &str = "2026-07-26";
+
+        // ── spawn contest: one free A slot, two recurring completions.
+        // `top` is ranked above `bottom` in A, so TOP's child keeps the
+        // slot and BOTTOM's child is exiled to Inbox.
+        {
+            let pool = fresh_pool();
+            // create_item_inner places new items at TOP of tier, so the
+            // LAST created has the smallest rank. Create bottom first.
+            let bottom =
+                create_item_inner(&pool, Tier::A, "bottom".into(), None, None).unwrap();
+            let top = create_item_inner(&pool, Tier::A, "top".into(), None, None).unwrap();
+            assert!(top.rank < bottom.rank, "fixture: top must outrank bottom");
+            for id in [&top.id, &bottom.id] {
+                set_item_recurrence_inner(&pool, id.clone(), Some("FREQ=DAILY".into())).unwrap();
+            }
+            // Fill A to cap, so the two completions free exactly two
+            // slots and the two children need two — but one filler is
+            // reactivated below? No: here A ends with 3 fills + 2
+            // children = 5 = cap only if one child overflows.
+            for i in 0..(A_CAP - 2) {
+                create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            }
+            // A active = 5. Completing both frees 2 → 3 active, so BOTH
+            // children fit (5). To force scarcity, block one filler back
+            // in: instead, complete only one slot's worth by also
+            // reactivating a blocked A item.
+            let blocked =
+                create_item_inner(&pool, Tier::B, "blocked-a".into(), None, None).unwrap();
+            crate::commands::items::set_item_state_inner(
+                &pool,
+                blocked.id.clone(),
+                ItemState::Blocked,
+                Some("stuck".into()),
+            )
+            .unwrap();
+            let sug = seed_suggestion(&pool);
+            // done(top), done(bottom), move(blocked→A)+active: A ends
+            // 5-2+1 = 4 → one free slot for two children.
+            let outcome = apply_reorg_inner(
+                &pool,
+                sug,
+                vec![
+                    done_op(&bottom.id), // listed FIRST on purpose
+                    done_op(&top.id),
+                    move_op(&blocked.id, "A"),
+                    ReorgProposal {
+                        item_id: blocked.id.clone(),
+                        action: ProposalAction::Active,
+                        to_tier: None,
+                        rationale: None,
+                    },
+                ],
+            )
+            .unwrap();
+            assert_eq!(outcome.spawned_ids.len(), 2);
+
+            let conn = pool.get().unwrap();
+            let tier_of = |content: &str| -> Vec<String> {
+                let mut stmt = conn
+                    .prepare(
+                        "SELECT tier FROM items WHERE content = ?1 AND state = 'active' \
+                         AND deleted = 0",
+                    )
+                    .unwrap();
+                stmt.query_map([content], |r| r.get(0))
+                    .unwrap()
+                    .collect::<Result<_, _>>()
+                    .unwrap()
+            };
+            assert_eq!(
+                tier_of("top"),
+                vec!["A".to_string()],
+                "the higher-ranked parent's child takes the free slot"
+            );
+            assert_eq!(
+                tier_of("bottom"),
+                vec!["inbox".to_string()],
+                "the lower-ranked parent's child is the one exiled — and note it was \
+                 listed FIRST in the diff, so ops order did not decide this"
+            );
+        }
+
+        // ── Today contest: one free slot, two reactivations in ONE tier
+        // (so `rank` is the deciding component, not `tier`).
+        {
+            let pool = fresh_pool();
+            let mut ids = Vec::new();
+            for name in ["bottom", "top"] {
+                let it = create_item_inner(&pool, Tier::B, name.into(), None, None).unwrap();
+                crate::commands::day::add_to_today_inner(&pool, it.id.clone(), DATE.into())
+                    .unwrap();
+                crate::commands::items::set_item_state_inner(
+                    &pool,
+                    it.id.clone(),
+                    ItemState::Blocked,
+                    Some("stuck".into()),
+                )
+                .unwrap();
+                ids.push(it);
+            }
+            let (bottom, top) = (ids[0].clone(), ids[1].clone());
+            assert!(top.rank < bottom.rank, "fixture: top must outrank bottom");
+            // Two actives already on the date → one free slot.
+            for i in 0..2 {
+                let f = create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+                crate::commands::day::add_to_today_inner(&pool, f.id.clone(), DATE.into()).unwrap();
+            }
+            let sug = seed_suggestion(&pool);
+            let active_op = |id: &String| ReorgProposal {
+                item_id: id.clone(),
+                action: ProposalAction::Active,
+                to_tier: None,
+                rationale: None,
+            };
+            apply_reorg_inner(
+                &pool,
+                sug,
+                // `top` listed FIRST — if ops order decided, top would lose.
+                vec![active_op(&top.id), active_op(&bottom.id)],
+            )
+            .unwrap();
+
+            let conn = pool.get().unwrap();
+            let today_of = |id: &String| -> Option<String> {
+                conn.query_row("SELECT today_on FROM items WHERE id = ?1", [id], |r| r.get(0))
+                    .unwrap()
+            };
+            assert_eq!(
+                today_of(&top.id).as_deref(),
+                Some(DATE),
+                "the higher-ranked item keeps the last Today slot"
+            );
+            assert_eq!(
+                today_of(&bottom.id),
+                None,
+                "the lower-ranked item is the one that yields"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_reorg_moves_do_not_decide_a_contest() {
+        // Pass 5's MAJOR: `board_order` used to read the MUTATED
+        // simulation, and `next_rank` hands out end-of-tier ranks in ops
+        // order — so two items moved into one tier had a relative rank
+        // the model chose, and if they also contended, the model chose
+        // the winner. Keying on the pre-diff board removes the lever.
+        use crate::commands::items::set_item_recurrence_inner;
+        let build = || {
+            let pool = fresh_pool();
+            // x outranks y in C (created last = top of tier).
+            let y = create_item_inner(&pool, Tier::C, "y".into(), None, None).unwrap();
+            let x = create_item_inner(&pool, Tier::C, "x".into(), None, None).unwrap();
+            assert!(x.rank < y.rank, "fixture: x must outrank y in C");
+            for id in [&x.id, &y.id] {
+                set_item_recurrence_inner(&pool, id.clone(), Some("FREQ=DAILY".into())).unwrap();
+            }
+            for i in 0..(A_CAP - 1) {
+                create_item_inner(&pool, Tier::A, format!("fill-{i}"), None, None).unwrap();
+            }
+            let sug = seed_suggestion(&pool);
+            (pool, x.id, y.id, sug)
+        };
+
+        // A holds 4 actives; both x and y move in and complete, so A
+        // ends at 4 + one surviving child = 5, and one child overflows.
+        let mut outcomes = Vec::new();
+        for reversed in [false, true] {
+            let (pool, x_id, y_id, sug) = build();
+            let mut ops = vec![
+                move_op(&x_id, "A"),
+                move_op(&y_id, "A"),
+                done_op(&x_id),
+                done_op(&y_id),
+            ];
+            if reversed {
+                ops.swap(0, 1); // list y's move first
+            }
+            apply_reorg_inner(&pool, sug, ops).unwrap();
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare(
+                    "SELECT content, tier FROM items WHERE state = 'active' AND deleted = 0 \
+                     AND content IN ('x','y') ORDER BY content",
+                )
+                .unwrap();
+            let rows: Vec<(String, String)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap();
+            outcomes.push(rows);
+        }
+        assert_eq!(
+            outcomes[0], outcomes[1],
+            "reordering two move ops changed which child was exiled — the model is \
+             deciding the contest through rank allocation"
+        );
+        assert_eq!(
+            outcomes[0],
+            vec![
+                ("x".to_string(), "A".to_string()),
+                ("y".to_string(), "inbox".to_string())
+            ],
+            "and the winner is the one the human ranked higher on the board they reviewed"
         );
     }
 

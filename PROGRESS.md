@@ -858,3 +858,42 @@ existed; nothing pointed it at that door.
 
 Gates: cargo 237/237 warning-clean; check-golden 5 files / 15 today
 cases.
+
+## 2026-07-27 — Fifth cold pass: the ordering KEY, and an unpinned policy
+
+Pass 5 (subject: `a0f4775` + `1e7467d`) returned FAIL: 2 MAJOR, no
+BLOCKING. Chain 5 for 5, severity still falling.
+
+- **MAJOR — `board_order` read the MUTATED simulation.** `next_rank`
+  hands out end-of-tier ranks in ops order, so two items moved into one
+  tier had a relative rank the MODEL chose — and if they also contended
+  for a slot, the model chose the winner. The same defect class one
+  layer down again: pass 3 fixed iteration order, pass 4 fixed
+  derived-effect ordering, and the ordering KEY was still ops-derived.
+  Fix: key on `orig`, the pre-diff board — which is also the board the
+  human was looking at when they read the diff, so the rule is
+  predictable and not merely deterministic.
+- **MAJOR — the whole `board_order` policy was unpinned.** The verifier
+  demonstrated three mutations that left the ENTIRE suite green:
+  flip the spawn sort, flip the Today sort, or replace the key with a
+  raw UUID sort. My permutation test asserted only THAT a contest
+  happened, never WHO won — and a cross-permutation comparison is
+  satisfied by any deterministic key. So the policy SPEC now codifies
+  could have been inverted, undetectably.
+  Fix: two outcome-pinning tests that assert the higher-ranked parent`s
+  child takes the free slot and the lower-ranked reactivation yields —
+  with the winner deliberately listed FIRST in the diff, so ops order
+  would produce the opposite answer. **Re-ran the verifier`s exact
+  three mutations: all three now fail.**
+- MINOR — golden cases declared `rank` values the runner discarded, and
+  since `create_item_inner` places top-of-tier, the declared board was
+  the exact INVERSE of the real one. Harmless while rank decided
+  nothing; not harmless now that it decides contests. The runner
+  honours declared ranks; the case text is now true.
+- SPEC §8.7: resolved a contradiction the verifier caught between "a
+  function of the accepted set" and "several ops on one item apply in
+  order". The precise claim is **per item, in sequence; across items,
+  as a set.**
+
+Gates: cargo **239/239** warning-clean; vitest 118/118; golden 5 files;
+verify-schema --fresh; reachability 39/39; store-logic.
