@@ -35,6 +35,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (3, include_str!("../../../migrations/003_event_envelope.sql")),
     (4, include_str!("../../../migrations/004_recurrence.sql")),
     (5, include_str!("../../../migrations/005_execution_core.sql")),
+    (6, include_str!("../../../migrations/006_sessions.sql")),
 ];
 
 /// The `PRAGMA user_version` a fully-migrated database reports.
@@ -297,8 +298,11 @@ mod tests {
                 "idx_events_txn".to_string(),
                 "idx_items_tier_rank".to_string(),
                 "idx_items_today".to_string(),
+                "idx_sessions_item".to_string(),
+                "idx_sessions_one_open".to_string(),
                 "items".to_string(),
                 "meta".to_string(),
+                "sessions".to_string(),
             ]
         );
     }

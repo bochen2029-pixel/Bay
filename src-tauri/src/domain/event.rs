@@ -52,6 +52,16 @@ pub enum EventType {
     /// no projection effect.
     #[serde(rename = "DAY_CLOSED")]
     DayClosed,
+    /// v0.3: a focus session opened on an item (`{session_id}`; the
+    /// item on the envelope). Projects into `sessions` — the open
+    /// session is the "Now" slot (at most one, index-enforced).
+    #[serde(rename = "SESSION_STARTED")]
+    SessionStarted,
+    /// v0.3: the open session closed (`{session_id, outcome, reason?,
+    /// note?}`). `outcome: done` co-writes the item's state change in
+    /// the same transaction. Projects into `sessions`.
+    #[serde(rename = "SESSION_ENDED")]
+    SessionEnded,
     #[serde(rename = "LLM_SUGGESTION_GENERATED")]
     LlmSuggestionGenerated,
     #[serde(rename = "LLM_SUGGESTION_ACCEPTED")]
@@ -77,6 +87,8 @@ impl EventType {
             EventType::TodayRemoved => "TODAY_REMOVED",
             EventType::DayOpened => "DAY_OPENED",
             EventType::DayClosed => "DAY_CLOSED",
+            EventType::SessionStarted => "SESSION_STARTED",
+            EventType::SessionEnded => "SESSION_ENDED",
             EventType::LlmSuggestionGenerated => "LLM_SUGGESTION_GENERATED",
             EventType::LlmSuggestionAccepted => "LLM_SUGGESTION_ACCEPTED",
             EventType::LlmSuggestionRejected => "LLM_SUGGESTION_REJECTED",
@@ -99,6 +111,8 @@ impl EventType {
             "TODAY_REMOVED" => Some(EventType::TodayRemoved),
             "DAY_OPENED" => Some(EventType::DayOpened),
             "DAY_CLOSED" => Some(EventType::DayClosed),
+            "SESSION_STARTED" => Some(EventType::SessionStarted),
+            "SESSION_ENDED" => Some(EventType::SessionEnded),
             "LLM_SUGGESTION_GENERATED" => Some(EventType::LlmSuggestionGenerated),
             "LLM_SUGGESTION_ACCEPTED" => Some(EventType::LlmSuggestionAccepted),
             "LLM_SUGGESTION_REJECTED" => Some(EventType::LlmSuggestionRejected),
@@ -175,6 +189,8 @@ pub enum ProjectionEvent {
     ItemFirstStepSet,
     TodayAdded,
     TodayRemoved,
+    SessionStarted,
+    SessionEnded,
 }
 
 impl EventType {
@@ -199,6 +215,11 @@ impl EventType {
             EventType::ItemFirstStepSet => Some(ProjectionEvent::ItemFirstStepSet),
             EventType::TodayAdded => Some(ProjectionEvent::TodayAdded),
             EventType::TodayRemoved => Some(ProjectionEvent::TodayRemoved),
+            // Sessions project into the `sessions` table — same purity
+            // law as `items` (behavior records; undo never touches
+            // them, but rebuild reproduces them).
+            EventType::SessionStarted => Some(ProjectionEvent::SessionStarted),
+            EventType::SessionEnded => Some(ProjectionEvent::SessionEnded),
             // Audit/link event: no projection effect (the spawned
             // child's row comes from its own ITEM_CREATED in the same
             // transaction). I-21.
@@ -267,6 +288,8 @@ mod tests {
             (EventType::TodayRemoved, "\"TODAY_REMOVED\""),
             (EventType::DayOpened, "\"DAY_OPENED\""),
             (EventType::DayClosed, "\"DAY_CLOSED\""),
+            (EventType::SessionStarted, "\"SESSION_STARTED\""),
+            (EventType::SessionEnded, "\"SESSION_ENDED\""),
             (EventType::LlmSuggestionGenerated, "\"LLM_SUGGESTION_GENERATED\""),
             (EventType::LlmSuggestionAccepted, "\"LLM_SUGGESTION_ACCEPTED\""),
             (EventType::LlmSuggestionRejected, "\"LLM_SUGGESTION_REJECTED\""),
@@ -332,6 +355,14 @@ mod tests {
             EventType::TodayRemoved.to_projection_event(),
             Some(ProjectionEvent::TodayRemoved)
         );
+        assert_eq!(
+            EventType::SessionStarted.to_projection_event(),
+            Some(ProjectionEvent::SessionStarted)
+        );
+        assert_eq!(
+            EventType::SessionEnded.to_projection_event(),
+            Some(ProjectionEvent::SessionEnded)
+        );
     }
 
     #[test]
@@ -374,6 +405,8 @@ mod tests {
             ProjectionEvent::ItemFirstStepSet,
             ProjectionEvent::TodayAdded,
             ProjectionEvent::TodayRemoved,
+            ProjectionEvent::SessionStarted,
+            ProjectionEvent::SessionEnded,
         ];
         // Each converts back to its EventType counterpart.
         for pe in all {
@@ -389,10 +422,12 @@ mod tests {
                 ProjectionEvent::ItemFirstStepSet => EventType::ItemFirstStepSet,
                 ProjectionEvent::TodayAdded => EventType::TodayAdded,
                 ProjectionEvent::TodayRemoved => EventType::TodayRemoved,
+                ProjectionEvent::SessionStarted => EventType::SessionStarted,
+                ProjectionEvent::SessionEnded => EventType::SessionEnded,
             };
             assert_eq!(et.to_projection_event(), Some(pe));
         }
-        // 11 variants — no LLM types, no audit types. The match above
+        // 13 variants — no LLM types, no audit types. The match above
         // is exhaustive on ProjectionEvent; adding a variant forces
         // this test (and the apply function) to handle it.
     }

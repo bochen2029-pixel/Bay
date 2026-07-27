@@ -461,3 +461,24 @@
   system-actor roll pinning, done-frees-slot-keeps-membership, undo-
   past-roll; +1 property: today cap under any add/remove interleaving).
   vitest 95/95; both builds clean.
+
+## 2026-07-26 — P5c(2): sessions + FocusBar — the log finally records WORK
+
+- migrations/006: sessions projection table (outcome/reason CHECKs;
+  <=1 open session enforced by a partial UNIQUE index over a constant
+  — the storage-layer Now slot).
+- Events SESSION_STARTED/SESSION_ENDED (ProjectionEvent = 13 variants);
+  rebuild_projection now rebuilds BOTH projection tables under one
+  purity law (regression-tested).
+- commands/session.rs: start (active items only; one Now slot),
+  end (done co-writes ITEM_STATE_CHANGED + recurrence spawn in the
+  SAME txn; progress = honest pause; interrupted requires one of the
+  5-word taxonomy: meeting/person/self_switch/blocked/energy).
+- Undo philosophy encoded: sessions are BEHAVIOR records — attention
+  cannot be un-spent. Undo skips pure session txns entirely and, for a
+  done-ending, reverts the board effect while the session row stands
+  (both regression-tested).
+- UI: FocusBar (elapsed + content + first step + Done/Pause/Interrupt
+  with reason menu; survives restart via get_open_session at
+  bootstrap); Strip hover ▶ Start + "now" badge.
+- Gates: cargo 197/197 warning-clean; pnpm build clean; vitest 95/95.

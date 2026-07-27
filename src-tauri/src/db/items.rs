@@ -26,7 +26,7 @@
 use rusqlite::{params, OptionalExtension, Row, Transaction};
 use serde::Deserialize;
 
-use crate::domain::{Event, Item, ItemState, ProjectionEvent, Tier};
+use crate::domain::{Event, Item, ItemState, ProjectionEvent, Session, SessionOutcome, Tier};
 
 pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
     // The LLM firewall's single boundary: convert EventType to
@@ -50,6 +50,8 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         ProjectionEvent::ItemFirstStepSet => apply_item_first_step_set(tx, event),
         ProjectionEvent::TodayAdded => apply_today_added(tx, event),
         ProjectionEvent::TodayRemoved => apply_today_removed(tx, event),
+        ProjectionEvent::SessionStarted => apply_session_started(tx, event),
+        ProjectionEvent::SessionEnded => apply_session_ended(tx, event),
     }
 }
 
@@ -499,6 +501,108 @@ fn row_to_item(row: &Row<'_>) -> rusqlite::Result<Item> {
         updated_at: row.get("updated_at")?,
         deleted: deleted_int != 0,
     })
+}
+
+// ── sessions projection (v0.3) ──────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct SessionStartedPayload {
+    session_id: String,
+}
+
+fn apply_session_started(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let item_id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "SESSION_STARTED event missing item_id".to_string())?;
+    let p: SessionStartedPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode SESSION_STARTED payload: {e}"))?;
+    // The idx_sessions_one_open unique index rejects a second open row
+    // at the storage layer; the command layer checks first for a clean
+    // error code.
+    tx.execute(
+        "INSERT INTO sessions (id, item_id, started_at) VALUES (?1, ?2, ?3)",
+        params![p.session_id, item_id, event.ts],
+    )
+    .map_err(|e| format!("insert session row: {e}"))?;
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct SessionEndedPayload {
+    session_id: String,
+    outcome: SessionOutcome,
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    note: Option<String>,
+}
+
+fn apply_session_ended(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let p: SessionEndedPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode SESSION_ENDED payload: {e}"))?;
+    let updated = tx
+        .execute(
+            "UPDATE sessions SET ended_at = ?1, outcome = ?2, reason = ?3, note = ?4 \
+             WHERE id = ?5 AND ended_at IS NULL",
+            params![event.ts, p.outcome.as_sql(), p.reason, p.note, p.session_id],
+        )
+        .map_err(|e| format!("update session row (end): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "SESSION_ENDED target session {} not open (updated {updated} rows)",
+            p.session_id
+        ));
+    }
+    Ok(())
+}
+
+fn row_to_session(row: &Row<'_>) -> rusqlite::Result<Session> {
+    let outcome_str: Option<String> = row.get("outcome")?;
+    let outcome = outcome_str
+        .map(|s| {
+            SessionOutcome::from_sql(&s).ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    format!("invalid session outcome {s:?}").into(),
+                )
+            })
+        })
+        .transpose()?;
+    Ok(Session {
+        id: row.get("id")?,
+        item_id: row.get("item_id")?,
+        started_at: row.get("started_at")?,
+        ended_at: row.get("ended_at")?,
+        outcome,
+        reason: row.get("reason")?,
+        note: row.get("note")?,
+    })
+}
+
+/// The open session (the "Now" slot), if any. Transactional variant.
+pub fn open_session_tx(tx: &Transaction<'_>) -> Result<Option<Session>, String> {
+    tx.query_row(
+        "SELECT id, item_id, started_at, ended_at, outcome, reason, note \
+         FROM sessions WHERE ended_at IS NULL",
+        [],
+        row_to_session,
+    )
+    .optional()
+    .map_err(|e| format!("read open session: {e}"))
+}
+
+/// The open session on a plain pooled connection (read side).
+pub fn open_session_conn(conn: &rusqlite::Connection) -> Result<Option<Session>, String> {
+    conn.query_row(
+        "SELECT id, item_id, started_at, ended_at, outcome, reason, note \
+         FROM sessions WHERE ended_at IS NULL",
+        [],
+        row_to_session,
+    )
+    .optional()
+    .map_err(|e| format!("read open session: {e}"))
 }
 
 /// Read any item by id (including soft-deleted) on a plain pooled

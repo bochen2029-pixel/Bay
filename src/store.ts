@@ -10,7 +10,7 @@
 // the Strip for item Y.
 
 import { create } from "zustand";
-import { Item, Settings, Tier } from "./domain";
+import { Item, Session, Settings, Tier } from "./domain";
 
 export type BackendWarning = {
   kind: string;
@@ -87,6 +87,11 @@ type State = {
   selectedIds: Set<string>;
   /** Anchor id for shift-click range selection. */
   lastSelectedId: string | null;
+
+  /** v0.3: the open focus session — the "Now" slot. At most one; the
+   *  FocusBar renders while it is non-null. Loaded at bootstrap via
+   *  get_open_session (a session survives an app restart). */
+  openSession: Session | null;
 };
 
 type Actions = {
@@ -118,6 +123,8 @@ type Actions = {
   toggleSelected: (id: string) => void;
   selectRangeTo: (tier: Tier, toId: string) => void;
   clearSelected: () => void;
+
+  setOpenSession: (s: Session | null) => void;
 };
 
 type Store = State & Actions;
@@ -335,6 +342,9 @@ export const useStore = create<Store>((set, get) => ({
     }),
 
   clearSelected: () => set({ selectedIds: new Set<string>(), lastSelectedId: null }),
+
+  openSession: null,
+  setOpenSession: (s) => set({ openSession: s }),
 }));
 
 function compareRank(a: string, b: string): number {

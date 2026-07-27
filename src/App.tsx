@@ -16,7 +16,7 @@ import {
 } from "@dnd-kit/sortable";
 import { shallow } from "zustand/shallow";
 
-import { A_CAP, B_CAP, BootstrapResult, Item, Tier } from "./domain";
+import { A_CAP, B_CAP, BootstrapResult, Item, Session, Tier } from "./domain";
 import { rankBetween } from "./rank";
 import { needsSwap } from "./swap";
 import { useStore } from "./store";
@@ -37,6 +37,7 @@ import { ArchiveView } from "./components/ArchiveView";
 import { AuditLogView } from "./components/AuditLogView";
 import { CommandPalette } from "./components/CommandPalette";
 import { BatchActionBar } from "./components/BatchActionBar";
+import { FocusBar } from "./components/FocusBar";
 
 type View = "board" | "calendar" | "timetravel" | "archive" | "audit" | "settings";
 
@@ -66,17 +67,25 @@ export default function App() {
   const [view, setView] = useState<View>("board");
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
   const bootstrap = useStore((s) => s.bootstrap);
+  const setOpenSession = useStore((s) => s.setOpenSession);
 
   useEffect(() => {
     invoke<unknown>("bootstrap")
       .then((raw) => {
         const parsed = BootstrapResult.parse(raw);
         bootstrap(parsed.items, parsed.settings);
+        // v0.3: a focus session survives an app restart — reattach the
+        // FocusBar to it (the "Now" slot lives in the projection).
+        return invoke<unknown>("get_open_session").then((s) => {
+          if (s !== null && s !== undefined) {
+            setOpenSession(Session.parse(s));
+          }
+        });
       })
       .catch((err) => {
         console.error("bootstrap failed:", err);
       });
-  }, [bootstrap]);
+  }, [bootstrap, setOpenSession]);
 
   // I-17: Ctrl/Cmd+Z triggers undo_last_action. The backend emits
   // item_updated/item_deleted for each affected item; the
@@ -122,6 +131,7 @@ export default function App() {
     <div className="app">
       <TauriEventBridge />
       <BackendWarningBanner />
+      <FocusBar />
       <TopBar
         view={view}
         onView={handleView}

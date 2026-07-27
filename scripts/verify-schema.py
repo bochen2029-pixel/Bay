@@ -20,7 +20,7 @@ import re
 import sqlite3
 import sys
 
-EXPECTED_VERSION = 5
+EXPECTED_VERSION = 6
 DB_PATH = os.path.join(
     os.environ["USERPROFILE"],
     "AppData",

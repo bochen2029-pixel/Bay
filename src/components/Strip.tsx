@@ -16,7 +16,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { format } from "date-fns";
 
-import { Item } from "../domain";
+import { Item, Session } from "../domain";
 import { isStale } from "../staleness";
 import { useStore } from "../store";
 
@@ -32,6 +32,9 @@ export function Strip({ itemId }: { itemId: string }) {
   const isSelected = useStore((s) => s.selectedIds.has(itemId));
   const toggleSelected = useStore((s) => s.toggleSelected);
   const selectRangeTo = useStore((s) => s.selectRangeTo);
+  const setOpenSession = useStore((s) => s.setOpenSession);
+  const hasOpenSession = useStore((s) => s.openSession !== null);
+  const isNow = useStore((s) => s.openSession?.item_id === itemId);
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: itemId, disabled: isEditing || dateField !== null });
@@ -135,6 +138,33 @@ export function Strip({ itemId }: { itemId: string }) {
           onDone={() => setDateField(null)}
           onUpdated={onItemUpdated}
         />
+      ) : null}
+
+      {item.state === "active" && !hasOpenSession ? (
+        <button
+          type="button"
+          className="strip-start"
+          aria-label="Start focus session"
+          title="Start a focus session (the Now slot)"
+          onClick={async (e) => {
+            e.stopPropagation();
+            try {
+              const raw = await invoke<unknown>("start_session", {
+                itemId: item.id,
+              });
+              setOpenSession(Session.parse(raw));
+            } catch (err) {
+              console.error("start_session failed:", err);
+            }
+          }}
+        >
+          ▶
+        </button>
+      ) : null}
+      {isNow ? (
+        <span className="strip-now-badge" title="In focus now">
+          ▶ now
+        </span>
       ) : null}
 
       <StripMenu

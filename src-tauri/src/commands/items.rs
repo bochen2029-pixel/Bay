@@ -596,7 +596,7 @@ fn dedup_preserving_order(ids: Vec<String>) -> Vec<String> {
 /// `count_active_in_tier` / `max_rank_in_tier` report pre-transaction
 /// values throughout; the closure must account for its own effects.
 #[derive(Default)]
-struct SpawnAccounting {
+pub(crate) struct SpawnAccounting {
     /// Net change to each tier's ACTIVE count produced so far by this
     /// closure (done-parents free a slot: -1; spawned children take
     /// one: +1).
@@ -619,7 +619,7 @@ struct SpawnAccounting {
 /// Dates: due = rule.next_after(parent.due ?? now); start shifts
 /// symmetrically when set. The child is always born `active` with the
 /// parent's content + recurrence.
-fn build_recurrence_spawn(
+pub(crate) fn build_recurrence_spawn(
     tx: &rusqlite::Transaction<'_>,
     parent: &Item,
     ts: i64,

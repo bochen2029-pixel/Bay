@@ -33,6 +33,8 @@ const EVENT_TYPES: (EventType | "")[] = [
   "TODAY_REMOVED",
   "DAY_OPENED",
   "DAY_CLOSED",
+  "SESSION_STARTED",
+  "SESSION_ENDED",
   "LLM_SUGGESTION_GENERATED",
   "LLM_SUGGESTION_ACCEPTED",
   "LLM_SUGGESTION_REJECTED",
@@ -53,6 +55,8 @@ const TYPE_COLORS: Record<string, string> = {
   TODAY_REMOVED: "#795548",
   DAY_OPENED: "#37474f",
   DAY_CLOSED: "#37474f",
+  SESSION_STARTED: "#00695c",
+  SESSION_ENDED: "#00695c",
   LLM_SUGGESTION_GENERATED: "#1565c0",
   LLM_SUGGESTION_ACCEPTED: "#1565c0",
   LLM_SUGGESTION_REJECTED: "#1565c0",
@@ -97,6 +101,10 @@ function summarizePayload(type: string, payload: unknown): string {
       return p.tomorrow_first
         ? `day closed; tomorrow's first move set`
         : "day closed";
+    case "SESSION_STARTED":
+      return "focus session started";
+    case "SESSION_ENDED":
+      return `session ${p.outcome}${p.reason ? ` (${p.reason})` : ""}`;
     case "LLM_SUGGESTION_GENERATED": {
       const obs = p.observations as Array<unknown> | undefined;
       return `${obs?.length ?? 0} observation(s)`;

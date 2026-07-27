@@ -30,6 +30,8 @@ export const EventType = z.enum([
   "TODAY_REMOVED",
   "DAY_OPENED",
   "DAY_CLOSED",
+  "SESSION_STARTED",
+  "SESSION_ENDED",
   "LLM_SUGGESTION_GENERATED",
   "LLM_SUGGESTION_ACCEPTED",
   "LLM_SUGGESTION_REJECTED",
@@ -75,6 +77,37 @@ export const Item = z.object({
   deleted: z.boolean(),
 });
 export type Item = z.infer<typeof Item>;
+
+// ── sessions (v0.3) ──────────────────────────────────────────────────────────
+
+export const SessionOutcome = z.enum(["done", "progress", "interrupted"]);
+export type SessionOutcome = z.infer<typeof SessionOutcome>;
+
+export const INTERRUPT_REASONS = [
+  "meeting",
+  "person",
+  "self_switch",
+  "blocked",
+  "energy",
+] as const;
+
+export const Session = z.object({
+  id: z.string(),
+  item_id: z.string(),
+  started_at: z.number(),
+  ended_at: z.number().nullable(),
+  outcome: SessionOutcome.nullable(),
+  reason: z.string().nullable(),
+  note: z.string().nullable(),
+});
+export type Session = z.infer<typeof Session>;
+
+export const EndSessionResult = z.object({
+  session: Session,
+  item: Item,
+  spawned: z.array(Item),
+});
+export type EndSessionResult = z.infer<typeof EndSessionResult>;
 
 // ── settings ─────────────────────────────────────────────────────────────────
 

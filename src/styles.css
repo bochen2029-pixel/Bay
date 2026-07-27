@@ -1798,3 +1798,108 @@ button:hover {
   color: var(--fg-muted);
   list-style: none;
 }
+
+/* ── v0.3 focus session (FocusBar + Strip start affordance) ─────── */
+
+.focus-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.9rem;
+  background: color-mix(in srgb, Canvas 82%, #00695c 18%);
+  border-bottom: 1px solid color-mix(in srgb, CanvasText 25%, transparent);
+  font-size: 0.92rem;
+}
+
+.focus-live {
+  color: #00897b;
+}
+
+.focus-elapsed {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 3.2rem;
+}
+
+.focus-content {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 34ch;
+}
+
+.focus-first-step {
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.focus-actions {
+  margin-left: auto;
+  display: flex;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.focus-actions button {
+  font: inherit;
+  font-size: 0.85rem;
+  padding: 0.15rem 0.6rem;
+  cursor: pointer;
+}
+
+.focus-interrupt-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.focus-interrupt-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  display: flex;
+  flex-direction: column;
+  background: Canvas;
+  border: 1px solid color-mix(in srgb, CanvasText 30%, transparent);
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgb(0 0 0 / 0.18);
+  z-index: 40;
+  min-width: 9rem;
+}
+
+.focus-interrupt-menu button {
+  text-align: left;
+  border: none;
+  background: none;
+  padding: 0.35rem 0.7rem;
+}
+
+.focus-interrupt-menu button:hover {
+  background: color-mix(in srgb, CanvasText 10%, transparent);
+}
+
+.strip-start {
+  border: none;
+  background: none;
+  cursor: pointer;
+  font-size: 0.8rem;
+  opacity: 0;
+  padding: 0 0.25rem;
+  color: #00897b;
+}
+
+.strip:hover .strip-start,
+.strip-start:focus-visible {
+  opacity: 1;
+}
+
+.strip-now-badge {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #00897b;
+  white-space: nowrap;
+}

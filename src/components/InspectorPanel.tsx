@@ -174,6 +174,10 @@ function renderPayload(event: Event): string {
       return `→ Today ${p.date}`;
     case "TODAY_REMOVED":
       return `← Today ${p.date} (${p.cause})`;
+    case "SESSION_STARTED":
+      return "focus session started";
+    case "SESSION_ENDED":
+      return `session ${p.outcome}${p.reason ? ` (${p.reason})` : ""}`;
     default:
       try {
         return JSON.stringify(p);

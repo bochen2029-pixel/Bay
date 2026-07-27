@@ -267,9 +267,12 @@ pub fn rebuild_projection_inner(pool: &SqlitePool) -> Result<RebuildResult, Stri
         .map_err(|e| format!("begin rebuild tx: {e}"))?;
 
     // Wipe the projection; event log is untouched. Rebuild replays
-    // every event in id order.
+    // every event in id order. Since v0.3 the projection is TWO tables
+    // under one purity law: items AND sessions.
     tx.execute("DELETE FROM items", [])
         .map_err(|e| format!("truncate items: {e}"))?;
+    tx.execute("DELETE FROM sessions", [])
+        .map_err(|e| format!("truncate sessions: {e}"))?;
 
     let events: Vec<Event> = {
         let mut stmt = tx
@@ -389,10 +392,16 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
     use crate::domain::EventType;
     use serde_json::json;
 
-    // Find the most recent HUMAN action and undo it atomically.
+    // Find the most recent HUMAN BOARD action and undo it atomically.
     // - LLM_SUGGESTION_* rows are advisory-only (they never touched the
     //   projection); a pure-LLM transaction (analyze / reject) contains
-    //   no non-LLM row, so the type filter skips the whole txn.
+    //   no other row, so the type filter skips the whole txn.
+    // - SESSION_* rows are behavior records — attention cannot be
+    //   un-spent, so sessions are not undo targets. A pure session txn
+    //   (start; a progress/interrupted end) is skipped entirely; a
+    //   done-ending's txn is targeted via its ITEM_STATE_CHANGED row,
+    //   and the compensation reverts the board while the session
+    //   record stands.
     // - actor = 'system' rows are deterministic timer executions
     //   (VISION law 6); Ctrl+Z looks past them to the last human txn.
     //   Legacy rows (actor NULL, pre-003) are human by definition.
@@ -401,7 +410,8 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {EVENT_COLS} FROM events \
-                 WHERE type NOT IN ('LLM_SUGGESTION_GENERATED','LLM_SUGGESTION_ACCEPTED','LLM_SUGGESTION_REJECTED') \
+                 WHERE type NOT IN ('LLM_SUGGESTION_GENERATED','LLM_SUGGESTION_ACCEPTED','LLM_SUGGESTION_REJECTED',\
+                                    'SESSION_STARTED','SESSION_ENDED','DAY_OPENED','DAY_CLOSED') \
                    AND (actor IS NULL OR actor = 'human') \
                  ORDER BY id DESC LIMIT 1"
             ))
@@ -620,8 +630,12 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
             }
             // Audit/link events: the per-item rows in the same txn (if
             // any) carry the actual compensations; these never touched
-            // the projection, so there is nothing to compensate.
+            // the item projection, so there is nothing to compensate.
             EventType::ItemRecurred | EventType::DayOpened | EventType::DayClosed => continue,
+            // Behavior records: attention cannot be un-spent. A session
+            // row stays exactly as the log recorded it; only the board
+            // effects in the same txn (done co-write, spawns) revert.
+            EventType::SessionStarted | EventType::SessionEnded => continue,
             // LLM events are advisory-only; nothing to undo. This
             // branch is unreachable because the query filtered them
             // out, but the match must be exhaustive.
