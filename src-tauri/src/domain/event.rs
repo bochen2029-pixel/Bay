@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-/// The ten event types exhaustive for v1. String wire format matches the
-/// `type` column of the `events` table (see CLAUDE.md §Data model) and
-/// the SCREAMING_SNAKE_CASE convention in SPEC §4.3.
+/// The event-type vocabulary: v1's ten plus I-21's two (v0.3). String
+/// wire format matches the `type` column of the `events` table (see
+/// CLAUDE.md §Data model) and the SCREAMING_SNAKE_CASE convention in
+/// SPEC §4.3.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventType {
     #[serde(rename = "ITEM_CREATED")]
@@ -19,6 +20,16 @@ pub enum EventType {
     ItemDeleted,
     #[serde(rename = "ITEM_RESTORED")]
     ItemRestored,
+    /// I-21: sets/clears `items.recurrence`. Projection event.
+    #[serde(rename = "ITEM_RECURRENCE_SET")]
+    ItemRecurrenceSet,
+    /// I-21: audit link written when completing a recurring item spawns
+    /// its next instance (`{parent_id, child_id, next_due_at}`, one
+    /// transaction with the parent's ITEM_STATE_CHANGED and the child's
+    /// ITEM_CREATED). No projection effect — the child's existence is
+    /// carried by its own ITEM_CREATED.
+    #[serde(rename = "ITEM_RECURRED")]
+    ItemRecurred,
     #[serde(rename = "LLM_SUGGESTION_GENERATED")]
     LlmSuggestionGenerated,
     #[serde(rename = "LLM_SUGGESTION_ACCEPTED")]
@@ -37,6 +48,8 @@ impl EventType {
             EventType::ItemDateSet => "ITEM_DATE_SET",
             EventType::ItemDeleted => "ITEM_DELETED",
             EventType::ItemRestored => "ITEM_RESTORED",
+            EventType::ItemRecurrenceSet => "ITEM_RECURRENCE_SET",
+            EventType::ItemRecurred => "ITEM_RECURRED",
             EventType::LlmSuggestionGenerated => "LLM_SUGGESTION_GENERATED",
             EventType::LlmSuggestionAccepted => "LLM_SUGGESTION_ACCEPTED",
             EventType::LlmSuggestionRejected => "LLM_SUGGESTION_REJECTED",
@@ -52,6 +65,8 @@ impl EventType {
             "ITEM_DATE_SET" => Some(EventType::ItemDateSet),
             "ITEM_DELETED" => Some(EventType::ItemDeleted),
             "ITEM_RESTORED" => Some(EventType::ItemRestored),
+            "ITEM_RECURRENCE_SET" => Some(EventType::ItemRecurrenceSet),
+            "ITEM_RECURRED" => Some(EventType::ItemRecurred),
             "LLM_SUGGESTION_GENERATED" => Some(EventType::LlmSuggestionGenerated),
             "LLM_SUGGESTION_ACCEPTED" => Some(EventType::LlmSuggestionAccepted),
             "LLM_SUGGESTION_REJECTED" => Some(EventType::LlmSuggestionRejected),
@@ -93,7 +108,7 @@ impl Actor {
     }
 }
 
-/// The seven event types that MAY affect the `items` projection.
+/// The eight event types that MAY affect the `items` projection.
 ///
 /// This is the **type-level LLM firewall** (Phase 2d / CLAUDE.md
 /// "LLM firewalled out of state"). The three `LlmSuggestion*` variants
@@ -106,11 +121,15 @@ impl Actor {
 /// Ok(())".
 ///
 /// The conversion `EventType -> Option<ProjectionEvent>` is the single
-/// boundary: item events map to `Some`; LLM events map to `None`.
-/// Callers that receive `None` skip projection application (the event
-/// still lands in the append-only `events` log; it just doesn't touch
-/// `items`). This is the only place the firewall's policy lives in
-/// code — everywhere else, the types carry it.
+/// boundary. `None` now reads as "no projection effect" and covers TWO
+/// classes: the three LLM advisory events (the firewall proper) and
+/// pure audit/link events like `ITEM_RECURRED` (I-21 — the spawned
+/// child's existence is carried by its own `ITEM_CREATED`; the link is
+/// audit-only). The firewall's structural claim is unchanged: there is
+/// no `ProjectionEvent::LlmSuggestion*` variant, so LLM events cannot
+/// reach the projection under any refactor. Events mapped to `None`
+/// still land in the append-only `events` log; they just never touch
+/// `items`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProjectionEvent {
     ItemCreated,
@@ -120,6 +139,7 @@ pub enum ProjectionEvent {
     ItemDateSet,
     ItemDeleted,
     ItemRestored,
+    ItemRecurrenceSet,
 }
 
 impl EventType {
@@ -140,6 +160,11 @@ impl EventType {
             EventType::ItemDateSet => Some(ProjectionEvent::ItemDateSet),
             EventType::ItemDeleted => Some(ProjectionEvent::ItemDeleted),
             EventType::ItemRestored => Some(ProjectionEvent::ItemRestored),
+            EventType::ItemRecurrenceSet => Some(ProjectionEvent::ItemRecurrenceSet),
+            // Audit/link event: no projection effect (the spawned
+            // child's row comes from its own ITEM_CREATED in the same
+            // transaction). I-21.
+            EventType::ItemRecurred => None,
             // LLM events are advisory-only (CLAUDE.md §LLM scope v1,
             // SPEC §4.3). They land in the event log but never the
             // projection. Returning None here is the firewall.
@@ -193,6 +218,8 @@ mod tests {
             (EventType::ItemDateSet, "\"ITEM_DATE_SET\""),
             (EventType::ItemDeleted, "\"ITEM_DELETED\""),
             (EventType::ItemRestored, "\"ITEM_RESTORED\""),
+            (EventType::ItemRecurrenceSet, "\"ITEM_RECURRENCE_SET\""),
+            (EventType::ItemRecurred, "\"ITEM_RECURRED\""),
             (EventType::LlmSuggestionGenerated, "\"LLM_SUGGESTION_GENERATED\""),
             (EventType::LlmSuggestionAccepted, "\"LLM_SUGGESTION_ACCEPTED\""),
             (EventType::LlmSuggestionRejected, "\"LLM_SUGGESTION_REJECTED\""),
@@ -242,6 +269,10 @@ mod tests {
             EventType::ItemRestored.to_projection_event(),
             Some(ProjectionEvent::ItemRestored)
         );
+        assert_eq!(
+            EventType::ItemRecurrenceSet.to_projection_event(),
+            Some(ProjectionEvent::ItemRecurrenceSet)
+        );
     }
 
     #[test]
@@ -255,9 +286,18 @@ mod tests {
     }
 
     #[test]
+    fn audit_link_event_types_do_not_convert_to_projection_event() {
+        // ITEM_RECURRED is a pure audit/link event (I-21): the spawned
+        // child's projection row comes from its own ITEM_CREATED. Same
+        // None mechanism as the firewall, different rationale.
+        assert_eq!(EventType::ItemRecurred.to_projection_event(), None);
+    }
+
+    #[test]
     fn projection_event_has_no_llm_variants() {
-        // Sanity: the ProjectionEvent enum must have exactly 7 variants
-        // (the item event types), never the 3 LLM types. This is a
+        // Sanity: the ProjectionEvent enum must have exactly 8 variants
+        // (the projection-affecting item event types), never the 3 LLM
+        // types and never the audit-link ITEM_RECURRED. This is a
         // structural assertion — if someone adds an LLM variant, this
         // test fails.
         let all = [
@@ -268,6 +308,7 @@ mod tests {
             ProjectionEvent::ItemDateSet,
             ProjectionEvent::ItemDeleted,
             ProjectionEvent::ItemRestored,
+            ProjectionEvent::ItemRecurrenceSet,
         ];
         // Each converts back to its EventType counterpart.
         for pe in all {
@@ -279,11 +320,12 @@ mod tests {
                 ProjectionEvent::ItemDateSet => EventType::ItemDateSet,
                 ProjectionEvent::ItemDeleted => EventType::ItemDeleted,
                 ProjectionEvent::ItemRestored => EventType::ItemRestored,
+                ProjectionEvent::ItemRecurrenceSet => EventType::ItemRecurrenceSet,
             };
             assert_eq!(et.to_projection_event(), Some(pe));
         }
-        // 7 variants — no LLM types. The match above is exhaustive on
-        // ProjectionEvent; adding a variant forces this test (and the
-        // apply function) to handle it.
+        // 8 variants — no LLM types, no audit-link types. The match
+        // above is exhaustive on ProjectionEvent; adding a variant
+        // forces this test (and the apply function) to handle it.
     }
 }

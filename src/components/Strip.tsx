@@ -120,6 +120,11 @@ export function Strip({ itemId }: { itemId: string }) {
               ● {format(item.due_at, "MMM d")}
             </span>
           ) : null}
+          {item.recurrence !== null ? (
+            <span className="strip-date-badge strip-recur" title={item.recurrence}>
+              🔁 {recurrenceLabel(item.recurrence)}
+            </span>
+          ) : null}
         </span>
       )}
 
@@ -165,6 +170,18 @@ export function Strip({ itemId }: { itemId: string }) {
             openBlockModal(item.id);
           }
         }}
+        onSetRecurrence={async (rule) => {
+          try {
+            const raw = await invoke<unknown>("set_item_recurrence", {
+              id: item.id,
+              rule,
+            });
+            onItemUpdated(Item.parse(raw));
+          } catch (err) {
+            const msg = typeof err === "string" ? err : String(err);
+            if (msg !== "NO_OP") console.error("set recurrence failed:", err);
+          }
+        }}
         onDelete={async () => {
           try {
             await invoke("delete_item", { id: item.id });
@@ -177,6 +194,16 @@ export function Strip({ itemId }: { itemId: string }) {
       />
     </div>
   );
+}
+
+/** "FREQ=WEEKLY" → "weekly"; "FREQ=MONTHLY;INTERVAL=3" → "every 3 months". */
+function recurrenceLabel(rule: string): string {
+  const freq = /FREQ=(DAILY|WEEKLY|MONTHLY)/.exec(rule)?.[1]?.toLowerCase() ?? rule;
+  const interval = /INTERVAL=(\d+)/.exec(rule)?.[1];
+  if (!interval || interval === "1") return freq;
+  const unit =
+    freq === "daily" ? "days" : freq === "weekly" ? "weeks" : "months";
+  return `every ${interval} ${unit}`;
 }
 
 function StripInlineEdit({
@@ -249,6 +276,7 @@ function StripMenu({
   onSetDate,
   onToggleDone,
   onToggleBlocked,
+  onSetRecurrence,
   onDelete,
 }: {
   item: Item;
@@ -256,6 +284,7 @@ function StripMenu({
   onSetDate: (field: "start" | "due") => void;
   onToggleDone: () => void;
   onToggleBlocked: () => void;
+  onSetRecurrence: (rule: string | null) => void;
   onDelete: () => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -321,6 +350,36 @@ function StripMenu({
           >
             {item.state === "blocked" ? "Unblock" : "Mark blocked…"}
           </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => run(() => onSetRecurrence("FREQ=DAILY"))}
+          >
+            {item.recurrence === "FREQ=DAILY" ? "✓ Repeat daily" : "Repeat daily"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => run(() => onSetRecurrence("FREQ=WEEKLY"))}
+          >
+            {item.recurrence === "FREQ=WEEKLY" ? "✓ Repeat weekly" : "Repeat weekly"}
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => run(() => onSetRecurrence("FREQ=MONTHLY"))}
+          >
+            {item.recurrence === "FREQ=MONTHLY" ? "✓ Repeat monthly" : "Repeat monthly"}
+          </button>
+          {item.recurrence !== null ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => run(() => onSetRecurrence(null))}
+            >
+              Stop repeating
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"

@@ -23,6 +23,8 @@ export const EventType = z.enum([
   "ITEM_DATE_SET",
   "ITEM_DELETED",
   "ITEM_RESTORED",
+  "ITEM_RECURRENCE_SET",
+  "ITEM_RECURRED",
   "LLM_SUGGESTION_GENERATED",
   "LLM_SUGGESTION_ACCEPTED",
   "LLM_SUGGESTION_REJECTED",
@@ -57,6 +59,8 @@ export const Item = z.object({
   blocked_reason: z.string().nullable(),
   start_at: z.number().nullable(),
   due_at: z.number().nullable(),
+  // I-21: canonical RRULE-subset string (FREQ=…[;INTERVAL=n]) or null.
+  recurrence: z.string().nullable(),
   created_at: z.number(),
   updated_at: z.number(),
   deleted: z.boolean(),

@@ -26,6 +26,8 @@ const EVENT_TYPES: (EventType | "")[] = [
   "ITEM_DATE_SET",
   "ITEM_DELETED",
   "ITEM_RESTORED",
+  "ITEM_RECURRENCE_SET",
+  "ITEM_RECURRED",
   "LLM_SUGGESTION_GENERATED",
   "LLM_SUGGESTION_ACCEPTED",
   "LLM_SUGGESTION_REJECTED",
@@ -39,6 +41,8 @@ const TYPE_COLORS: Record<string, string> = {
   ITEM_DATE_SET: "#6a1b9a",
   ITEM_DELETED: "#c0392b",
   ITEM_RESTORED: "#27ae60",
+  ITEM_RECURRENCE_SET: "#00838f",
+  ITEM_RECURRED: "#00838f",
   LLM_SUGGESTION_GENERATED: "#1565c0",
   LLM_SUGGESTION_ACCEPTED: "#1565c0",
   LLM_SUGGESTION_REJECTED: "#1565c0",
@@ -67,6 +71,10 @@ function summarizePayload(type: string, payload: unknown): string {
       return `soft=${p.soft}`;
     case "ITEM_RESTORED":
       return "restored";
+    case "ITEM_RECURRENCE_SET":
+      return `${p.before ?? "null"} -> ${p.after ?? "null"}`;
+    case "ITEM_RECURRED":
+      return `spawned ${p.child_id} (due ${p.next_due_at})`;
     case "LLM_SUGGESTION_GENERATED": {
       const obs = p.observations as Array<unknown> | undefined;
       return `${obs?.length ?? 0} observation(s)`;

@@ -33,6 +33,7 @@ const MIGRATIONS: &[(i32, &str)] = &[
     (1, include_str!("../../../migrations/001_initial.sql")),
     (2, include_str!("../../../migrations/002_invariants.sql")),
     (3, include_str!("../../../migrations/003_event_envelope.sql")),
+    (4, include_str!("../../../migrations/004_recurrence.sql")),
 ];
 
 pub fn open_pool(db_path: &Path) -> Result<SqlitePool, String> {
@@ -253,8 +254,9 @@ mod tests {
         // Migration 001 -> user_version 1 (schema); migration 002 ->
         // user_version 2 (DB-enforced invariants); migration 003 ->
         // user_version 3 (event envelope v2: txn_id/actor/origin/
-        // device_id/schema_ver/prev_hash + meta table).
-        assert_eq!(v, 3);
+        // device_id/schema_ver/prev_hash + meta table); migration 004
+        // -> user_version 4 (items.recurrence, I-21).
+        assert_eq!(v, 4);
     }
 
     #[test]
@@ -266,7 +268,7 @@ mod tests {
         let v: i32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 3);
+        assert_eq!(v, 4);
     }
 
     #[test]
@@ -932,7 +934,7 @@ mod tests {
         {
             let conn = pool.get().unwrap();
             let v: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-            assert_eq!(v, 3);
+            assert_eq!(v, 4);
             let report = events::verify_event_chain(&conn).unwrap();
             assert_eq!((report.total, report.enveloped), (1, 0));
         }

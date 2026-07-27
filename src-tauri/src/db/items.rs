@@ -46,6 +46,7 @@ pub fn apply_event_to_projection(tx: &Transaction<'_>, event: &Event) -> Result<
         ProjectionEvent::ItemDateSet => apply_item_date_set(tx, event),
         ProjectionEvent::ItemDeleted => apply_item_deleted(tx, event),
         ProjectionEvent::ItemRestored => apply_item_restored(tx, event),
+        ProjectionEvent::ItemRecurrenceSet => apply_item_recurrence_set(tx, event),
     }
 }
 
@@ -56,6 +57,10 @@ struct ItemCreatedPayload {
     rank: String,
     start_at: Option<i64>,
     due_at: Option<i64>,
+    /// I-21: carried so a spawned instance keeps recurring. Absent on
+    /// pre-004 events (serde default keeps old logs replayable).
+    #[serde(default)]
+    recurrence: Option<String>,
 }
 
 fn apply_item_created(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
@@ -68,8 +73,8 @@ fn apply_item_created(tx: &Transaction<'_>, event: &Event) -> Result<(), String>
 
     tx.execute(
         "INSERT INTO items (id, content, tier, rank, state, blocked_reason, \
-                            start_at, due_at, created_at, updated_at, deleted) \
-         VALUES (?1, ?2, ?3, ?4, 'active', NULL, ?5, ?6, ?7, ?7, 0)",
+                            start_at, due_at, recurrence, created_at, updated_at, deleted) \
+         VALUES (?1, ?2, ?3, ?4, 'active', NULL, ?5, ?6, ?7, ?8, ?8, 0)",
         params![
             id,
             p.content,
@@ -77,6 +82,7 @@ fn apply_item_created(tx: &Transaction<'_>, event: &Event) -> Result<(), String>
             p.rank,
             p.start_at,
             p.due_at,
+            p.recurrence,
             event.ts,
         ],
     )
@@ -257,6 +263,36 @@ fn apply_item_deleted(tx: &Transaction<'_>, event: &Event) -> Result<(), String>
     Ok(())
 }
 
+#[derive(Debug, Deserialize)]
+struct ItemRecurrenceSetPayload {
+    /// Prior rule, kept for audit/undo (undo swaps before/after).
+    #[allow(dead_code)]
+    before: Option<String>,
+    after: Option<String>,
+}
+
+fn apply_item_recurrence_set(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
+    let id = event
+        .item_id
+        .as_deref()
+        .ok_or_else(|| "ITEM_RECURRENCE_SET event missing item_id".to_string())?;
+    let p: ItemRecurrenceSetPayload = serde_json::from_value(event.payload.clone())
+        .map_err(|e| format!("decode ITEM_RECURRENCE_SET payload: {e}"))?;
+    let updated = tx
+        .execute(
+            "UPDATE items SET recurrence = ?1, updated_at = ?2 \
+             WHERE id = ?3 AND deleted = 0",
+            params![p.after, event.ts, id],
+        )
+        .map_err(|e| format!("update item row (recurrence): {e}"))?;
+    if updated != 1 {
+        return Err(format!(
+            "ITEM_RECURRENCE_SET target item {id} not found (updated {updated} rows)"
+        ));
+    }
+    Ok(())
+}
+
 fn apply_item_restored(tx: &Transaction<'_>, event: &Event) -> Result<(), String> {
     let id = event
         .item_id
@@ -284,7 +320,7 @@ pub fn list_deleted_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Stri
     let mut stmt = conn
         .prepare(
             "SELECT id, content, tier, rank, state, blocked_reason, \
-                    start_at, due_at, created_at, updated_at, deleted \
+                    start_at, due_at, recurrence, created_at, updated_at, deleted \
              FROM items WHERE deleted = 1 ORDER BY updated_at DESC, id DESC",
         )
         .map_err(|e| format!("prepare list_deleted_items: {e}"))?;
@@ -306,7 +342,7 @@ pub fn list_active_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Strin
     let mut stmt = conn
         .prepare(
             "SELECT id, content, tier, rank, state, blocked_reason, \
-                    start_at, due_at, created_at, updated_at, deleted \
+                    start_at, due_at, recurrence, created_at, updated_at, deleted \
              FROM items WHERE deleted = 0 ORDER BY tier, rank",
         )
         .map_err(|e| format!("prepare list_items: {e}"))?;
@@ -325,7 +361,7 @@ pub fn list_active_items(conn: &rusqlite::Connection) -> Result<Vec<Item>, Strin
 pub fn read_item_by_id_tx(tx: &Transaction<'_>, id: &str) -> Result<Option<Item>, String> {
     tx.query_row(
         "SELECT id, content, tier, rank, state, blocked_reason, \
-                start_at, due_at, created_at, updated_at, deleted \
+                start_at, due_at, recurrence, created_at, updated_at, deleted \
          FROM items WHERE id = ?1 AND deleted = 0",
         params![id],
         row_to_item,
@@ -343,7 +379,7 @@ pub fn read_item_by_id_any_tx(
 ) -> Result<Option<Item>, String> {
     tx.query_row(
         "SELECT id, content, tier, rank, state, blocked_reason, \
-                start_at, due_at, created_at, updated_at, deleted \
+                start_at, due_at, recurrence, created_at, updated_at, deleted \
          FROM items WHERE id = ?1",
         params![id],
         row_to_item,
@@ -377,6 +413,7 @@ fn row_to_item(row: &Row<'_>) -> rusqlite::Result<Item> {
         blocked_reason: row.get("blocked_reason")?,
         start_at: row.get("start_at")?,
         due_at: row.get("due_at")?,
+        recurrence: row.get("recurrence")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         deleted: deleted_int != 0,

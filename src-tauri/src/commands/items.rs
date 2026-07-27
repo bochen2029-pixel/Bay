@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
 use crate::db::{self, EventDraft, SqlitePool};
-use crate::domain::{rank_between, A_CAP, B_CAP, EventType, Item, ItemState, Tier};
+use crate::domain::{rank_between, Recurrence, A_CAP, B_CAP, EventType, Item, ItemState, Tier};
 
 /// 1 ≤ content length ≤ MAX_CONTENT_LEN characters (SPEC §4.3
 /// ITEM_CREATED payload shape). Counted as Unicode scalar values to
@@ -306,18 +306,42 @@ pub fn set_item_state(
     state: ItemState,
     blocked_reason: Option<String>,
 ) -> Result<Item, String> {
-    let item = set_item_state_inner(&pool, id, state, blocked_reason)?;
+    let (item, spawned) = set_item_state_inner_full(&pool, id, state, blocked_reason)?;
     app.emit(ITEM_UPDATED_EVENT, &item)
         .map_err(|e| format!("emit {ITEM_UPDATED_EVENT}: {e}"))?;
+    // I-21: a recurrence child born in this transaction reaches the
+    // frontend through the same idempotent item_created channel as any
+    // fresh creation.
+    for child in &spawned {
+        app.emit(ITEM_CREATED_EVENT, child)
+            .map_err(|e| format!("emit {ITEM_CREATED_EVENT}: {e}"))?;
+    }
     Ok(item)
 }
 
+/// Convenience wrapper returning only the state-changed item. The
+/// production command path uses `set_item_state_inner_full` (it must
+/// announce spawned recurrence children); this wrapper serves the test
+/// suites, which assert on the parent and read children from the DB.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn set_item_state_inner(
     pool: &SqlitePool,
     id: String,
     target_state: ItemState,
     blocked_reason: Option<String>,
 ) -> Result<Item, String> {
+    set_item_state_inner_full(pool, id, target_state, blocked_reason).map(|(item, _)| item)
+}
+
+/// Full-fidelity variant: returns the state-changed item AND any
+/// recurrence children spawned in the same transaction (I-21), so the
+/// command layer can emit item_created for them.
+pub fn set_item_state_inner_full(
+    pool: &SqlitePool,
+    id: String,
+    target_state: ItemState,
+    blocked_reason: Option<String>,
+) -> Result<(Item, Vec<Item>), String> {
     // Trim + validate blocked_reason up front — a blocked transition
     // with a whitespace-only reason is indistinguishable from an empty
     // one.
@@ -329,7 +353,7 @@ pub fn set_item_state_inner(
         }
     }
 
-    let _event = db::write_event(pool, |tx, _ts| {
+    let events = db::write_events(pool, |tx, ts| {
         let current = db::items::read_item_by_id_tx(tx, &id)?
             .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
 
@@ -375,19 +399,40 @@ pub fn set_item_state_inner(
                 None
             },
         });
-        Ok(EventDraft {
+        let mut drafts = vec![EventDraft {
             event_type: EventType::ItemStateChanged,
             item_id: Some(id.clone()),
             payload,
-        })
+        }];
+        // I-21: completing a recurring item spawns its next instance in
+        // this same transaction (STATE_CHANGED + CREATED + RECURRED,
+        // one txn_id — undoable as one action).
+        if target_state == ItemState::Done {
+            let mut acct = SpawnAccounting::default();
+            if let Some(spawn) = build_recurrence_spawn(tx, &current, ts, &mut acct)? {
+                drafts.extend(spawn);
+            }
+        }
+        Ok(drafts)
     })?;
 
     let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
     let items = db::items::list_active_items(&conn)?;
-    items
+    let child_ids: std::collections::HashSet<String> = events
+        .iter()
+        .filter(|e| e.event_type == EventType::ItemCreated)
+        .filter_map(|e| e.item_id.clone())
+        .collect();
+    let spawned: Vec<Item> = items
+        .iter()
+        .filter(|i| child_ids.contains(&i.id))
+        .cloned()
+        .collect();
+    let item = items
         .into_iter()
         .find(|i| i.id == id)
-        .ok_or_else(|| "state-changed item not found in projection".to_string())
+        .ok_or_else(|| "state-changed item not found in projection".to_string())?;
+    Ok((item, spawned))
 }
 
 // ── set_item_date ─────────────────────────────────────────────────
@@ -544,6 +589,155 @@ fn dedup_preserving_order(ids: Vec<String>) -> Vec<String> {
     ids.into_iter().filter(|id| seen.insert(id.clone())).collect()
 }
 
+// ── recurrence (I-21) ─────────────────────────────────────────────
+
+/// Per-tier bookkeeping while a multi-draft closure builds. write_events
+/// applies drafts only AFTER the closure returns, so
+/// `count_active_in_tier` / `max_rank_in_tier` report pre-transaction
+/// values throughout; the closure must account for its own effects.
+#[derive(Default)]
+struct SpawnAccounting {
+    /// Net change to each tier's ACTIVE count produced so far by this
+    /// closure (done-parents free a slot: -1; spawned children take
+    /// one: +1).
+    net_active: std::collections::HashMap<Tier, i64>,
+    /// Last rank handed out per tier, so multiple spawns into one tier
+    /// chain instead of colliding on the same end-of-tier rank.
+    last_rank: std::collections::HashMap<Tier, Option<String>>,
+}
+
+/// I-21: completing a recurring item spawns its next instance in the
+/// SAME transaction. Returns the child's `ITEM_CREATED` + the
+/// `ITEM_RECURRED` audit link (None when the parent isn't recurring).
+///
+/// Cap rule (FUTURE_WORK I-21): an ACTIVE parent going done frees its
+/// own slot, so the child fits the parent's tier (net zero). A
+/// blocked/done parent never counted, so its child would ADD to the
+/// tier — if that tier is A/B at cap, the child routes to **Inbox**
+/// (doctrine-consistent overflow: marking done never fails).
+///
+/// Dates: due = rule.next_after(parent.due ?? now); start shifts
+/// symmetrically when set. The child is always born `active` with the
+/// parent's content + recurrence.
+fn build_recurrence_spawn(
+    tx: &rusqlite::Transaction<'_>,
+    parent: &Item,
+    ts: i64,
+    acct: &mut SpawnAccounting,
+) -> Result<Option<Vec<EventDraft>>, String> {
+    let rule = match parent.recurrence.as_deref().and_then(Recurrence::parse) {
+        Some(r) => r,
+        None => return Ok(None), // not recurring (or unparseable legacy rule)
+    };
+
+    if parent.state == ItemState::Active {
+        *acct.net_active.entry(parent.tier).or_insert(0) -= 1;
+    }
+    let mut child_tier = parent.tier;
+    let cap = match parent.tier {
+        Tier::A => Some(A_CAP as i64),
+        Tier::B => Some(B_CAP as i64),
+        Tier::Inbox | Tier::C => None,
+    };
+    if let Some(cap) = cap {
+        let net = acct.net_active.get(&parent.tier).copied().unwrap_or(0);
+        if db::items::count_active_in_tier(tx, parent.tier)? + net >= cap {
+            child_tier = Tier::Inbox;
+        }
+    }
+    *acct.net_active.entry(child_tier).or_insert(0) += 1;
+
+    let last = match acct.last_rank.get(&child_tier) {
+        Some(r) => r.clone(),
+        None => db::items::max_rank_in_tier(tx, child_tier)?,
+    };
+    let child_rank = rank_between(last.as_deref(), None);
+    acct.last_rank.insert(child_tier, Some(child_rank.clone()));
+
+    let child_id = Uuid::now_v7().to_string();
+    let next_due = rule.next_after(parent.due_at.unwrap_or(ts));
+    let child_start = parent.start_at.map(|s| rule.next_after(s));
+
+    Ok(Some(vec![
+        EventDraft {
+            event_type: EventType::ItemCreated,
+            item_id: Some(child_id.clone()),
+            payload: json!({
+                "content": parent.content,
+                "tier": child_tier,
+                "rank": child_rank,
+                "start_at": child_start,
+                "due_at": next_due,
+                "recurrence": parent.recurrence,
+            }),
+        },
+        EventDraft {
+            event_type: EventType::ItemRecurred,
+            item_id: Some(parent.id.clone()),
+            payload: json!({
+                "parent_id": parent.id,
+                "child_id": child_id,
+                "next_due_at": next_due,
+            }),
+        },
+    ]))
+}
+
+#[tauri::command]
+pub fn set_item_recurrence(
+    app: AppHandle,
+    pool: State<'_, SqlitePool>,
+    id: String,
+    rule: Option<String>,
+) -> Result<Item, String> {
+    let item = set_item_recurrence_inner(&pool, id, rule)?;
+    app.emit(ITEM_UPDATED_EVENT, &item)
+        .map_err(|e| format!("emit {ITEM_UPDATED_EVENT}: {e}"))?;
+    Ok(item)
+}
+
+/// Set or clear an item's recurrence rule. The rule is validated and
+/// canonicalized (uppercase, INTERVAL=1 omitted) before it is written,
+/// so `items.recurrence` only ever holds parseable canonical rules.
+pub fn set_item_recurrence_inner(
+    pool: &SqlitePool,
+    id: String,
+    rule: Option<String>,
+) -> Result<Item, String> {
+    let rule = rule.map(|r| r.trim().to_string()).filter(|r| !r.is_empty());
+    let canonical = match rule.as_deref() {
+        Some(r) => Some(
+            Recurrence::parse(r)
+                .ok_or_else(|| "INVALID_RULE".to_string())?
+                .to_rule(),
+        ),
+        None => None,
+    };
+
+    let _ = db::write_event(pool, |tx, _ts| {
+        let current = db::items::read_item_by_id_tx(tx, &id)?
+            .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+        if current.recurrence == canonical {
+            return Err("NO_OP".into());
+        }
+        Ok(EventDraft {
+            event_type: EventType::ItemRecurrenceSet,
+            item_id: Some(id.clone()),
+            payload: json!({
+                "before": current.recurrence,
+                "after": canonical,
+            }),
+        })
+    })?;
+
+    let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+    let items = db::items::list_active_items(&conn)?;
+    items
+        .into_iter()
+        .find(|i| i.id == id)
+        .ok_or_else(|| "recurrence-set item not found in projection".to_string())
+}
+
 // ── batch operations (I-19) ───────────────────────────────────────
 //
 // Multi-item atomic operations. Each batch is a single write_events tx
@@ -566,6 +760,9 @@ pub struct BatchResult {
     /// The item ids that actually changed. NO_OP items (already in the
     /// target state) produce no event and are excluded.
     pub affected_ids: Vec<String>,
+    /// I-21: recurrence children spawned by a batch-done, read back
+    /// post-transaction so the command layer can emit item_created.
+    pub spawned: Vec<Item>,
 }
 
 #[tauri::command]
@@ -585,6 +782,10 @@ pub fn batch_set_state(
         if let Some(item) = live_items.iter().find(|i| &i.id == id) {
             let _ = app.emit(ITEM_UPDATED_EVENT, item);
         }
+    }
+    // I-21: announce recurrence children spawned by a batch-done.
+    for child in &result.spawned {
+        let _ = app.emit(ITEM_CREATED_EVENT, child);
     }
     Ok(result)
 }
@@ -611,7 +812,7 @@ pub fn batch_set_state_inner(
     // Build all drafts in one tx; write_events appends + applies them
     // atomically. Per-item validation (existence, no-op, cap) happens
     // inside the build closure so a failure rolls back the whole batch.
-    let events = db::write_events(pool, |tx, _ts| {
+    let events = db::write_events(pool, |tx, ts| {
         // Track projected active counts as we go. write_events applies
         // drafts only AFTER this closure returns the full vector, so
         // count_active_in_tier reports the pre-batch count every time;
@@ -623,6 +824,10 @@ pub fn batch_set_state_inner(
         let mut active_a: Option<i64> = None;
         let mut active_b: Option<i64> = None;
         let mut drafts = Vec::with_capacity(ids.len());
+        // I-21: batch-done over recurring items spawns each next
+        // instance in this same transaction; shared accounting keeps
+        // multiple spawns cap-correct and rank-distinct.
+        let mut spawn_acct = SpawnAccounting::default();
         for id in &ids {
             let current = db::items::read_item_by_id_tx(tx, id)?
                 .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
@@ -676,14 +881,48 @@ pub fn batch_set_state_inner(
                 item_id: Some(id.clone()),
                 payload,
             });
+            if target_state == ItemState::Done {
+                if let Some(spawn) = build_recurrence_spawn(tx, &current, ts, &mut spawn_acct)? {
+                    drafts.extend(spawn);
+                }
+            }
         }
         Ok(drafts)
     })?;
 
-    // affected_ids = items that actually changed. NO_OP items produced
-    // no event, so they fall out here.
-    let affected_ids = events.into_iter().filter_map(|e| e.item_id).collect();
-    Ok(BatchResult { affected_ids })
+    // affected_ids = the batch items that actually changed state. NO_OP
+    // items produced no event; spawned recurrence children and
+    // ITEM_RECURRED audit links are excluded (only ITEM_STATE_CHANGED
+    // rows belong to the "batch changed these" answer — children reach
+    // the frontend via item_created, read back below).
+    let mut affected_ids: Vec<String> = Vec::new();
+    let mut child_ids: Vec<String> = Vec::new();
+    for e in events {
+        match e.event_type {
+            EventType::ItemStateChanged => {
+                if let Some(id) = e.item_id {
+                    affected_ids.push(id);
+                }
+            }
+            EventType::ItemCreated => {
+                if let Some(id) = e.item_id {
+                    child_ids.push(id);
+                }
+            }
+            _ => {}
+        }
+    }
+    let spawned: Vec<Item> = if child_ids.is_empty() {
+        Vec::new()
+    } else {
+        let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+        let live = db::items::list_active_items(&conn)?;
+        live.into_iter().filter(|i| child_ids.contains(&i.id)).collect()
+    };
+    Ok(BatchResult {
+        affected_ids,
+        spawned,
+    })
 }
 
 #[tauri::command]
@@ -721,7 +960,10 @@ pub fn batch_delete_inner(pool: &SqlitePool, ids: Vec<String>) -> Result<BatchRe
         Ok(drafts)
     })?;
     let affected_ids = events.into_iter().filter_map(|e| e.item_id).collect();
-    Ok(BatchResult { affected_ids })
+    Ok(BatchResult {
+        affected_ids,
+        spawned: Vec::new(),
+    })
 }
 
 /// Result of a successful swap — both items in their post-swap state.
@@ -2221,5 +2463,192 @@ mod tests {
             Some("waiting on Bob"),
             "the unblock event must preserve the outgoing blocked reason"
         );
+    }
+
+    // ── I-21 recurring tasks ────────────────────────────────────────
+
+    #[test]
+    fn set_item_recurrence_sets_normalizes_clears_and_rejects() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "weekly report".into(), None, None).unwrap();
+
+        // Set (lowercase input normalizes to canonical uppercase).
+        let updated =
+            set_item_recurrence_inner(&pool, item.id.clone(), Some("freq=weekly".into())).unwrap();
+        assert_eq!(updated.recurrence.as_deref(), Some("FREQ=WEEKLY"));
+
+        // Same canonical rule again = NO_OP.
+        let err = set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=WEEKLY".into()))
+            .unwrap_err();
+        assert_eq!(err, "NO_OP");
+
+        // Invalid rule rejected before any event is written.
+        let err = set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=HOURLY".into()))
+            .unwrap_err();
+        assert_eq!(err, "INVALID_RULE");
+
+        // Clear.
+        let cleared = set_item_recurrence_inner(&pool, item.id.clone(), None).unwrap();
+        assert_eq!(cleared.recurrence, None);
+
+        // Exactly two ITEM_RECURRENCE_SET events on the log (set + clear).
+        let conn = pool.get().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'ITEM_RECURRENCE_SET'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn completing_recurring_item_spawns_next_instance_in_one_txn() {
+        let pool = fresh_pool();
+        let due = 1_769_817_600_000; // 2026-01-31T00:00:00Z
+        let item =
+            create_item_inner(&pool, Tier::A, "monthly close".into(), None, Some(due)).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=MONTHLY".into())).unwrap();
+
+        let (done, spawned) =
+            set_item_state_inner_full(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        assert_eq!(done.state, ItemState::Done);
+        assert_eq!(spawned.len(), 1, "one child spawned");
+        let child = &spawned[0];
+        assert_ne!(child.id, item.id);
+        assert_eq!(child.content, "monthly close");
+        assert_eq!(child.tier, Tier::A, "active parent frees its slot; child fits");
+        assert_eq!(child.state, ItemState::Active);
+        assert_eq!(child.recurrence.as_deref(), Some("FREQ=MONTHLY"));
+        // Jan 31 + 1mo → Feb 28 2026 (clamped).
+        assert_eq!(child.due_at, Some(1_772_236_800_000));
+
+        // The trio shares ONE txn_id: STATE_CHANGED + CREATED + RECURRED.
+        let conn = pool.get().unwrap();
+        let (n_types, n_txns): (i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(DISTINCT type), COUNT(DISTINCT txn_id) FROM events \
+                 WHERE txn_id = (SELECT txn_id FROM events WHERE type = 'ITEM_RECURRED')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((n_types, n_txns), (3, 1), "mixed-type trio in one transaction");
+
+        // The audit link points parent → child.
+        let (link_parent, link_child): (String, String) = conn
+            .query_row(
+                "SELECT json_extract(payload, '$.parent_id'), json_extract(payload, '$.child_id') \
+                 FROM events WHERE type = 'ITEM_RECURRED'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(link_parent, item.id);
+        assert_eq!(link_child, child.id);
+
+        // A cap invariant: still exactly 1 active in A.
+        let live = db::items::list_active_items(&conn).unwrap();
+        assert_eq!(
+            live.iter()
+                .filter(|i| i.tier == Tier::A && i.state == ItemState::Active)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn blocked_recurring_completion_into_full_tier_overflows_child_to_inbox() {
+        let pool = fresh_pool();
+        // The recurring item, blocked (doesn't count against the cap)…
+        let blocked = create_item_inner(&pool, Tier::A, "recurring-blocked".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, blocked.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+        set_item_state_inner(&pool, blocked.id.clone(), ItemState::Blocked, Some("stuck".into()))
+            .unwrap();
+        // …then A fills to cap with 5 actives.
+        for i in 0..A_CAP {
+            create_item_inner(&pool, Tier::A, format!("filler-{i}"), None, None).unwrap();
+        }
+
+        // Completing the blocked recurring item must NEVER fail; the
+        // child cannot fit A (blocked parent freed no slot) so it
+        // routes to Inbox (doctrine-consistent overflow).
+        let (_done, spawned) =
+            set_item_state_inner_full(&pool, blocked.id.clone(), ItemState::Done, None).unwrap();
+        assert_eq!(spawned.len(), 1);
+        assert_eq!(spawned[0].tier, Tier::Inbox, "overflow child lands in Inbox");
+
+        let conn = pool.get().unwrap();
+        let a_active: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE tier = 'A' AND state = 'active' AND deleted = 0",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(a_active, A_CAP as i64, "cap never exceeded");
+    }
+
+    #[test]
+    fn batch_done_spawns_children_for_each_recurring_item() {
+        let pool = fresh_pool();
+        let r1 = create_item_inner(&pool, Tier::A, "daily-1".into(), None, None).unwrap();
+        let r2 = create_item_inner(&pool, Tier::A, "daily-2".into(), None, None).unwrap();
+        let plain = create_item_inner(&pool, Tier::A, "one-off".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, r1.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+        set_item_recurrence_inner(&pool, r2.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+
+        let result = batch_set_state_inner(
+            &pool,
+            vec![r1.id.clone(), r2.id.clone(), plain.id.clone()],
+            ItemState::Done,
+            None,
+        )
+        .unwrap();
+        assert_eq!(result.affected_ids.len(), 3, "all three batch items changed state");
+        assert_eq!(result.spawned.len(), 2, "one child per recurring item");
+        assert!(result.spawned.iter().all(|c| c.tier == Tier::A),
+            "active parents freed their slots; children fit A");
+        // Children get distinct ranks (rank chaining inside the batch).
+        assert_ne!(result.spawned[0].rank, result.spawned[1].rank);
+
+        // Whole batch = ONE txn: 3 STATE_CHANGED + 2 CREATED + 2 RECURRED.
+        let conn = pool.get().unwrap();
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE txn_id = \
+                 (SELECT txn_id FROM events WHERE type = 'ITEM_RECURRED' LIMIT 1)",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 7);
+    }
+
+    #[test]
+    fn recurrence_projection_rebuilds_identically() {
+        // The projection-purity law extends to the new column + events:
+        // create → set recurrence → done (spawn) must rebuild exactly.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::B, "weekly".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+
+        let snapshot = |pool: &SqlitePool| -> Vec<(String, String, Option<String>, String)> {
+            let conn = pool.get().unwrap();
+            let mut stmt = conn
+                .prepare("SELECT id, content, recurrence, state FROM items ORDER BY id")
+                .unwrap();
+            let rows = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+                .unwrap();
+            rows.collect::<Result<_, _>>().unwrap()
+        };
+        let before = snapshot(&pool);
+        assert_eq!(before.len(), 2, "parent + spawned child");
+        crate::commands::events::rebuild_projection_inner(&pool).unwrap();
+        let after = snapshot(&pool);
+        assert_eq!(before, after, "rebuild must reproduce recurrence state exactly");
     }
 }

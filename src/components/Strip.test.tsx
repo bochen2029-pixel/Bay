@@ -82,6 +82,7 @@ function makeActiveA(): Item {
     blocked_reason: null,
     start_at: null,
     due_at: null,
+    recurrence: null,
     created_at: 100,
     updated_at: 100,
     deleted: false,
@@ -105,7 +106,9 @@ describe("Strip — overflow menu", () => {
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
   });
 
-  it("opens the popover with the six menu items on ⋯ click", async () => {
+  it("opens the popover with the nine menu items on ⋯ click", async () => {
+    // Nine for a non-recurring item; a tenth ("Stop repeating") appears
+    // only when the item has a recurrence rule (I-21).
     seed(makeActiveA());
     render(<Strip itemId="itm-1" />);
     await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
@@ -113,15 +116,46 @@ describe("Strip — overflow menu", () => {
     const menu = screen.getByRole("menu");
     expect(menu).toBeInTheDocument();
     const items = screen.getAllByRole("menuitem");
-    expect(items).toHaveLength(6);
+    expect(items).toHaveLength(9);
     expect(items.map((b) => b.textContent)).toEqual([
       "Edit",
       "Set start date…",
       "Set due date…",
       "Mark done",
       "Mark blocked…",
+      "Repeat daily",
+      "Repeat weekly",
+      "Repeat monthly",
       "Delete",
     ]);
+  });
+
+  it("recurring item shows the active rule checked plus Stop repeating (I-21)", async () => {
+    seed({ ...makeActiveA(), recurrence: "FREQ=WEEKLY" });
+    render(<Strip itemId="itm-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    expect(
+      screen.getByRole("menuitem", { name: "✓ Repeat weekly" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("menuitem", { name: "Stop repeating" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(10);
+  });
+
+  it("Repeat weekly fires invoke('set_item_recurrence') with the rule", async () => {
+    const item = makeActiveA();
+    seed(item);
+    invokeMock.mockResolvedValueOnce({ ...item, recurrence: "FREQ=WEEKLY" });
+    render(<Strip itemId="itm-1" />);
+    await userEvent.click(screen.getByRole("button", { name: "Item menu" }));
+    await userEvent.click(
+      screen.getByRole("menuitem", { name: "Repeat weekly" }),
+    );
+    expect(invokeMock).toHaveBeenCalledWith("set_item_recurrence", {
+      id: "itm-1",
+      rule: "FREQ=WEEKLY",
+    });
   });
 
   it("the popover lives inside the strip-menu-wrap (the structural fix from 1912e5b)", async () => {

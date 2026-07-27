@@ -34,6 +34,7 @@ function makeItem(id: string, content: string) {
     blocked_reason: null,
     start_at: null,
     due_at: null,
+    recurrence: null,
     created_at: 1,
     updated_at: 1,
     deleted: false,

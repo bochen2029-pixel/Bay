@@ -369,15 +369,15 @@ pub fn undo_last_action(
         // Read the item's current projection state (including deleted).
         // Column order: deleted, blocked_reason, content, tier, rank,
         // state, start_at, due_at, created_at, updated_at.
-        let row: Option<(i64, Option<String>, String, String, String, String, Option<i64>, Option<i64>, i64, i64)> = conn
+        let row: Option<(i64, Option<String>, String, String, String, String, Option<i64>, Option<i64>, Option<String>, i64, i64)> = conn
             .query_row(
-                "SELECT deleted, blocked_reason, content, tier, rank, state, start_at, due_at, created_at, updated_at \
+                "SELECT deleted, blocked_reason, content, tier, rank, state, start_at, due_at, recurrence, created_at, updated_at \
                  FROM items WHERE id = ?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?, r.get(10)?)),
             )
             .ok();
-        if let Some((deleted, blocked_reason, content, tier, rank, state, start_at, due_at, created_at, updated_at)) = row {
+        if let Some((deleted, blocked_reason, content, tier, rank, state, start_at, due_at, recurrence, created_at, updated_at)) = row {
             let item = crate::domain::Item {
                 id: id.clone(),
                 content,
@@ -387,6 +387,7 @@ pub fn undo_last_action(
                 blocked_reason,
                 start_at,
                 due_at,
+                recurrence,
                 created_at,
                 updated_at,
                 deleted: deleted != 0,
@@ -598,6 +599,21 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
                     payload: json!({ "soft": true }),
                 }
             }
+            EventType::ItemRecurrenceSet => {
+                let before = event.payload.get("before").cloned().unwrap_or(serde_json::Value::Null);
+                let after = event.payload.get("after").cloned().unwrap_or(serde_json::Value::Null);
+                descriptions.push(format!("Undone ITEM_RECURRENCE_SET on item {item_id}"));
+                EventDraft {
+                    event_type: EventType::ItemRecurrenceSet,
+                    item_id: Some(item_id.clone()),
+                    payload: json!({ "before": after, "after": before }),
+                }
+            }
+            // Audit/link event (I-21): the parent's STATE_CHANGED and
+            // the child's CREATED in this same txn carry the actual
+            // compensations; the link itself never touched the
+            // projection, so there is nothing to compensate.
+            EventType::ItemRecurred => continue,
             // LLM events are advisory-only; nothing to undo. This
             // branch is unreachable because the query filtered them
             // out, but the match must be exhaustive.
@@ -1653,5 +1669,68 @@ mod tests {
             .query_row("SELECT tier FROM items WHERE id = ?1", [&a.id], |r| r.get(0))
             .unwrap();
         assert_eq!(tier, "A");
+    }
+
+    #[test]
+    fn undo_recurrence_completion_unwinds_the_whole_trio() {
+        // THE txn_id payoff (FUTURE_WORK I-21): completing a recurring
+        // item writes STATE_CHANGED + CREATED(child) + RECURRED in one
+        // transaction. One Ctrl+Z must revert the parent to active AND
+        // soft-delete the spawned child, skipping the audit link.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "weekly sync".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+
+        let conn = pool.get().unwrap();
+        let child_id: String = conn
+            .query_row(
+                "SELECT json_extract(payload, '$.child_id') FROM events WHERE type = 'ITEM_RECURRED'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        drop(conn);
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(
+            result.undone_event_types.len(),
+            2,
+            "STATE_CHANGED + CREATED compensated; RECURRED audit link skipped"
+        );
+
+        let conn = pool.get().unwrap();
+        let parent_state: String = conn
+            .query_row("SELECT state FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(parent_state, "active", "parent back to active");
+        let child_deleted: i64 = conn
+            .query_row("SELECT deleted FROM items WHERE id = ?1", [&child_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(child_deleted, 1, "spawned child soft-deleted — no orphan");
+        // Parent keeps its recurrence (the rule was never part of the trio).
+        let rule: Option<String> = conn
+            .query_row("SELECT recurrence FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rule.as_deref(), Some("FREQ=WEEKLY"));
+    }
+
+    #[test]
+    fn undo_recurrence_set_restores_prior_rule() {
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::B, "r".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=DAILY".into())).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=MONTHLY;INTERVAL=2".into()))
+            .unwrap();
+
+        let result = undo_last_action_inner(&pool).unwrap();
+        assert_eq!(result.undone_event_types, vec!["ITEM_RECURRENCE_SET".to_string()]);
+        let conn = pool.get().unwrap();
+        let rule: Option<String> = conn
+            .query_row("SELECT recurrence FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rule.as_deref(), Some("FREQ=DAILY"), "undo restores the prior rule");
     }
 }

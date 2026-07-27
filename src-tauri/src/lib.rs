@@ -152,6 +152,7 @@ pub fn run() {
             commands::items::swap_move,
             commands::items::edit_item,
             commands::items::set_item_state,
+            commands::items::set_item_recurrence,
             commands::items::set_item_date,
             commands::items::delete_item,
             commands::items::restore_item,

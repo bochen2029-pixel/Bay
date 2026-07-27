@@ -86,6 +86,12 @@ export function InspectorPanel() {
                 <dd>{format(item.due_at, "yyyy-MM-dd")}</dd>
               </>
             ) : null}
+            {item.recurrence !== null ? (
+              <>
+                <dt>Repeats</dt>
+                <dd className="inspector-mono">{item.recurrence}</dd>
+              </>
+            ) : null}
             {item.deleted ? (
               <>
                 <dt>Deleted</dt>
@@ -158,6 +164,10 @@ function renderPayload(event: Event): string {
       return "soft delete";
     case "ITEM_RESTORED":
       return "restored";
+    case "ITEM_RECURRENCE_SET":
+      return `${p.before ?? "∅"} → ${p.after ?? "∅"}`;
+    case "ITEM_RECURRED":
+      return `spawned next instance (${p.child_id})`;
     default:
       try {
         return JSON.stringify(p);

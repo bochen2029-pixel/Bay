@@ -33,6 +33,7 @@ function makeArchivedItem(id: string, content: string, deletedAt: number) {
     blocked_reason: null,
     start_at: null,
     due_at: null,
+    recurrence: null,
     created_at: deletedAt - 1_000,
     updated_at: deletedAt,
     deleted: true,

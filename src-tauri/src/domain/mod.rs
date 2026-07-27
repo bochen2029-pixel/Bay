@@ -7,8 +7,10 @@ pub mod capacity;
 pub mod event;
 pub mod item;
 pub mod rank;
+pub mod recurrence;
 
 pub use capacity::{A_CAP, B_CAP};
 pub use event::{Actor, Event, EventType, ProjectionEvent};
 pub use item::{Item, ItemState, Tier};
 pub use rank::rank_between;
+pub use recurrence::Recurrence;

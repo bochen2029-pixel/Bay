@@ -404,3 +404,32 @@
 - New tests: mixed-type-txn undo (the exact Q01 shape; precondition for
   the I-21 trio), system-txn skip, accepted-reorg undo (item events
   compensated, audit row skipped). cargo 164/164 warning-clean.
+
+## 2026-07-26 — P5/I-21: recurring tasks (backend + frontend)
+
+- migrations/004_recurrence.sql: items.recurrence TEXT (user_version 4).
+- domain/recurrence.rs: FREQ=DAILY|WEEKLY|MONTHLY[;INTERVAL=n] parser
+  (canonicalizing) + next_after with Hinnant civil-date math + short-
+  month clamping (Jan 31 + 1mo -> Feb 28/29); pinned to absolute unix
+  anchors, round-trip property over ~80 years. 8 tests.
+- Events: ITEM_RECURRENCE_SET (projection; ProjectionEvent now 8
+  variants) + ITEM_RECURRED (audit link; to_projection_event -> None —
+  doc updated so None reads "no projection effect": LLM advisory + audit
+  links; the firewall claim is UNCHANGED, still no LLM variants).
+- set_item_recurrence command (validates + canonicalizes; NO_OP/
+  INVALID_RULE). Completing a recurring item spawns the next instance
+  IN THE SAME TXN (STATE_CHANGED + CREATED + RECURRED) — one undoable
+  action via txn_id; batch-done spawns per item with shared accounting
+  (net-active per tier + rank chaining). Cap rule: active parent frees
+  its own slot; blocked/done parent completing into full A/B routes the
+  child to INBOX (marking done never fails). Children reach the
+  frontend via item_created (set_item_state_inner_full + BatchResult.
+  spawned).
+- Undo: RECURRENCE_SET compensates before/after; the trio unwinds whole
+  (parent active, child soft-deleted, audit link skipped) — regression-
+  tested, the txn_id payoff.
+- Frontend: Zod Item.recurrence + 2 EventType strings; Strip 🔁 badge +
+  Repeat daily/weekly/monthly/Stop menu; Inspector "Repeats" row + event
+  rendering; AuditLog filter/colors/describe.
+- Gates: cargo 180/180 warning-clean; pnpm build clean; vitest 95/95;
+  store-logic smoke green.

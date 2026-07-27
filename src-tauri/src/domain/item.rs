@@ -74,6 +74,11 @@ pub struct Item {
     pub blocked_reason: Option<String>,
     pub start_at: Option<i64>,
     pub due_at: Option<i64>,
+    /// I-21: canonical RRULE-subset string (domain::Recurrence), or
+    /// None for non-recurring items. Completing a recurring item spawns
+    /// its next instance in the same transaction.
+    #[serde(default)]
+    pub recurrence: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
     pub deleted: bool,

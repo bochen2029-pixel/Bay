@@ -33,6 +33,7 @@ function makeItem(overrides: Partial<Item> & Pick<Item, "id" | "tier">): Item {
     blocked_reason: null,
     start_at: null,
     due_at: null,
+    recurrence: null,
     created_at: 0,
     updated_at: 0,
     deleted: false,
