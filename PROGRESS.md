@@ -766,3 +766,24 @@ firewall was never the limit; the context was.
   quietly blow the prompt size.
 
 Gates: cargo 233/233 warning-clean.
+
+## 2026-07-27 — file-backed DB coverage (what the app actually runs)
+
+Every DB test to date used `:memory:` with `max_size(1)`. The shipped
+app opens a FILE with WAL and an 8-connection pool — and those differ
+exactly where this schema is sensitive: the chain tail is read on a
+pooled connection that may not be the one that wrote the previous row,
+and migrations run against a durable file rather than a fresh page
+cache. Nothing covered that combination.
+
+- `file_backed_pool_migrates_writes_and_keeps_the_chain_intact`:
+  real `open_pool`, interleaved single/batched writes across pooled
+  connections, chain verified; then REOPENED from disk and verified
+  again at user_version 6.
+- `device_id_survives_reopening_a_file_database`: ADR-008 says identity
+  travels with the data; if it regenerated per launch every restart
+  would look like a new device to a future sync, and no in-memory test
+  could see it. Negative-control verified (INSERT OR IGNORE -> OR
+  REPLACE fails both device tests by name).
+
+Gates: cargo 235/235 warning-clean.

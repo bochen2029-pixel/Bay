@@ -977,6 +977,98 @@ mod tests {
         assert_eq!(first, second, "INSERT OR IGNORE must never regenerate the id");
     }
 
+    // ── file-backed DB (what the app actually runs) ─────────────────
+    //
+    // Every other test here uses `:memory:` with `max_size(1)`. The
+    // shipped app opens a FILE with WAL and an 8-connection pool, so
+    // the two differ in the ways that matter for this schema: the
+    // chain tail is read on a pooled connection that may not be the
+    // one that wrote the previous row, and migrations run against a
+    // durable file rather than a fresh page cache. Nothing in the
+    // suite covered that combination.
+
+    fn temp_db_path(tag: &str) -> std::path::PathBuf {
+        let mut p = std::env::temp_dir();
+        p.push(format!("bay-test-{tag}-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&p);
+        // WAL leaves sidecars behind; clear them too or a rerun inherits state.
+        for ext in ["db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(p.with_extension(ext));
+        }
+        p
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_file(path);
+        for ext in ["db-wal", "db-shm"] {
+            let _ = std::fs::remove_file(path.with_extension(ext));
+        }
+    }
+
+    #[test]
+    fn file_backed_pool_migrates_writes_and_keeps_the_chain_intact() {
+        let path = temp_db_path("chain");
+        {
+            // The real open_pool: WAL, foreign keys, up to 8 connections.
+            let pool = open_pool(&path).unwrap();
+            run_migrations(&pool).unwrap();
+
+            // Interleave single and batched writes so consecutive rows
+            // are likely to be written through DIFFERENT pooled
+            // connections — the case `:memory:` with max_size(1) cannot
+            // produce.
+            for i in 0..12 {
+                if i % 3 == 0 {
+                    write_events(&pool, |_tx, _ts| {
+                        Ok(vec![create_draft(i), create_draft(i + 100)])
+                    })
+                    .unwrap();
+                } else {
+                    write_event(&pool, |_tx, _ts| Ok(create_draft(i))).unwrap();
+                }
+            }
+
+            let conn = pool.get().unwrap();
+            let report = events::verify_event_chain(&conn).unwrap();
+            assert_eq!(report.total, report.enveloped);
+            assert!(report.total >= 12);
+        }
+
+        // Reopen from scratch: the durable file must still verify, and
+        // the device identity must not have been regenerated.
+        {
+            let pool = open_pool(&path).unwrap();
+            run_migrations(&pool).unwrap();
+            let conn = pool.get().unwrap();
+            let v: i32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+            assert_eq!(v, SCHEMA_VERSION);
+            events::verify_event_chain(&conn).unwrap();
+        }
+        cleanup(&path);
+    }
+
+    #[test]
+    fn device_id_survives_reopening_a_file_database() {
+        // ADR-008: identity travels with the data. If it regenerated on
+        // each launch, every restart would look like a new device to a
+        // future sync — and nothing in the in-memory tests could tell.
+        let path = temp_db_path("device");
+        let read_id = |p: &std::path::Path| -> String {
+            let pool = open_pool(p).unwrap();
+            run_migrations(&pool).unwrap();
+            pool.get()
+                .unwrap()
+                .query_row("SELECT value FROM meta WHERE key = 'device_id'", [], |r| {
+                    r.get(0)
+                })
+                .unwrap()
+        };
+        let first = read_id(&path);
+        let second = read_id(&path);
+        assert_eq!(first, second, "device_id regenerated across reopen");
+        cleanup(&path);
+    }
+
     // Property: the hash chain verifies for ANY sequence of writes —
     // single and batched, interleaved. The non-LLM oracle for the
     // envelope's integrity claim.
