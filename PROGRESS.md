@@ -522,3 +522,58 @@
   items 5-8 are plausible not confirmed).
 - TASKLIST P5a/P5b/P5c -> DONE; RUN_STATE + memory refreshed.
 - Session gates: cargo 206/206, vitest 106/106, builds clean.
+
+## 2026-07-26 — P2e-equivalent: cold-context verifier findings FIXED
+
+Cold verifier (Opus, cold context, `de37921..HEAD`) returned **FAIL**.
+Every finding is now fixed + regression-tested. This is the second time
+in this repo that a cold pass caught what green tests missed.
+
+- **BLOCKING — Today cap bypassed on the re-entry doors.** A done/
+  blocked item KEEPS Today membership but frees its slot, so
+  reactivation (set_item_state / batch_set_state / restore_item /
+  accept-reorg) could put 4 active on one date in one click. Same class
+  as the P2e restore_item bug: an entry path that skipped a cap.
+  Fix: `day::today_overflow_draft` + `TodayAccounting`, called from all
+  four doors. It DROPS membership (logged, cause=user) rather than
+  failing the transition — because undo of a completion re-activates,
+  and **undo must never fail**. 4 regression tests + the batch case.
+- **MAJOR — accept-reorg done path never spawned recurrence.** A
+  recurring item completed via the LLM accept-diff silently stopped
+  recurring. Fix: build_recurrence_spawn now runs there too, with
+  shared spawn/today accounting across the accepted batch. Test:
+  `accept_reorg_done_spawns_the_recurrence_like_every_other_done_door`.
+- MINOR — spawn accounting ignored slots freed by NON-recurring parents
+  in the same batch (over-routed children to Inbox). Fix: record the
+  freed slot before the recurrence check.
+- MINOR — mirror double-counted a done→undo→done as 2 completions.
+  Fix: completions are keyed by item (last one wins; an undone
+  completion drops out). 2 tests.
+- MINOR — receipts reported `items.updated_at` as the finish time (any
+  later edit inflated days-to-done). Fix: use the logged completion ts
+  (Walk.done_at was computed and never read). Test added.
+- MINOR — `TodayHonesty.expired` counted FINISHED items as rolled over,
+  contradicting its own doc. Fix: only unfinished work counts as
+  slippage; the old test that pinned the contradiction was corrected.
+- MINOR — a session whose item was soft-deleted mid-session could never
+  be ended with `done` (Now slot stuck open). Fix: skip the co-write;
+  debug_assert the slot always frees.
+- MINOR — moving an item between Today dates emitted no TODAY_REMOVED
+  for the old date (add/remove pairs didn't balance). Fixed + test.
+- NOTE — undo's skip-list was duplicated in SQL and in the match arms
+  with nothing pinning them. Fix: single `UNDO_SKIP_TYPES` const drives
+  the SQL; a test pins the correspondence incl. the deliberate
+  ITEM_RECURRED asymmetry.
+- NOTE — golden runner's rebuild assertion covered `items` only; now
+  covers `sessions` too.
+- **verify-schema.py was silently broken since migration 002** (never
+  run: it required a live DB). Three real bugs found by finally
+  executing it: `CREATE UNIQUE INDEX` unmatched; CREATE/RENAME/DROP
+  applied out of source order (deleting the surviving `items`); trigger
+  bodies truncated at their first inner `;`. Fixed, plus a new
+  `--fresh` mode that builds a throwaway DB from the migrations so the
+  gate no longer depends on having launched the app. Now green: 13
+  objects verified, user_version 6.
+
+Gates: cargo **216/216** warning-clean, vitest 106/106, both builds
+clean, store-logic + check-golden + verify-schema --fresh all green.

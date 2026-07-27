@@ -413,6 +413,18 @@ pub fn set_item_state_inner_full(
                 drafts.extend(spawn);
             }
         }
+        // Today cap on the re-activation door: a done/blocked item kept
+        // its membership but freed its slot, so coming back to active
+        // could push the date past 3. Drop membership instead of
+        // failing (undo must never fail) — see day::today_overflow_draft.
+        if target_state == ItemState::Active {
+            let mut today_acct = crate::commands::day::TodayAccounting::default();
+            if let Some(drop) =
+                crate::commands::day::today_overflow_draft(tx, &current, &mut today_acct)?
+            {
+                drafts.push(drop);
+            }
+        }
         Ok(drafts)
     })?;
 
@@ -539,7 +551,7 @@ pub fn restore_item(
 }
 
 pub fn restore_item_inner(pool: &SqlitePool, id: &str) -> Result<Item, String> {
-    let _ = db::write_event(pool, |tx, _ts| {
+    let _ = db::write_events(pool, |tx, _ts| {
         let current = db::items::read_item_by_id_any_tx(tx, id)?
             .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
         if !current.deleted {
@@ -568,11 +580,23 @@ pub fn restore_item_inner(pool: &SqlitePool, id: &str) -> Result<Item, String> {
                 Tier::Inbox | Tier::C => {}
             }
         }
-        Ok(EventDraft {
+        let mut drafts = vec![EventDraft {
             event_type: EventType::ItemRestored,
             item_id: Some(id.to_string()),
             payload: json!({}),
-        })
+        }];
+        // Today cap on the restore door: a soft-deleted item keeps its
+        // today_on, so restoring an ACTIVE one could push the date past
+        // 3 (the same entry-path class as the tier-cap gate above).
+        if current.state == ItemState::Active {
+            let mut today_acct = crate::commands::day::TodayAccounting::default();
+            if let Some(drop) =
+                crate::commands::day::today_overflow_draft(tx, &current, &mut today_acct)?
+            {
+                drafts.push(drop);
+            }
+        }
+        Ok(drafts)
     })?;
 
     let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
@@ -625,14 +649,18 @@ pub(crate) fn build_recurrence_spawn(
     ts: i64,
     acct: &mut SpawnAccounting,
 ) -> Result<Option<Vec<EventDraft>>, String> {
+    // Record the slot this completion frees BEFORE the recurrence
+    // check: a non-recurring parent going done in the same batch also
+    // frees a slot, and ignoring it would over-route later children to
+    // Inbox (safe, but wrong placement).
+    if parent.state == ItemState::Active {
+        *acct.net_active.entry(parent.tier).or_insert(0) -= 1;
+    }
+
     let rule = match parent.recurrence.as_deref().and_then(Recurrence::parse) {
         Some(r) => r,
         None => return Ok(None), // not recurring (or unparseable legacy rule)
     };
-
-    if parent.state == ItemState::Active {
-        *acct.net_active.entry(parent.tier).or_insert(0) -= 1;
-    }
     let mut child_tier = parent.tier;
     let cap = match parent.tier {
         Tier::A => Some(A_CAP as i64),
@@ -882,6 +910,7 @@ pub fn batch_set_state_inner(
         // instance in this same transaction; shared accounting keeps
         // multiple spawns cap-correct and rank-distinct.
         let mut spawn_acct = SpawnAccounting::default();
+        let mut today_acct = crate::commands::day::TodayAccounting::default();
         for id in &ids {
             let current = db::items::read_item_by_id_tx(tx, id)?
                 .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
@@ -938,6 +967,15 @@ pub fn batch_set_state_inner(
             if target_state == ItemState::Done {
                 if let Some(spawn) = build_recurrence_spawn(tx, &current, ts, &mut spawn_acct)? {
                     drafts.extend(spawn);
+                }
+            }
+            // Today cap across the whole batch (shared accounting, so a
+            // batch of reactivations can't smuggle a date over 3).
+            if target_state == ItemState::Active {
+                if let Some(drop) =
+                    crate::commands::day::today_overflow_draft(tx, &current, &mut today_acct)?
+                {
+                    drafts.push(drop);
                 }
             }
         }

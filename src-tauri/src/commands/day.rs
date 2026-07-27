@@ -45,6 +45,58 @@ fn validate_date(s: &str) -> Result<(), String> {
     }
 }
 
+// ── Today cap on the re-entry doors ─────────────────────────────────
+
+/// Per-date bookkeeping while a multi-draft closure builds. As with
+/// `SpawnAccounting`, `write_events` applies drafts only AFTER the
+/// closure returns, so `count_active_today` reports the pre-transaction
+/// count throughout and the closure must account for its own effects.
+#[derive(Default)]
+pub struct TodayAccounting {
+    net_active: std::collections::HashMap<String, i64>,
+}
+
+/// Enforce the Today cap on every path that makes an item ACTIVE again
+/// — reactivation from done/blocked, and archive-restore.
+///
+/// A done/blocked item **keeps** its Today membership (progress stays
+/// in sight) but frees its slot, so bringing it back to active could
+/// otherwise push the date past 3 (the P2e `restore_item` bug class:
+/// an entry path that skips a cap). The cap is enforced here by
+/// dropping the item's Today membership in the SAME transaction, not
+/// by refusing the transition:
+///
+/// - Today is an **execution overlay**, not a commitment tier. Failing
+///   "mark active" because of an overlay would be surprising.
+/// - More decisively: **undo must never fail.** Undoing a completion
+///   re-activates the item; if that could return `TODAY_FULL`, Ctrl+Z
+///   would break — and undo is the one operation the whole event-log
+///   architecture promises always works.
+///
+/// The drop is logged (`cause: "user"` — the human's own reactivation
+/// caused it), so the board never silently disagrees with the log.
+/// Returns `None` when the item isn't on Today or the date has room.
+pub fn today_overflow_draft(
+    tx: &rusqlite::Transaction<'_>,
+    item: &Item,
+    acct: &mut TodayAccounting,
+) -> Result<Option<EventDraft>, String> {
+    let date = match &item.today_on {
+        Some(d) => d.clone(),
+        None => return Ok(None),
+    };
+    let net = acct.net_active.get(&date).copied().unwrap_or(0);
+    if db::items::count_active_today(tx, &date)? + net >= TODAY_CAP {
+        return Ok(Some(EventDraft {
+            event_type: EventType::TodayRemoved,
+            item_id: Some(item.id.clone()),
+            payload: json!({ "date": date, "cause": "user" }),
+        }));
+    }
+    *acct.net_active.entry(date).or_insert(0) += 1;
+    Ok(None)
+}
+
 // ── add / remove ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -62,7 +114,7 @@ pub fn add_to_today(
 
 pub fn add_to_today_inner(pool: &SqlitePool, id: String, date: String) -> Result<Item, String> {
     validate_date(&date)?;
-    let _ = db::write_event(pool, |tx, _ts| {
+    let _ = db::write_events(pool, |tx, _ts| {
         let current = db::items::read_item_by_id_tx(tx, &id)?
             .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
         if current.state != ItemState::Active {
@@ -74,11 +126,23 @@ pub fn add_to_today_inner(pool: &SqlitePool, id: String, date: String) -> Result
         if db::items::count_active_today(tx, &date)? >= TODAY_CAP {
             return Err("TODAY_FULL".into());
         }
-        Ok(EventDraft {
+        // Moving between dates: close out the old date's membership so
+        // the log's add/remove pairs balance per date (otherwise the
+        // old date silently loses a member with no event to show for it).
+        let mut drafts = Vec::new();
+        if let Some(old) = &current.today_on {
+            drafts.push(EventDraft {
+                event_type: EventType::TodayRemoved,
+                item_id: Some(id.clone()),
+                payload: json!({ "date": old, "cause": "user" }),
+            });
+        }
+        drafts.push(EventDraft {
             event_type: EventType::TodayAdded,
             item_id: Some(id.clone()),
             payload: json!({ "date": date }),
-        })
+        });
+        Ok(drafts)
     })?;
     read_back(pool, &id)
 }
@@ -167,6 +231,14 @@ pub fn open_day_inner(
                     return Err("TODAY_FULL".into());
                 }
                 adds += 1;
+                // Balance the old date's membership (see add_to_today).
+                if let Some(old) = &current.today_on {
+                    drafts.push(EventDraft {
+                        event_type: EventType::TodayRemoved,
+                        item_id: Some(id.clone()),
+                        payload: json!({ "date": old, "cause": "user" }),
+                    });
+                }
                 drafts.push(EventDraft {
                     event_type: EventType::TodayAdded,
                     item_id: Some(id.clone()),
@@ -599,6 +671,152 @@ mod tests {
             .query_row("SELECT today_on FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
             .unwrap();
         assert_eq!(today, None);
+    }
+
+    // ── the Today cap on the RE-ENTRY doors (verifier BLOCKING) ─────
+    //
+    // A done/blocked item keeps its Today membership but frees its
+    // slot. Every path that makes it active again must therefore be
+    // cap-aware, or one click yields 4 active on a date. Same class as
+    // the P2e restore_item bug: an entry path that skipped a cap.
+
+    #[test]
+    fn reactivating_a_done_today_item_into_a_full_day_drops_its_membership() {
+        let pool = fresh_pool();
+        let ids: Vec<String> = (0..4)
+            .map(|i| create_item_inner(&pool, Tier::A, format!("t{i}"), None, None).unwrap().id)
+            .collect();
+        // 3 on Today; finish one, which frees its slot but keeps it visible.
+        for id in ids.iter().take(3) {
+            add_to_today_inner(&pool, id.clone(), D2.into()).unwrap();
+        }
+        set_item_state_inner(&pool, ids[0].clone(), ItemState::Done, None).unwrap();
+        // A fourth item takes the freed slot: the date is full again.
+        add_to_today_inner(&pool, ids[3].clone(), D2.into()).unwrap();
+
+        // Un-done the first item. The transition MUST succeed (undo can
+        // never fail), and the cap must hold — so it leaves Today.
+        let item = set_item_state_inner(&pool, ids[0].clone(), ItemState::Active, None).unwrap();
+        assert_eq!(item.state, ItemState::Active);
+        assert_eq!(item.today_on, None, "membership dropped to keep the cap");
+
+        let conn = pool.get().unwrap();
+        let active_today: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state='active' AND deleted=0",
+                [D2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_today, TODAY_CAP, "Today cap holds on the re-entry door");
+        // The drop is logged, so the board never silently disagrees.
+        let cause: String = conn
+            .query_row(
+                "SELECT json_extract(payload, '$.cause') FROM events \
+                 WHERE type = 'TODAY_REMOVED' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(cause, "user");
+    }
+
+    #[test]
+    fn reactivating_keeps_membership_when_the_day_has_room() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "a".into(), None, None).unwrap();
+        add_to_today_inner(&pool, a.id.clone(), D2.into()).unwrap();
+        set_item_state_inner(&pool, a.id.clone(), ItemState::Done, None).unwrap();
+        let back = set_item_state_inner(&pool, a.id.clone(), ItemState::Active, None).unwrap();
+        assert_eq!(
+            back.today_on.as_deref(),
+            Some(D2),
+            "no overflow, no drop — the guard must not fire needlessly"
+        );
+    }
+
+    #[test]
+    fn batch_reactivation_cannot_smuggle_a_day_over_cap() {
+        let pool = fresh_pool();
+        let ids: Vec<String> = (0..5)
+            .map(|i| create_item_inner(&pool, Tier::A, format!("t{i}"), None, None).unwrap().id)
+            .collect();
+        // Three on Today, all finished (slots free, membership kept).
+        for id in ids.iter().take(3) {
+            add_to_today_inner(&pool, id.clone(), D2.into()).unwrap();
+            set_item_state_inner(&pool, id.clone(), ItemState::Done, None).unwrap();
+        }
+        // Two fresh items fill the date.
+        add_to_today_inner(&pool, ids[3].clone(), D2.into()).unwrap();
+        add_to_today_inner(&pool, ids[4].clone(), D2.into()).unwrap();
+
+        // Reactivate all three at once: one slot is free, so exactly
+        // one may keep its membership.
+        crate::commands::items::batch_set_state_inner(
+            &pool,
+            ids[..3].to_vec(),
+            ItemState::Active,
+            None,
+        )
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let active_today: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state='active' AND deleted=0",
+                [D2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_today, TODAY_CAP, "shared accounting holds across the batch");
+    }
+
+    #[test]
+    fn restoring_an_active_today_item_into_a_full_day_drops_its_membership() {
+        let pool = fresh_pool();
+        let ids: Vec<String> = (0..4)
+            .map(|i| create_item_inner(&pool, Tier::A, format!("t{i}"), None, None).unwrap().id)
+            .collect();
+        for id in ids.iter().take(3) {
+            add_to_today_inner(&pool, id.clone(), D2.into()).unwrap();
+        }
+        // Delete one (frees its slot, keeps today_on), refill the date.
+        crate::commands::items::delete_item_inner(&pool, &ids[0]).unwrap();
+        add_to_today_inner(&pool, ids[3].clone(), D2.into()).unwrap();
+
+        let restored = crate::commands::items::restore_item_inner(&pool, &ids[0]).unwrap();
+        assert_eq!(restored.today_on, None, "restore is cap-gated for Today too");
+        let conn = pool.get().unwrap();
+        let active_today: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE today_on = ?1 AND state='active' AND deleted=0",
+                [D2],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(active_today, TODAY_CAP);
+    }
+
+    #[test]
+    fn moving_an_item_between_days_balances_the_old_date() {
+        let pool = fresh_pool();
+        let a = create_item_inner(&pool, Tier::A, "a".into(), None, None).unwrap();
+        add_to_today_inner(&pool, a.id.clone(), D1.into()).unwrap();
+        let moved = add_to_today_inner(&pool, a.id.clone(), D2.into()).unwrap();
+        assert_eq!(moved.today_on.as_deref(), Some(D2));
+
+        // The old date gets an explicit removal, so add/remove pairs
+        // balance per date and the roll has nothing stale to find.
+        let conn = pool.get().unwrap();
+        let removals: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE type = 'TODAY_REMOVED' \
+                 AND json_extract(payload, '$.date') = ?1",
+                [D1],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(removals, 1);
     }
 
     #[test]

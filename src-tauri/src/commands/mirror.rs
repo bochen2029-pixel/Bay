@@ -179,7 +179,13 @@ pub fn get_mirror_stats_inner(
     let mut leak = LeakStats::default();
     let mut today = TodayHonesty::default();
     let mut block_totals: HashMap<String, (i64, i64)> = HashMap::new(); // reason → (count, ms)
-    let mut completions: Vec<(String, i64, i64)> = Vec::new(); // (item_id, done_at, lead_ms)
+    // Completions are keyed by item, not appended per event: a
+    // mis-tapped done → Ctrl+Z → real done must count as ONE completion,
+    // not two (Bay actively encourages that undo). The last completion
+    // per item wins; an item whose completion was undone and never
+    // redone drops out entirely.
+    let mut completions: HashMap<String, (i64, i64)> = HashMap::new(); // id → (done_at, lead_ms)
+    let mut today_finished: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for row in rows {
         let (ts, type_str, item_id, payload_str) =
@@ -252,18 +258,20 @@ pub fn get_mirror_stats_inner(
                 if after == "done" {
                     w.done_at = Some(ts);
                     if ts >= since {
-                        flow.completed += 1;
                         if w.on_today {
-                            today.finished += 1;
+                            today_finished.insert(id.clone());
                         }
                         if let Some(created) = w.created_at {
-                            completions.push((id.clone(), ts, ts - created));
+                            completions.insert(id.clone(), (ts, ts - created));
                         }
                     }
                 } else if before == "done" {
                     // Un-done (undo or reactivation): the item is back
-                    // in flight; its later completion counts afresh.
+                    // in flight, so it is not a completion right now.
+                    // A later re-completion re-inserts it.
                     w.done_at = None;
+                    completions.remove(&id);
+                    today_finished.remove(&id);
                 }
             }
             EventType::TodayAdded => {
@@ -274,7 +282,14 @@ pub fn get_mirror_stats_inner(
             }
             EventType::TodayRemoved => {
                 w.on_today = false;
-                if ts >= since && payload["cause"].as_str() == Some("expired") {
+                // "Rolled over" means *planned but not finished*. An
+                // item that was completed keeps its membership until
+                // the roll, so counting every expiry would double-count
+                // finished work as slippage — the opposite of honest.
+                if ts >= since
+                    && payload["cause"].as_str() == Some("expired")
+                    && w.done_at.is_none()
+                {
                     today.expired += 1;
                 }
             }
@@ -299,10 +314,12 @@ pub fn get_mirror_stats_inner(
     };
 
     // ── flow figures ────────────────────────────────────────────────
+    flow.completed = completions.len() as i64;
+    today.finished = today_finished.len() as i64;
     flow.throughput_per_week = flow.completed as f64 * 7.0 / window_days as f64;
     let mut leads: Vec<f64> = completions
-        .iter()
-        .map(|(_, _, ms)| *ms as f64 / DAY_MS as f64)
+        .values()
+        .map(|(_, ms)| *ms as f64 / DAY_MS as f64)
         .collect();
     leads.sort_by(|a, b| a.partial_cmp(b).unwrap());
     flow.lead_time_p50_days = percentile(&leads, 0.50);
@@ -453,10 +470,15 @@ pub fn get_mirror_stats_inner(
             .map_err(|e| format!("query receipts: {e}"))?;
         let mut out = Vec::new();
         for row in rows {
-            let (id, content, tier, done_at, sessions, ms) =
+            let (id, content, tier, updated_at, sessions, ms) =
                 row.map_err(|e| format!("receipt row: {e}"))?;
-            let days_to_done = walks
-                .get(&id)
+            // Prefer the logged completion timestamp over the row's
+            // updated_at: any later edit, move, or Today change would
+            // otherwise shift the reported finish date and inflate
+            // days-to-done.
+            let w = walks.get(&id);
+            let done_at = w.and_then(|w| w.done_at).unwrap_or(updated_at);
+            let days_to_done = w
                 .and_then(|w| w.created_at)
                 .map(|c| (done_at - c) as f64 / DAY_MS as f64)
                 .unwrap_or(0.0);
@@ -611,7 +633,11 @@ mod tests {
     }
 
     #[test]
-    fn today_honesty_tracks_planned_finished_expired() {
+    fn today_honesty_counts_only_unfinished_work_as_rolled_over() {
+        // "Rolled over" must mean *planned but not finished*. A
+        // completed item keeps its Today membership until the roll
+        // (progress stays visible), so counting every expiry would
+        // report finished work as slippage — the opposite of honest.
         let pool = fresh_pool();
         let done = create_item_inner(&pool, Tier::A, "finish me".into(), None, None).unwrap();
         let slip = create_item_inner(&pool, Tier::A, "slipped".into(), None, None).unwrap();
@@ -623,7 +649,63 @@ mod tests {
         let stats = get_mirror_stats_inner(&pool, None).unwrap();
         assert_eq!(stats.today.planned, 2);
         assert_eq!(stats.today.finished, 1, "done while on Today");
-        assert_eq!(stats.today.expired, 2, "both memberships aged out at the roll");
+        assert_eq!(stats.today.expired, 1, "only the unfinished item rolled over");
+    }
+
+    #[test]
+    fn a_completion_that_was_undone_and_redone_counts_once() {
+        // Bay actively encourages Ctrl+Z after a mis-tapped done
+        // (session.rs regression-tests it), so throughput and lead time
+        // must not inflate every time it happens.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "mis-tapped".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        crate::commands::events::undo_last_action_inner(&pool).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+
+        let stats = get_mirror_stats_inner(&pool, None).unwrap();
+        assert_eq!(stats.flow.completed, 1, "one item finished, not two");
+        assert_eq!(stats.receipts.len(), 1);
+    }
+
+    #[test]
+    fn an_undone_completion_stops_counting_until_it_is_redone() {
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "reopened".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        crate::commands::events::undo_last_action_inner(&pool).unwrap();
+
+        let stats = get_mirror_stats_inner(&pool, None).unwrap();
+        assert_eq!(stats.flow.completed, 0, "it is back in flight, not finished");
+        assert_eq!(stats.flow.lead_time_p50_days, None);
+    }
+
+    #[test]
+    fn receipt_done_at_is_the_completion_not_a_later_edit() {
+        // updated_at moves on any later touch; the receipt must report
+        // when the work actually finished.
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "shipped".into(), None, None).unwrap();
+        set_item_state_inner(&pool, item.id.clone(), ItemState::Done, None).unwrap();
+        let done_ts: i64 = {
+            let conn = pool.get().unwrap();
+            conn.query_row(
+                "SELECT ts FROM events WHERE type = 'ITEM_STATE_CHANGED' ORDER BY id DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        // Touch the item afterwards (an edit is legal on a done item).
+        crate::commands::items::edit_item_inner(&pool, item.id.clone(), "shipped (v2)".into())
+            .unwrap();
+
+        let stats = get_mirror_stats_inner(&pool, None).unwrap();
+        assert_eq!(stats.receipts.len(), 1);
+        assert_eq!(
+            stats.receipts[0].done_at, done_ts,
+            "receipt reports the completion timestamp, not the last touch"
+        );
     }
 
     #[test]

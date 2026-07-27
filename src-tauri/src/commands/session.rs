@@ -136,10 +136,15 @@ pub fn end_session_inner(
             if outcome == SessionOutcome::Done {
                 // Finish the item in the SAME transaction — the whole
                 // point of the one-tap Done. The item may have changed
-                // state mid-session (e.g. blocked from the board); an
-                // already-done item just skips the co-write.
-                let current = db::items::read_item_by_id_tx(tx, &open.item_id)?
-                    .ok_or_else(|| "ITEM_NOT_FOUND".to_string())?;
+                // mid-session: an already-done item skips the co-write,
+                // and a soft-deleted one (read_item_by_id_tx returns
+                // None) does too — ending the session must never be
+                // blocked by what happened to the item, or the Now slot
+                // would be stuck open with no way out.
+                let current = match db::items::read_item_by_id_tx(tx, &open.item_id)? {
+                    Some(item) => item,
+                    None => return Ok(drafts),
+                };
                 if current.state != ItemState::Done {
                     drafts.push(EventDraft {
                         event_type: EventType::ItemStateChanged,
@@ -198,6 +203,10 @@ pub fn end_session_inner(
         .map_err(|e| format!("read ended session: {e}"))?;
     let item = db::items::read_item_by_id_any_conn(&conn, &session.item_id)?
         .ok_or_else(|| "session item missing post-end".to_string())?;
+    debug_assert!(
+        db::items::open_session_conn(&conn)?.is_none(),
+        "ending a session must always free the Now slot"
+    );
     let child_ids: Vec<String> = events
         .iter()
         .filter(|e| e.event_type == EventType::ItemCreated)

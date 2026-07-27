@@ -20,6 +20,35 @@ use crate::domain::{Actor, Event, EventType};
 const EVENT_COLS: &str =
     "id, ts, type, item_id, payload, txn_id, actor, origin, device_id, schema_ver, prev_hash";
 
+/// Event types that can never anchor an undo: advisory (LLM), ritual
+/// audit (DAY_*), and behavior records (SESSION_*). A transaction
+/// containing ONLY these types is not an undoable action, so the
+/// "most recent action" query skips them and looks further back.
+///
+/// This list and the `continue` arms in `undo_last_action_inner`'s
+/// compensation match must stay in step: a type that compensates to
+/// nothing but is NOT listed here would make Ctrl+Z report
+/// `NOTHING_TO_UNDO` while a real action sits one row behind it. The
+/// `undo_skip_list_matches_non_compensating_types` test pins the
+/// correspondence.
+const UNDO_SKIP_TYPES: &[EventType] = &[
+    EventType::LlmSuggestionGenerated,
+    EventType::LlmSuggestionAccepted,
+    EventType::LlmSuggestionRejected,
+    EventType::SessionStarted,
+    EventType::SessionEnded,
+    EventType::DayOpened,
+    EventType::DayClosed,
+];
+
+fn undo_skip_sql_list() -> String {
+    UNDO_SKIP_TYPES
+        .iter()
+        .map(|t| format!("'{}'", t.as_sql()))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
 // ── get_events ────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -407,11 +436,11 @@ pub fn undo_last_action_inner(pool: &SqlitePool) -> Result<UndoResult, String> {
     //   Legacy rows (actor NULL, pre-003) are human by definition.
     let last = {
         let conn = pool.get().map_err(|e| format!("pool get: {e}"))?;
+        let skip = undo_skip_sql_list();
         let mut stmt = conn
             .prepare(&format!(
                 "SELECT {EVENT_COLS} FROM events \
-                 WHERE type NOT IN ('LLM_SUGGESTION_GENERATED','LLM_SUGGESTION_ACCEPTED','LLM_SUGGESTION_REJECTED',\
-                                    'SESSION_STARTED','SESSION_ENDED','DAY_OPENED','DAY_CLOSED') \
+                 WHERE type NOT IN ({skip}) \
                    AND (actor IS NULL OR actor = 'human') \
                  ORDER BY id DESC LIMIT 1"
             ))
@@ -1736,6 +1765,41 @@ mod tests {
             .query_row("SELECT recurrence FROM items WHERE id = ?1", [&item.id], |r| r.get(0))
             .unwrap();
         assert_eq!(rule.as_deref(), Some("FREQ=WEEKLY"));
+    }
+
+    #[test]
+    fn undo_skip_list_matches_non_compensating_types() {
+        // The SQL skip-list and the compensation match's `continue`
+        // arms must agree, or Ctrl+Z can report NOTHING_TO_UNDO while a
+        // real action sits one row further back. ITEM_RECURRED is the
+        // one deliberate asymmetry: it compensates to nothing, but it
+        // never appears alone in a transaction (always beside the
+        // parent's STATE_CHANGED and the child's CREATED), so it must
+        // NOT be skipped by the query — its transaction is undoable.
+        let non_compensating = [
+            EventType::LlmSuggestionGenerated,
+            EventType::LlmSuggestionAccepted,
+            EventType::LlmSuggestionRejected,
+            EventType::SessionStarted,
+            EventType::SessionEnded,
+            EventType::DayOpened,
+            EventType::DayClosed,
+            EventType::ItemRecurred,
+        ];
+        for t in non_compensating {
+            let skipped = UNDO_SKIP_TYPES.contains(&t);
+            let expected = t != EventType::ItemRecurred;
+            assert_eq!(
+                skipped, expected,
+                "{} skip-list membership drifted from its compensation arm",
+                t.as_sql()
+            );
+        }
+        // And the SQL renders every entry.
+        let sql = undo_skip_sql_list();
+        for t in UNDO_SKIP_TYPES {
+            assert!(sql.contains(t.as_sql()), "{} missing from the SQL list", t.as_sql());
+        }
     }
 
     #[test]

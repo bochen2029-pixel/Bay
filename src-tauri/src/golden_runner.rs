@@ -146,14 +146,35 @@ fn count_tier_metric(pool: &SqlitePool, tier: Tier, metric: &str) -> i64 {
     }
 }
 
+/// Sessions rows, so the rebuild assertion covers BOTH projection
+/// tables (sessions joined the purity law in v0.3).
+fn snapshot_sessions(pool: &SqlitePool) -> Vec<(String, String, i64, Option<i64>, Option<String>)> {
+    let conn = pool.get().unwrap();
+    let mut stmt = conn
+        .prepare("SELECT id, item_id, started_at, ended_at, outcome FROM sessions ORDER BY id")
+        .unwrap();
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .unwrap();
+    rows.collect::<Result<_, _>>().unwrap()
+}
+
 fn assert_rebuild_matches(pool: &SqlitePool, case: &str) {
     let before = snapshot_items_full(pool);
+    let sessions_before = snapshot_sessions(pool);
     rebuild_projection_inner(pool)
         .unwrap_or_else(|e| panic!("[{case}] rebuild_projection failed: {e}"));
     let after = snapshot_items_full(pool);
+    let sessions_after = snapshot_sessions(pool);
     assert_eq!(
         before, after,
         "[{case}] rebuild_projection must reproduce the items table exactly"
+    );
+    assert_eq!(
+        sessions_before, sessions_after,
+        "[{case}] rebuild_projection must reproduce the sessions table exactly"
     );
 }
 

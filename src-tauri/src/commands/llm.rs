@@ -264,6 +264,11 @@ fn apply_reorg_inner(
         // isn't updated until after this closure, so max_rank_in_tier would
         // return the same value for each move otherwise).
         let mut tier_last_rank: HashMap<Tier, Option<String>> = HashMap::new();
+        // Shared across the accepted batch, exactly as in
+        // batch_set_state: recurrence spawns stay cap-correct and
+        // rank-distinct, and Today reactivations can't exceed 3.
+        let mut spawn_acct = crate::commands::items::SpawnAccounting::default();
+        let mut today_acct = crate::commands::day::TodayAccounting::default();
 
         let mut drafts: Vec<EventDraft> = Vec::new();
         for op in &ops {
@@ -301,11 +306,31 @@ fn apply_reorg_inner(
                         continue;
                     }
                     drafts.push(state_change_draft(&op.item_id, cur.state, ItemState::Done, None));
+                    // I-21: completing through the accept-diff must
+                    // behave like every other done-door, or a recurring
+                    // item accepted here would silently stop recurring.
+                    if let Some(spawn) = crate::commands::items::build_recurrence_spawn(
+                        tx,
+                        &cur,
+                        _ts,
+                        &mut spawn_acct,
+                    )? {
+                        drafts.extend(spawn);
+                    }
                     sim.get_mut(&op.item_id).unwrap().state = ItemState::Done;
                 }
                 ProposalAction::Active => {
                     if cur.state == ItemState::Active {
                         continue;
+                    }
+                    // Today cap on this re-activation door (see
+                    // day::today_overflow_draft).
+                    if let Some(drop) = crate::commands::day::today_overflow_draft(
+                        tx,
+                        &cur,
+                        &mut today_acct,
+                    )? {
+                        drafts.push(drop);
                     }
                     // Preserve the outgoing blocked reason so an undo can
                     // restore the blocked row (migration-002 CHECK).
@@ -655,5 +680,46 @@ mod tests {
         let a = create_item_inner(&pool, Tier::A, "x".into(), None, None).unwrap();
         let err = apply_reorg_inner(&pool, 9999, vec![move_op(&a.id, "C")]).unwrap_err();
         assert_eq!(err, "EVENT_NOT_FOUND");
+    }
+
+    #[test]
+    fn accept_reorg_done_spawns_the_recurrence_like_every_other_done_door() {
+        // Regression: the accept-diff is an entry path like any other.
+        // If it completes a recurring item without spawning the next
+        // instance, accepting one LLM suggestion silently stops the
+        // recurrence — a bug the user would discover weeks later.
+        use crate::commands::items::set_item_recurrence_inner;
+        let pool = fresh_pool();
+        let item = create_item_inner(&pool, Tier::A, "weekly report".into(), None, None).unwrap();
+        set_item_recurrence_inner(&pool, item.id.clone(), Some("FREQ=WEEKLY".into())).unwrap();
+        let sug = seed_suggestion(&pool);
+
+        apply_reorg_inner(
+            &pool,
+            sug,
+            vec![ReorgProposal {
+                item_id: item.id.clone(),
+                action: ProposalAction::Done,
+                to_tier: None,
+                rationale: None,
+            }],
+        )
+        .unwrap();
+
+        let conn = pool.get().unwrap();
+        let children: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM items WHERE content = 'weekly report' AND state = 'active'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(children, 1, "the next instance was spawned");
+        let linked: i64 = conn
+            .query_row("SELECT COUNT(*) FROM events WHERE type = 'ITEM_RECURRED'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(linked, 1, "and the audit link records it");
     }
 }
